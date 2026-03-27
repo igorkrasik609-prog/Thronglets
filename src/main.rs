@@ -95,6 +95,17 @@ enum Commands {
         hours: u64,
     },
 
+    /// Auto-record traces from Claude Code PostToolUse hooks.
+    /// Reads hook JSON from stdin, records a trace. Designed to be fast (<50ms).
+    Hook,
+
+    /// Start HTTP API server for non-MCP agents (Python, LangChain, etc.)
+    Serve {
+        /// HTTP port to listen on
+        #[arg(long, default_value_t = 7777)]
+        port: u16,
+    },
+
     /// Show connected peers
     Peers,
 
@@ -406,6 +417,98 @@ async fn main() {
             println!("  Skipped:  {}", total_skipped);
         }
 
+        Commands::Hook => {
+            // Read PostToolUse JSON from stdin (Claude Code hook payload)
+            let mut input = String::new();
+            if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+                std::process::exit(0); // silent fail — don't break Claude Code
+            }
+
+            let payload: serde_json::Value = match serde_json::from_str(&input) {
+                Ok(v) => v,
+                Err(_) => std::process::exit(0),
+            };
+
+            let tool_name = payload["tool_name"].as_str().unwrap_or("");
+
+            // Skip thronglets' own MCP calls to avoid recursion
+            if tool_name.starts_with("mcp__thronglets") {
+                std::process::exit(0);
+            }
+
+            // Skip empty tool names
+            if tool_name.is_empty() {
+                std::process::exit(0);
+            }
+
+            // Map tool to capability URI
+            let capability = if tool_name.starts_with("mcp__") {
+                // MCP tools: mcp__server__tool → mcp:server/tool
+                tool_name.replacen("mcp__", "mcp:", 1).replace("__", "/")
+            } else {
+                format!("claude-code/{tool_name}")
+            };
+
+            // Determine outcome from tool_response
+            let tool_response = &payload["tool_response"];
+            let outcome = if tool_response.is_null() || tool_response.is_string() {
+                // String response = success (Read, Grep, etc.)
+                Outcome::Succeeded
+            } else if let Some(obj) = tool_response.as_object() {
+                if obj.contains_key("error") || obj.get("success") == Some(&serde_json::Value::Bool(false)) {
+                    Outcome::Failed
+                } else {
+                    Outcome::Succeeded
+                }
+            } else {
+                Outcome::Succeeded
+            };
+
+            // Build context from tool_input
+            let context_text = build_hook_context(tool_name, &payload["tool_input"]);
+
+            // Input size = rough byte length of tool_input
+            let input_size = payload["tool_input"].to_string().len() as u32;
+
+            // Session ID from Claude Code
+            let session_id = payload["session_id"].as_str().map(String::from);
+
+            // Model from environment or default
+            let model = std::env::var("CLAUDE_MODEL")
+                .unwrap_or_else(|_| "claude-opus-4-6".to_string());
+
+            let store = open_store(&dir);
+            let ctx_hash = simhash(&context_text);
+            let trace = Trace::new(
+                capability,
+                outcome,
+                0, // latency not available from hook
+                input_size,
+                ctx_hash,
+                Some(context_text),
+                session_id,
+                model,
+                identity.public_key_bytes(),
+                |msg| identity.sign(msg),
+            );
+            let _ = store.insert(&trace); // silent — never break Claude Code
+        }
+
+        Commands::Serve { port } => {
+            let store = open_store(&dir);
+            let ctx = Arc::new(thronglets::http::HttpContext {
+                identity: Arc::new(identity),
+                store: Arc::new(store),
+            });
+            println!("Thronglets HTTP API on http://0.0.0.0:{port}");
+            println!("  POST /v1/traces       — record a trace");
+            println!("  GET  /v1/query        — query the substrate");
+            println!("  GET  /v1/capabilities — list capabilities");
+            println!("  GET  /v1/status       — node status");
+            thronglets::http::serve(ctx, port).await
+                .expect("HTTP server failed");
+        }
+
         Commands::Peers => {
             println!("The 'peers' command requires a running node.");
             println!("Use 'thronglets run' to start a node, then peers are logged to console.");
@@ -439,6 +542,71 @@ async fn main() {
             println!("  Trace count:      {}", trace_count);
             println!("  Capabilities:     {}", cap_count);
             println!("  Database size:    {}", size_display);
+        }
+    }
+}
+
+/// Build a natural language context string from a Claude Code tool call.
+/// This is the "WHY" that future agents can read.
+fn build_hook_context(tool_name: &str, tool_input: &serde_json::Value) -> String {
+    match tool_name {
+        "Bash" => {
+            let cmd = tool_input["command"].as_str().unwrap_or("");
+            let desc = tool_input["description"].as_str().unwrap_or("");
+            if !desc.is_empty() {
+                format!("bash: {desc}")
+            } else {
+                // Truncate long commands
+                let cmd_short = if cmd.len() > 200 { &cmd[..200] } else { cmd };
+                format!("bash: {cmd_short}")
+            }
+        }
+        "Read" => {
+            let path = tool_input["file_path"].as_str().unwrap_or("");
+            format!("read file: {path}")
+        }
+        "Write" => {
+            let path = tool_input["file_path"].as_str().unwrap_or("");
+            format!("write file: {path}")
+        }
+        "Edit" => {
+            let path = tool_input["file_path"].as_str().unwrap_or("");
+            format!("edit file: {path}")
+        }
+        "Grep" => {
+            let pattern = tool_input["pattern"].as_str().unwrap_or("");
+            let path = tool_input["path"].as_str().unwrap_or(".");
+            format!("search for '{pattern}' in {path}")
+        }
+        "Glob" => {
+            let pattern = tool_input["pattern"].as_str().unwrap_or("");
+            format!("find files matching: {pattern}")
+        }
+        "Agent" => {
+            let desc = tool_input["description"].as_str().unwrap_or("");
+            let prompt = tool_input["prompt"].as_str().unwrap_or("");
+            if !desc.is_empty() {
+                format!("agent: {desc}")
+            } else {
+                let short = if prompt.len() > 200 { &prompt[..200] } else { prompt };
+                format!("agent: {short}")
+            }
+        }
+        "WebFetch" => {
+            let url = tool_input["url"].as_str().unwrap_or("");
+            format!("fetch: {url}")
+        }
+        "WebSearch" => {
+            let query = tool_input["query"].as_str().unwrap_or("");
+            format!("search: {query}")
+        }
+        _ => {
+            // MCP tools or unknown: use tool name + first string value
+            let first_val = tool_input.as_object()
+                .and_then(|obj| obj.values().find_map(|v| v.as_str()))
+                .unwrap_or("");
+            let short = if first_val.len() > 200 { &first_val[..200] } else { first_val };
+            format!("{tool_name}: {short}")
         }
     }
 }

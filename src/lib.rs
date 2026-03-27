@@ -1,5 +1,6 @@
 pub mod anchor;
 pub mod context;
+pub mod http;
 pub mod identity;
 pub mod trace;
 pub mod storage;
