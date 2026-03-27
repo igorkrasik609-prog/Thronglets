@@ -17,6 +17,8 @@ const MAX_RECENT_ERRORS: usize = 10;
 const MAX_SESSIONS: usize = 5;
 /// Maximum number of recent tool calls to keep (for decision context).
 const MAX_RECENT_ACTIONS: usize = 50;
+/// Maximum number of pending feedback items.
+const MAX_PENDING_FEEDBACK: usize = 30;
 
 /// A file that was recently touched by the AI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +37,16 @@ pub struct RecentError {
     pub context: String,
     pub error_snippet: String, // first 300 chars of error
     pub timestamp_ms: i64,
+}
+
+/// A pending feedback item — an edit/write waiting to see if it was committed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingFeedback {
+    pub file_path: String,
+    pub action: String,       // "Edit" | "Write"
+    pub timestamp_ms: i64,
+    pub resolved: bool,
+    pub outcome: Option<String>,  // "committed" | "reverted" | "modified"
 }
 
 /// A tool call in the action sequence (for decision context).
@@ -69,6 +81,9 @@ pub struct WorkspaceState {
     /// Recent tool call sequence (for decision context / co-edit patterns).
     #[serde(default)]
     pub recent_actions: VecDeque<RecentAction>,
+    /// Pending feedback: edits waiting to see if they were committed.
+    #[serde(default)]
+    pub pending_feedback: VecDeque<PendingFeedback>,
     /// Last update timestamp.
     pub updated_ms: i64,
 }
@@ -163,6 +178,142 @@ impl WorkspaceState {
             self.sessions.truncate(MAX_SESSIONS);
         }
         self.updated_ms = now;
+    }
+
+    /// Add a file edit/write to the pending feedback queue.
+    pub fn add_pending_feedback(&mut self, file_path: String, action: &str) {
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Don't duplicate: if same file is already pending, update timestamp
+        if let Some(existing) = self.pending_feedback.iter_mut()
+            .find(|p| p.file_path == file_path && !p.resolved)
+        {
+            existing.timestamp_ms = now;
+            existing.action = action.to_string();
+            return;
+        }
+
+        self.pending_feedback.push_front(PendingFeedback {
+            file_path,
+            action: action.to_string(),
+            timestamp_ms: now,
+            resolved: false,
+            outcome: None,
+        });
+        self.pending_feedback.truncate(MAX_PENDING_FEEDBACK);
+    }
+
+    /// Resolve pending feedback by checking git status.
+    /// Call this periodically (e.g., every Nth hook invocation).
+    pub fn resolve_feedback(&mut self) {
+        use std::process::Command;
+
+        for item in self.pending_feedback.iter_mut() {
+            if item.resolved { continue; }
+
+            let path = std::path::Path::new(&item.file_path);
+            let dir = match path.parent() {
+                Some(d) if d.exists() => d,
+                _ => continue,
+            };
+
+            // Check if file is still in git diff (uncommitted)
+            let diff_output = Command::new("git")
+                .args(["diff", "--name-only", "--", &item.file_path])
+                .current_dir(dir)
+                .output();
+
+            let staged_output = Command::new("git")
+                .args(["diff", "--cached", "--name-only", "--", &item.file_path])
+                .current_dir(dir)
+                .output();
+
+            let in_diff = diff_output.as_ref()
+                .map(|o| !o.stdout.is_empty()).unwrap_or(false);
+            let in_staged = staged_output.as_ref()
+                .map(|o| !o.stdout.is_empty()).unwrap_or(false);
+
+            if in_diff || in_staged {
+                // Still uncommitted — check if it's been too long (>1h = stale)
+                let now = chrono::Utc::now().timestamp_millis();
+                if (now - item.timestamp_ms) > 3_600_000 {
+                    item.resolved = true;
+                    item.outcome = Some("stale".to_string());
+                }
+                continue;
+            }
+
+            // Not in diff — either committed or reverted
+            // Check git log for commits after our edit timestamp
+            let after_ts = item.timestamp_ms / 1000;
+            let log_output = Command::new("git")
+                .args([
+                    "log", "--oneline", "-1",
+                    &format!("--after={after_ts}"),
+                    "--", &item.file_path,
+                ])
+                .current_dir(dir)
+                .output();
+
+            let has_commit = log_output.as_ref()
+                .map(|o| !o.stdout.is_empty()).unwrap_or(false);
+
+            item.resolved = true;
+            item.outcome = Some(if has_commit {
+                "committed".to_string()
+            } else {
+                "reverted".to_string()
+            });
+        }
+
+        // Clean up old resolved items (keep last 10 for stats)
+        let resolved_count = self.pending_feedback.iter().filter(|p| p.resolved).count();
+        if resolved_count > 10 {
+            // Remove oldest resolved
+            while self.pending_feedback.iter().filter(|p| p.resolved).count() > 10 {
+                if let Some(pos) = self.pending_feedback.iter().rposition(|p| p.resolved) {
+                    self.pending_feedback.remove(pos);
+                }
+            }
+        }
+    }
+
+    /// Generate feedback hints for prehook injection.
+    /// Shows retention rate and specific file feedback.
+    pub fn feedback_hints(&self, current_file: Option<&str>) -> Option<String> {
+        let resolved: Vec<&PendingFeedback> = self.pending_feedback.iter()
+            .filter(|p| p.resolved)
+            .collect();
+
+        if resolved.is_empty() { return None; }
+
+        let mut lines: Vec<String> = Vec::new();
+
+        // Overall retention rate
+        let committed = resolved.iter().filter(|p| p.outcome.as_deref() == Some("committed")).count();
+        let reverted = resolved.iter().filter(|p| p.outcome.as_deref() == Some("reverted")).count();
+        let total = committed + reverted;
+        if total >= 3 {
+            let rate = (committed as f64 / total as f64 * 100.0).round();
+            lines.push(format!("  edit retention: {rate}% ({committed}/{total} committed)"));
+        }
+
+        // Specific file feedback
+        if let Some(file) = current_file {
+            let file_fb: Vec<_> = resolved.iter()
+                .filter(|p| p.file_path == file)
+                .collect();
+            if !file_fb.is_empty() {
+                let file_committed = file_fb.iter()
+                    .filter(|p| p.outcome.as_deref() == Some("committed")).count();
+                let fname = std::path::Path::new(file)
+                    .file_name().and_then(|n| n.to_str()).unwrap_or(file);
+                lines.push(format!("  {fname}: {file_committed}/{} edits committed",
+                    file_fb.len()));
+            }
+        }
+
+        if lines.is_empty() { None } else { Some(lines.join("\n")) }
     }
 
     /// Record a tool call in the action sequence.

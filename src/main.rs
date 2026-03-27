@@ -515,7 +515,17 @@ async fn main() {
             }
 
             // Track tool call sequence (for decision context)
-            ws.record_action(tool_name, file_path);
+            ws.record_action(tool_name, file_path.clone());
+
+            // Track pending feedback for Edit/Write
+            if matches!(tool_name, "Edit" | "Write") {
+                if let Some(fp) = file_path {
+                    ws.add_pending_feedback(fp, tool_name);
+                }
+            }
+
+            // Resolve pending feedback (check git status for previous edits)
+            ws.resolve_feedback();
 
             // Track errors
             if is_error {
@@ -646,6 +656,11 @@ async fn main() {
             // 6. Decision context: co-edit patterns, preparation reads
             if let Some(decision_hints) = ws.decision_hints(tool_name, current_file.as_deref()) {
                 hints.push(decision_hints);
+            }
+
+            // 7. Feedback: edit retention rate + per-file feedback
+            if let Some(fb_hints) = ws.feedback_hints(current_file.as_deref()) {
+                hints.push(fb_hints);
             }
 
             // Output to stdout (appears in agent's context)
