@@ -35,11 +35,11 @@ cargo install --path .
 # Generate identity and show node info
 thronglets id
 
-# Start a node (P2P mode)
-thronglets run
+# Start a node (connects to seed node automatically)
+thronglets run --bootstrap /ip4/47.93.32.88/tcp/4001
 
-# Start on a specific port with bootstrap peers
-thronglets run --port 4001 --bootstrap /ip4/1.2.3.4/tcp/4001
+# Start on a specific port
+thronglets run --port 4001 --bootstrap /ip4/47.93.32.88/tcp/4001
 
 # Emit a trace manually
 thronglets emit "gpt-4/chat-completion" --tags nlp,chat --outcome succeeded --quality 85 --latency 1200
