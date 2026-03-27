@@ -568,6 +568,383 @@ impl WorkspaceState {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_ws() -> WorkspaceState {
+        WorkspaceState::default()
+    }
+
+    // ── record_file ──
+
+    #[test]
+    fn record_file_adds_entry() {
+        let mut ws = make_ws();
+        ws.record_file("/a.rs".into(), "Read", "read file".into(), "succeeded");
+        assert_eq!(ws.recent_files.len(), 1);
+        assert_eq!(ws.recent_files[0].path, "/a.rs");
+    }
+
+    #[test]
+    fn record_file_deduplicates_within_2s() {
+        let mut ws = make_ws();
+        ws.record_file("/a.rs".into(), "Read", "ctx1".into(), "succeeded");
+        // Same file+action immediately → should update, not add
+        ws.record_file("/a.rs".into(), "Read", "ctx2".into(), "succeeded");
+        assert_eq!(ws.recent_files.len(), 1);
+        assert_eq!(ws.recent_files[0].context, "ctx2");
+    }
+
+    #[test]
+    fn record_file_different_action_not_deduped() {
+        let mut ws = make_ws();
+        ws.record_file("/a.rs".into(), "Read", "ctx1".into(), "succeeded");
+        ws.record_file("/a.rs".into(), "Edit", "ctx2".into(), "succeeded");
+        assert_eq!(ws.recent_files.len(), 2);
+    }
+
+    #[test]
+    fn record_file_truncates_at_max() {
+        let mut ws = make_ws();
+        for i in 0..25 {
+            ws.record_file(format!("/f{i}.rs"), "Write", "ctx".into(), "succeeded");
+            // Force different timestamps so dedup doesn't trigger
+            if let Some(f) = ws.recent_files.front_mut() {
+                f.timestamp_ms -= 5000;
+            }
+        }
+        assert_eq!(ws.recent_files.len(), MAX_RECENT_FILES);
+    }
+
+    // ── record_error ──
+
+    #[test]
+    fn record_error_adds_and_truncates() {
+        let mut ws = make_ws();
+        for i in 0..15 {
+            ws.record_error("Bash", format!("ctx{i}"), format!("err{i}"));
+        }
+        assert_eq!(ws.recent_errors.len(), MAX_RECENT_ERRORS);
+        assert_eq!(ws.recent_errors[0].error_snippet, "err14");
+    }
+
+    // ── track_session ──
+
+    #[test]
+    fn track_session_creates_new() {
+        let mut ws = make_ws();
+        ws.track_session("s1", "claude-code/Bash", false);
+        assert_eq!(ws.sessions.len(), 1);
+        assert_eq!(ws.sessions[0].tool_count, 1);
+        assert_eq!(ws.sessions[0].error_count, 0);
+    }
+
+    #[test]
+    fn track_session_increments_existing() {
+        let mut ws = make_ws();
+        ws.track_session("s1", "claude-code/Bash", false);
+        ws.track_session("s1", "claude-code/Read", true);
+        assert_eq!(ws.sessions.len(), 1);
+        assert_eq!(ws.sessions[0].tool_count, 2);
+        assert_eq!(ws.sessions[0].error_count, 1);
+        assert_eq!(ws.sessions[0].top_capabilities.len(), 2);
+    }
+
+    #[test]
+    fn track_session_truncates_at_max() {
+        let mut ws = make_ws();
+        for i in 0..8 {
+            ws.track_session(&format!("s{i}"), "cap", false);
+        }
+        assert_eq!(ws.sessions.len(), MAX_SESSIONS);
+    }
+
+    // ── record_action ──
+
+    #[test]
+    fn record_action_tracks_sequence() {
+        let mut ws = make_ws();
+        ws.record_action("Read", Some("/a.rs".into()));
+        ws.record_action("Edit", Some("/a.rs".into()));
+        ws.record_action("Bash", None);
+        assert_eq!(ws.recent_actions.len(), 3);
+        assert_eq!(ws.recent_actions[0].tool, "Bash"); // most recent first
+    }
+
+    // ── infer_strategy ──
+
+    #[test]
+    fn infer_strategy_too_few_actions() {
+        let mut ws = make_ws();
+        ws.record_action("Read", None);
+        ws.record_action("Read", None);
+        assert!(ws.infer_strategy().is_none());
+    }
+
+    #[test]
+    fn infer_strategy_build_fix_cycle() {
+        let mut ws = make_ws();
+        ws.record_action("Bash", None);
+        ws.record_action("Edit", Some("/a.rs".into()));
+        ws.record_action("Read", Some("/a.rs".into()));
+        ws.record_action("Bash", None);
+        assert_eq!(ws.infer_strategy().unwrap(), "build-fix-cycle");
+    }
+
+    #[test]
+    fn infer_strategy_codebase_exploration() {
+        let mut ws = make_ws();
+        ws.record_action("Grep", None);
+        ws.record_action("Glob", None);
+        ws.record_action("Read", Some("/a.rs".into()));
+        assert_eq!(ws.infer_strategy().unwrap(), "codebase-exploration");
+    }
+
+    #[test]
+    fn infer_strategy_analyze_modify() {
+        let mut ws = make_ws();
+        ws.record_action("Read", Some("/a.rs".into()));
+        ws.record_action("Read", Some("/b.rs".into()));
+        ws.record_action("Edit", Some("/a.rs".into()));
+        assert_eq!(ws.infer_strategy().unwrap(), "analyze-modify");
+    }
+
+    #[test]
+    fn infer_strategy_code_review() {
+        let mut ws = make_ws();
+        ws.record_action("Read", Some("/a.rs".into()));
+        ws.record_action("Read", Some("/b.rs".into()));
+        ws.record_action("Read", Some("/c.rs".into()));
+        assert_eq!(ws.infer_strategy().unwrap(), "code-review");
+    }
+
+    #[test]
+    fn infer_strategy_delegated_research() {
+        let mut ws = make_ws();
+        ws.record_action("Read", None);
+        ws.record_action("Read", None);
+        ws.record_action("Agent", None);
+        assert_eq!(ws.infer_strategy().unwrap(), "delegated-research");
+    }
+
+    #[test]
+    fn infer_strategy_multi_file_refactor() {
+        let mut ws = make_ws();
+        ws.record_action("Edit", Some("/a.rs".into()));
+        ws.record_action("Edit", Some("/b.rs".into()));
+        ws.record_action("Edit", Some("/c.rs".into()));
+        // bashes >= 2 check fires first if we add Bash, so keep it pure edits
+        assert_eq!(ws.infer_strategy().unwrap(), "multi-file-refactor");
+    }
+
+    // ── context_hints ──
+
+    #[test]
+    fn context_hints_none_when_stale() {
+        let ws = make_ws(); // updated_ms = 0 → stale
+        assert!(ws.context_hints("Bash", None).is_none());
+    }
+
+    #[test]
+    fn context_hints_shows_file_history() {
+        let mut ws = make_ws();
+        ws.record_file("/a.rs".into(), "Edit", "edit main".into(), "succeeded");
+        let hints = ws.context_hints("Edit", Some("/a.rs"));
+        assert!(hints.is_some());
+        assert!(hints.unwrap().contains("file history for /a.rs"));
+    }
+
+    #[test]
+    fn context_hints_shows_errors() {
+        let mut ws = make_ws();
+        ws.record_error("Bash", "compile".into(), "error[E0308]: mismatched types".into());
+        ws.updated_ms = chrono::Utc::now().timestamp_millis();
+        let hints = ws.context_hints("Bash", None);
+        assert!(hints.is_some());
+        assert!(hints.unwrap().contains("recent Bash errors"));
+    }
+
+    // ── decision_hints ──
+
+    #[test]
+    fn decision_hints_none_for_bash() {
+        let ws = make_ws();
+        assert!(ws.decision_hints("Bash", Some("/a.rs")).is_none());
+    }
+
+    #[test]
+    fn decision_hints_co_edit_pattern() {
+        let mut ws = make_ws();
+        let now = chrono::Utc::now().timestamp_millis();
+        // Simulate editing /a.rs and /b.rs together
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(), file_path: Some("/a.rs".into()), timestamp_ms: now,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(), file_path: Some("/b.rs".into()), timestamp_ms: now + 1000,
+        });
+        let hints = ws.decision_hints("Edit", Some("/a.rs"));
+        assert!(hints.is_some());
+        assert!(hints.unwrap().contains("co-edited with"));
+    }
+
+    #[test]
+    fn decision_hints_prep_reads() {
+        let mut ws = make_ws();
+        let now = chrono::Utc::now().timestamp_millis();
+        // Simulate: Read /b.rs → Edit /a.rs (actions are newest-first)
+        ws.recent_actions.push_back(RecentAction {
+            tool: "Read".into(), file_path: Some("/b.rs".into()), timestamp_ms: now,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(), file_path: Some("/a.rs".into()), timestamp_ms: now + 2000,
+        });
+        let hints = ws.decision_hints("Edit", Some("/a.rs"));
+        assert!(hints.is_some());
+        assert!(hints.unwrap().contains("prep reads"));
+    }
+
+    // ── feedback_hints ──
+
+    #[test]
+    fn feedback_hints_none_when_empty() {
+        let ws = make_ws();
+        assert!(ws.feedback_hints(None).is_none());
+    }
+
+    #[test]
+    fn feedback_hints_shows_retention() {
+        let mut ws = make_ws();
+        for i in 0..4 {
+            ws.pending_feedback.push_front(PendingFeedback {
+                file_path: format!("/f{i}.rs"),
+                action: "Edit".into(),
+                timestamp_ms: 0,
+                resolved: true,
+                outcome: Some(if i < 3 { "committed" } else { "reverted" }.into()),
+            });
+        }
+        let hints = ws.feedback_hints(None).unwrap();
+        assert!(hints.contains("edit retention: 75%"));
+        assert!(hints.contains("3/4 committed"));
+    }
+
+    #[test]
+    fn feedback_hints_shows_per_file() {
+        let mut ws = make_ws();
+        ws.pending_feedback.push_front(PendingFeedback {
+            file_path: "/a.rs".into(),
+            action: "Edit".into(),
+            timestamp_ms: 0,
+            resolved: true,
+            outcome: Some("committed".into()),
+        });
+        let hints = ws.feedback_hints(Some("/a.rs")).unwrap();
+        assert!(hints.contains("a.rs: 1/1 edits committed"));
+    }
+
+    // ── add_pending_feedback ──
+
+    #[test]
+    fn add_pending_feedback_deduplicates() {
+        let mut ws = make_ws();
+        ws.add_pending_feedback("/a.rs".into(), "Edit");
+        ws.add_pending_feedback("/a.rs".into(), "Write");
+        // Same file, unresolved → should update, not add
+        assert_eq!(ws.pending_feedback.len(), 1);
+        assert_eq!(ws.pending_feedback[0].action, "Write");
+    }
+
+    // ── extract_file_path ──
+
+    #[test]
+    fn extract_file_path_read() {
+        let input = serde_json::json!({"file_path": "/foo.rs"});
+        assert_eq!(extract_file_path("Read", &input).unwrap(), "/foo.rs");
+    }
+
+    #[test]
+    fn extract_file_path_grep() {
+        let input = serde_json::json!({"path": "/src", "pattern": "fn main"});
+        assert_eq!(extract_file_path("Grep", &input).unwrap(), "/src");
+    }
+
+    #[test]
+    fn extract_file_path_unknown_tool() {
+        let input = serde_json::json!({"file_path": "/foo.rs"});
+        assert!(extract_file_path("Agent", &input).is_none());
+    }
+
+    // ── extract_error ──
+
+    #[test]
+    fn extract_error_from_object() {
+        let resp = serde_json::json!({"error": "file not found"});
+        assert_eq!(extract_error(&resp).unwrap(), "file not found");
+    }
+
+    #[test]
+    fn extract_error_from_string() {
+        let resp = serde_json::json!("command failed with error code 1");
+        assert!(extract_error(&resp).is_some());
+    }
+
+    #[test]
+    fn extract_error_no_error() {
+        let resp = serde_json::json!({"result": "ok"});
+        assert!(extract_error(&resp).is_none());
+    }
+
+    #[test]
+    fn extract_error_truncates_long() {
+        let long_err = "x".repeat(500);
+        let resp = serde_json::json!({"error": long_err});
+        assert_eq!(extract_error(&resp).unwrap().len(), 300);
+    }
+
+    // ── age_str ──
+
+    #[test]
+    fn age_str_formatting() {
+        assert_eq!(WorkspaceState::age_str(10_000, 5_000), "5s ago");
+        assert_eq!(WorkspaceState::age_str(300_000, 0), "5m ago");
+        assert_eq!(WorkspaceState::age_str(7_200_000, 0), "2h ago");
+        assert_eq!(WorkspaceState::age_str(172_800_000, 0), "2d ago");
+    }
+
+    // ── save / load round-trip ──
+
+    #[test]
+    fn save_load_roundtrip() {
+        let dir = std::env::temp_dir().join("thronglets_test_ws");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut ws = make_ws();
+        ws.record_file("/a.rs".into(), "Edit", "test".into(), "succeeded");
+        ws.record_error("Bash", "ctx".into(), "err".into());
+        ws.track_session("s1", "cap", false);
+        ws.record_action("Read", Some("/b.rs".into()));
+        ws.add_pending_feedback("/a.rs".into(), "Edit");
+        ws.save(&dir);
+
+        let loaded = WorkspaceState::load(&dir);
+        assert_eq!(loaded.recent_files.len(), 1);
+        assert_eq!(loaded.recent_errors.len(), 1);
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.recent_actions.len(), 1);
+        assert_eq!(loaded.pending_feedback.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_missing_file_returns_default() {
+        let ws = WorkspaceState::load(Path::new("/nonexistent/path"));
+        assert_eq!(ws.recent_files.len(), 0);
+    }
+}
+
 /// Extract file path from tool_input if the tool operates on a file.
 pub fn extract_file_path(tool_name: &str, tool_input: &serde_json::Value) -> Option<String> {
     match tool_name {
