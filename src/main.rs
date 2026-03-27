@@ -630,6 +630,15 @@ async fn main() {
                 hints.push(ws_hints);
             }
 
+            // 5. Git history for the target file (Read/Write/Edit only)
+            if matches!(tool_name, "Read" | "Write" | "Edit") {
+                if let Some(ref fp) = current_file {
+                    if let Some(git_hints) = git_file_history(fp, 5) {
+                        hints.push(git_hints);
+                    }
+                }
+            }
+
             // Output to stdout (appears in agent's context)
             if !hints.is_empty() {
                 println!("[thronglets] substrate context:");
@@ -785,6 +794,46 @@ async fn main() {
 
 /// Build a natural language context string from a Claude Code tool call.
 /// This is the "WHY" that future agents can read.
+/// Get recent git history for a file. Returns None if not in a git repo or no history.
+fn git_file_history(file_path: &str, max_entries: usize) -> Option<String> {
+    use std::process::Command;
+    use std::path::Path;
+
+    let path = Path::new(file_path);
+    let dir = path.parent()?;
+
+    // git log --oneline --no-decorate -n N -- <file>
+    let output = Command::new("git")
+        .args([
+            "log",
+            "--oneline",
+            "--no-decorate",
+            &format!("-n{}", max_entries),
+            "--format=%ar\t%s",
+            "--",
+            file_path,
+        ])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let log = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = log.lines().filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut result = format!("  git history for {}:", path.file_name()?.to_str()?);
+    for line in &lines {
+        result.push_str(&format!("\n    {line}"));
+    }
+    Some(result)
+}
+
 fn build_hook_context(tool_name: &str, tool_input: &serde_json::Value) -> String {
     match tool_name {
         "Bash" => {
