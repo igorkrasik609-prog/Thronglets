@@ -244,6 +244,9 @@ async fn main() {
             evaporation_interval.tick().await;
             let mut dht_publish_interval = tokio::time::interval(std::time::Duration::from_secs(300));
             dht_publish_interval.tick().await;
+            // Scan for locally-recorded traces that haven't been published to the network
+            let mut publish_scan_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            publish_scan_interval.tick().await;
 
             loop {
                 tokio::select! {
@@ -256,8 +259,11 @@ async fn main() {
                                 info!(%peer, "Peer disconnected");
                             }
                             NetworkEvent::TraceReceived(trace) => {
+                                let tid = trace.id;
                                 match store.insert(&trace) {
                                     Ok(true) => {
+                                        // Mark as published — came from network, don't re-broadcast
+                                        let _ = store.mark_published(&[tid]);
                                         info!(
                                             capability = %trace.capability,
                                             outcome = ?trace.outcome,
@@ -288,6 +294,20 @@ async fn main() {
                                         stats,
                                     }).await;
                                 }
+                            }
+                        }
+                    }
+                    _ = publish_scan_interval.tick() => {
+                        // Bridge: publish locally-recorded traces (from hooks) to the network
+                        if let Ok(traces) = store.unpublished_traces(50) {
+                            if !traces.is_empty() {
+                                info!(count = traces.len(), "Publishing local traces to network");
+                                let mut ids: Vec<[u8; 32]> = Vec::new();
+                                for trace in traces {
+                                    ids.push(trace.id);
+                                    let _ = cmd_tx.send(NetworkCommand::PublishTrace(trace)).await;
+                                }
+                                let _ = store.mark_published(&ids);
                             }
                         }
                     }

@@ -50,11 +50,12 @@ impl TraceStore {
                 anchored_at   INTEGER NOT NULL
             );",
         )?;
-        // v0.2.1 migration: add columns if upgrading from v0.2.0
+        // Migrations: add columns if upgrading from older versions
         // Each ALTER is separate — if one fails (column exists), the rest still run
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN context_text TEXT", []);
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN session_id TEXT", []);
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN context_bucket INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE traces ADD COLUMN published INTEGER NOT NULL DEFAULT 0", []);
         // Now create indexes (columns guaranteed to exist after migration)
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_traces_capability ON traces(capability);
@@ -259,6 +260,27 @@ impl TraceStore {
         conn.query_row("SELECT COUNT(*) FROM traces", [], |row| {
             row.get::<_, i64>(0).map(|n| n as u64)
         })
+    }
+
+    /// Query traces that haven't been published to the P2P network yet.
+    pub fn unpublished_traces(&self, limit: usize) -> rusqlite::Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
+                    context_text, session_id, model_id, timestamp, node_pubkey, signature
+             FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1",
+        )?;
+        Self::collect_traces(&mut stmt, params![limit as i64])
+    }
+
+    /// Mark traces as published to the P2P network.
+    pub fn mark_published(&self, trace_ids: &[[u8; 32]]) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("UPDATE traces SET published = 1 WHERE id = ?1")?;
+        for id in trace_ids {
+            stmt.execute(params![id.as_slice()])?;
+        }
+        Ok(())
     }
 
     /// Mark a trace as anchored on-chain.
