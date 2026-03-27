@@ -590,12 +590,7 @@ async fn main() {
             }
 
             let store = open_store(&dir);
-
-            // Only output if we have enough data to be useful
             let trace_count = store.count().unwrap_or(0);
-            if trace_count < 5 {
-                std::process::exit(0); // too few traces, stay silent
-            }
 
             // Build context from this tool call
             let context_text = build_hook_context(tool_name, &payload["tool_input"]);
@@ -609,6 +604,9 @@ async fn main() {
             };
 
             let mut hints: Vec<String> = Vec::new();
+
+            // Substrate layers (1-3): only when we have enough trace data
+            if trace_count >= 5 {
 
             // 1. Check this specific capability's stats
             if let Ok(Some(stats)) = store.aggregate(&capability) {
@@ -664,6 +662,10 @@ async fn main() {
                     hints.push(format!("  workflow: after {tool_name}, agents usually → {}", nexts.join(", ")));
                 }
             }
+
+            } // end trace_count >= 5
+
+            // Local layers (4-8): always available, even on cold start
 
             // 4. Workspace context: recent file history, errors, previous session
             let ws = WorkspaceState::load(&dir);
