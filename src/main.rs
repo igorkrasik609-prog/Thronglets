@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use clap::{Parser, Subcommand};
+use thronglets::anchor::AnchorClient;
 use thronglets::context::simhash;
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
@@ -77,6 +78,21 @@ enum Commands {
         /// Bootstrap peer multiaddrs (only used if --port is set)
         #[arg(long)]
         bootstrap: Vec<String>,
+    },
+
+    /// Anchor unanchored traces to the Oasyce blockchain
+    Anchor {
+        /// Oasyce chain RPC endpoint
+        #[arg(long, default_value = "http://localhost:1317")]
+        rpc: String,
+
+        /// Chain ID
+        #[arg(long, default_value = "oasyce-1")]
+        chain_id: String,
+
+        /// Anchor traces from the last N hours
+        #[arg(long, default_value_t = 24)]
+        hours: u64,
     },
 
     /// Show connected peers
@@ -335,6 +351,56 @@ async fn main() {
             });
 
             thronglets::mcp::serve_stdio(ctx).await;
+        }
+
+        Commands::Anchor { rpc, chain_id, hours } => {
+            let store = open_store(&dir);
+            let client = AnchorClient::new(&rpc, &chain_id);
+
+            let traces = store.unanchored_traces(hours, 500)
+                .expect("failed to query unanchored traces");
+
+            if traces.is_empty() {
+                println!("No unanchored traces from the last {} hours.", hours);
+                return;
+            }
+
+            println!("Found {} unanchored traces. Anchoring to {} (chain: {})...",
+                traces.len(), rpc, chain_id);
+
+            // Process in batches of 50
+            let mut total_anchored: u32 = 0;
+            let mut total_skipped: u32 = 0;
+
+            for batch in traces.chunks(50) {
+                match client.anchor_batch(&identity, batch) {
+                    Ok(result) => {
+                        if !result.tx_hash.is_empty() {
+                            // Mark each trace in this batch as anchored
+                            for trace in batch {
+                                let _ = store.mark_anchored(
+                                    &trace.id,
+                                    0, // block height unknown until chain is live
+                                    &result.tx_hash,
+                                );
+                            }
+                            println!("  Batch tx: {}... ({} anchored, {} skipped)",
+                                &result.tx_hash[..16], result.anchored, result.skipped);
+                        }
+                        total_anchored += result.anchored;
+                        total_skipped += result.skipped;
+                    }
+                    Err(e) => {
+                        eprintln!("  Batch failed: {}", e);
+                        total_skipped += batch.len() as u32;
+                    }
+                }
+            }
+
+            println!();
+            println!("Anchoring complete:");
+            println!("  Anchored: {}", total_anchored);
+            println!("  Skipped:  {}", total_skipped);
         }
 
         Commands::Peers => {

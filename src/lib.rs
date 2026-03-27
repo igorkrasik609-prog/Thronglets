@@ -1,3 +1,4 @@
+pub mod anchor;
 pub mod context;
 pub mod identity;
 pub mod trace;

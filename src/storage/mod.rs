@@ -34,7 +34,13 @@ impl TraceStore {
             );
             CREATE INDEX IF NOT EXISTS idx_traces_capability ON traces(capability);
             CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_traces_model_id ON traces(model_id);",
+            CREATE INDEX IF NOT EXISTS idx_traces_model_id ON traces(model_id);
+            CREATE TABLE IF NOT EXISTS anchored_traces (
+                trace_id      BLOB PRIMARY KEY,
+                anchor_height INTEGER NOT NULL,
+                tx_hash       TEXT NOT NULL,
+                anchored_at   INTEGER NOT NULL
+            );",
         )?;
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -173,6 +179,55 @@ impl TraceStore {
         conn.query_row("SELECT COUNT(*) FROM traces", [], |row| {
             row.get::<_, i64>(0).map(|n| n as u64)
         })
+    }
+
+    /// Mark a trace as anchored on-chain.
+    pub fn mark_anchored(
+        &self,
+        trace_id: &[u8; 32],
+        anchor_height: u64,
+        tx_hash: &str,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT OR REPLACE INTO anchored_traces (trace_id, anchor_height, tx_hash, anchored_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                trace_id.as_slice(),
+                anchor_height as i64,
+                tx_hash,
+                now_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Check whether a trace has been anchored on-chain.
+    pub fn is_anchored(&self, trace_id: &[u8; 32]) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM anchored_traces WHERE trace_id = ?1",
+            params![trace_id.as_slice()],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Get traces from the last N hours that have not been anchored.
+    pub fn unanchored_traces(&self, hours: u64, limit: usize) -> rusqlite::Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.capability, t.outcome, t.latency_ms, t.input_size, t.context_hash,
+                    t.model_id, t.timestamp, t.node_pubkey, t.signature
+             FROM traces t
+             LEFT JOIN anchored_traces a ON t.id = a.trace_id
+             WHERE a.trace_id IS NULL AND t.timestamp >= ?1
+             ORDER BY t.timestamp ASC
+             LIMIT ?2",
+        )?;
+        Self::collect_traces(&mut stmt, params![cutoff_ms, limit as i64])
     }
 
     fn collect_traces(
@@ -389,5 +444,115 @@ mod tests {
         // The old one should be gone
         let gone = store.query_capability("old-tool", 10).unwrap();
         assert!(gone.is_empty(), "expired trace should be evaporated");
+    }
+
+    #[test]
+    fn mark_anchored_and_is_anchored() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+        let trace = make_trace(&id, "anchor-test", Outcome::Succeeded, "anchor context");
+        store.insert(&trace).unwrap();
+
+        // Not anchored yet
+        assert!(!store.is_anchored(&trace.id).unwrap());
+
+        // Mark as anchored
+        store.mark_anchored(&trace.id, 100, "ABCDEF1234567890").unwrap();
+
+        // Now it should be anchored
+        assert!(store.is_anchored(&trace.id).unwrap());
+    }
+
+    #[test]
+    fn mark_anchored_is_idempotent() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+        let trace = make_trace(&id, "anchor-test", Outcome::Succeeded, "idem context");
+        store.insert(&trace).unwrap();
+
+        store.mark_anchored(&trace.id, 100, "tx_hash_1").unwrap();
+        // Re-anchor with different tx_hash should succeed (REPLACE)
+        store.mark_anchored(&trace.id, 200, "tx_hash_2").unwrap();
+
+        assert!(store.is_anchored(&trace.id).unwrap());
+    }
+
+    #[test]
+    fn unanchored_traces_excludes_anchored() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        let t1 = make_trace(&id, "tool-a", Outcome::Succeeded, "unanchored ctx 1");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t2 = make_trace(&id, "tool-b", Outcome::Succeeded, "unanchored ctx 2");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t3 = make_trace(&id, "tool-c", Outcome::Failed, "unanchored ctx 3");
+
+        store.insert(&t1).unwrap();
+        store.insert(&t2).unwrap();
+        store.insert(&t3).unwrap();
+
+        // All three should be unanchored
+        let unanchored = store.unanchored_traces(24, 100).unwrap();
+        assert_eq!(unanchored.len(), 3);
+
+        // Anchor t2
+        store.mark_anchored(&t2.id, 50, "some_tx_hash").unwrap();
+
+        // Now only t1 and t3 should be unanchored
+        let unanchored = store.unanchored_traces(24, 100).unwrap();
+        assert_eq!(unanchored.len(), 2);
+        let caps: Vec<&str> = unanchored.iter().map(|t| t.capability.as_str()).collect();
+        assert!(caps.contains(&"tool-a"));
+        assert!(caps.contains(&"tool-c"));
+        assert!(!caps.contains(&"tool-b"));
+    }
+
+    #[test]
+    fn unanchored_traces_respects_time_window() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        let recent = make_trace(&id, "recent-tool", Outcome::Succeeded, "recent ctx");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let old = make_trace(&id, "old-tool", Outcome::Succeeded, "old ctx");
+
+        store.insert(&recent).unwrap();
+        store.insert(&old).unwrap();
+
+        // Set old trace timestamp to 48 hours ago
+        let two_days_ago_ms = chrono::Utc::now().timestamp_millis() - (48 * 3_600_000);
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE traces SET timestamp = ?1 WHERE id = ?2",
+                params![two_days_ago_ms, old.id.as_slice()],
+            )
+            .unwrap();
+        }
+
+        // Query for last 24 hours: only the recent trace
+        let unanchored = store.unanchored_traces(24, 100).unwrap();
+        assert_eq!(unanchored.len(), 1);
+        assert_eq!(unanchored[0].capability, "recent-tool");
+
+        // Query for last 72 hours: both traces
+        let unanchored = store.unanchored_traces(72, 100).unwrap();
+        assert_eq!(unanchored.len(), 2);
+    }
+
+    #[test]
+    fn unanchored_traces_respects_limit() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        for i in 0..10 {
+            let t = make_trace(&id, &format!("tool-{i}"), Outcome::Succeeded, &format!("ctx {i}"));
+            store.insert(&t).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        let unanchored = store.unanchored_traces(24, 3).unwrap();
+        assert_eq!(unanchored.len(), 3);
     }
 }

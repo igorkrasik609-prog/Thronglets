@@ -15,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
 use crate::identity::NodeIdentity;
 use crate::network::NetworkCommand;
@@ -124,6 +125,24 @@ fn tool_definitions() -> Value {
                     },
                     "required": ["context", "intent"]
                 }
+            },
+            {
+                "name": "trace_anchor",
+                "description": "Anchor a trace to the Oasyce blockchain for on-chain verification proof.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trace_id": {
+                            "type": "string",
+                            "description": "Hex trace ID to anchor"
+                        },
+                        "rpc": {
+                            "type": "string",
+                            "description": "Oasyce RPC endpoint (default: http://localhost:1317)"
+                        }
+                    },
+                    "required": ["trace_id"]
+                }
             }
         ]
     })
@@ -222,6 +241,7 @@ async fn handle_tool_call(ctx: &McpContext, id: Value, params: Value) -> JsonRpc
     match tool_name {
         "trace_record" => handle_trace_record(ctx, id, arguments).await,
         "substrate_query" => handle_substrate_query(ctx, id, arguments),
+        "trace_anchor" => handle_trace_anchor(ctx, id, arguments),
         _ => JsonRpcResponse::error(id, -32602, format!("Unknown tool: {tool_name}")),
     }
 }
@@ -508,6 +528,98 @@ fn handle_explore(ctx: &McpContext, id: Value, context_str: &str, limit: usize) 
 }
 
 // ---------------------------------------------------------------------------
+// Tool 3: trace_anchor
+// ---------------------------------------------------------------------------
+
+fn handle_trace_anchor(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
+    let trace_id_hex = match args.get("trace_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return JsonRpcResponse::error(id, -32602, "Missing required field: trace_id".into()),
+    };
+
+    let rpc = args.get("rpc")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://localhost:1317");
+
+    // Parse hex trace ID
+    let trace_id_bytes: Vec<u8> = match (0..trace_id_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&trace_id_hex[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+    {
+        Ok(b) if b.len() == 32 => b,
+        Ok(b) => return JsonRpcResponse::error(
+            id, -32602,
+            format!("trace_id must be 32 bytes (64 hex chars), got {} bytes", b.len()),
+        ),
+        Err(e) => return JsonRpcResponse::error(
+            id, -32602,
+            format!("Invalid hex trace_id: {e}"),
+        ),
+    };
+
+    let trace_id: [u8; 32] = trace_id_bytes.try_into().unwrap();
+
+    // Check if already anchored
+    match ctx.store.is_anchored(&trace_id) {
+        Ok(true) => {
+            let response_json = json!({
+                "anchored": true,
+                "already_anchored": true,
+                "trace_id": trace_id_hex,
+            });
+            return JsonRpcResponse::success(id, json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response_json).unwrap()
+                }]
+            }));
+        }
+        Ok(false) => {}
+        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Storage error: {e}")),
+    }
+
+    // Find the trace in storage
+    // We need to look it up; query all recent traces and find by ID
+    let traces = match ctx.store.unanchored_traces(168, 10000) { // last 7 days
+        Ok(t) => t,
+        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
+    };
+
+    let trace = match traces.into_iter().find(|t| t.id == trace_id) {
+        Some(t) => t,
+        None => return JsonRpcResponse::error(
+            id, -32602,
+            format!("Trace {} not found or already anchored", trace_id_hex),
+        ),
+    };
+
+    let client = AnchorClient::new(rpc, "oasyce-1");
+    match client.anchor_trace(&ctx.identity, &trace) {
+        Ok(result) => {
+            if !result.tx_hash.is_empty() {
+                let _ = ctx.store.mark_anchored(&trace_id, 0, &result.tx_hash);
+            }
+
+            let response_json = json!({
+                "anchored": result.anchored > 0,
+                "already_anchored": false,
+                "trace_id": trace_id_hex,
+                "tx_hash": result.tx_hash,
+            });
+
+            JsonRpcResponse::success(id, json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response_json).unwrap()
+                }]
+            }))
+        }
+        Err(e) => JsonRpcResponse::error(id, -32000, format!("Anchor error: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -573,7 +685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_two_tools() {
+    async fn tools_list_returns_three_tools() {
         let ctx = make_ctx();
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -583,13 +695,14 @@ mod tests {
         };
         let resp = handle_request(&ctx, req).await.unwrap();
         let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 3);
 
         let names: Vec<&str> = tools.iter()
             .filter_map(|t| t["name"].as_str())
             .collect();
         assert!(names.contains(&"trace_record"));
         assert!(names.contains(&"substrate_query"));
+        assert!(names.contains(&"trace_anchor"));
     }
 
     #[tokio::test]
