@@ -1,0 +1,37 @@
+{
+  "name": "thronglets",
+  "version": "0.2.0",
+  "description": "P2P shared memory substrate for AI agents — stigmergic knowledge network via libp2p",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "ai-agents",
+    "p2p",
+    "libp2p",
+    "stigmergy",
+    "collective-intelligence",
+    "simhash",
+    "decentralized"
+  ],
+  "homepage": "https://github.com/Shangri-la-0428/Thronglets",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Shangri-la-0428/Thronglets.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "thronglets": "bin/thronglets.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md"
+  ],
+  "os": ["darwin", "linux"],
+  "cpu": ["arm64", "x64"],
+  "mcpName": "io.github.Shangri-la-0428/thronglets"
+}

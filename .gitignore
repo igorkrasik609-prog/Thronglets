@@ -1,1 +1,4 @@
 /target
+python/dist/
+dist/
+.mcpregistry_*
