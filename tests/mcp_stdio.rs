@@ -84,7 +84,7 @@ async fn mcp_full_protocol_handshake() {
         "method": "notifications/initialized"
     })).await;
 
-    // 3. List tools
+    // 3. List tools — should have exactly 2 (trace_record, substrate_query)
     let resp = rpc_call(&mut stdin, &mut lines, json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -92,61 +92,76 @@ async fn mcp_full_protocol_handshake() {
     })).await;
 
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 2);
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert!(tool_names.contains(&"trace_emit"));
-    assert!(tool_names.contains(&"collective_query"));
-    assert!(tool_names.contains(&"discover"));
+    assert!(tool_names.contains(&"trace_record"));
+    assert!(tool_names.contains(&"substrate_query"));
 
-    // 4. Emit a trace
+    // 4. Record a trace
     let resp = rpc_call(&mut stdin, &mut lines, json!({
         "jsonrpc": "2.0",
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "trace_emit",
+            "name": "trace_record",
             "arguments": {
-                "about": "mcp-test/integration",
-                "tags": ["test", "integration"],
+                "capability": "mcp-test/integration",
                 "outcome": "succeeded",
-                "quality": 95,
-                "latency_ms": 42
+                "latency_ms": 42,
+                "input_size": 1000,
+                "context": "integration testing MCP protocol",
+                "model": "test-model"
             }
         }
     })).await;
 
-    assert!(resp["error"].is_null(), "trace_emit should succeed: {resp}");
+    assert!(resp["error"].is_null(), "trace_record should succeed: {resp}");
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("mcp-test/integration"));
+    let parsed: Value = serde_json::from_str(text).expect("response should be structured JSON");
+    assert_eq!(parsed["recorded"], true);
+    assert_eq!(parsed["capability"], "mcp-test/integration");
+    assert!(parsed["trace_id"].as_str().unwrap().len() > 0);
 
-    // 5. Query collective intelligence
+    // 5. Evaluate the capability
     let resp = rpc_call(&mut stdin, &mut lines, json!({
         "jsonrpc": "2.0",
         "id": 4,
         "method": "tools/call",
         "params": {
-            "name": "collective_query",
-            "arguments": { "about": "mcp-test/integration" }
+            "name": "substrate_query",
+            "arguments": {
+                "context": "evaluating test capabilities",
+                "intent": "evaluate",
+                "capability": "mcp-test/integration"
+            }
         }
     })).await;
 
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("100.0%"), "should show 100% success rate");
-    assert!(text.contains("Total traces: 1"));
+    let parsed: Value = serde_json::from_str(text).expect("evaluate response should be JSON");
+    assert_eq!(parsed["capability"], "mcp-test/integration");
+    assert_eq!(parsed["stats"]["total_traces"], 1);
+    assert_eq!(parsed["stats"]["success_rate"], 1.0);
 
-    // 6. Discover by tags
+    // 6. Explore available capabilities
     let resp = rpc_call(&mut stdin, &mut lines, json!({
         "jsonrpc": "2.0",
         "id": 5,
         "method": "tools/call",
         "params": {
-            "name": "discover",
-            "arguments": { "tags": ["integration"] }
+            "name": "substrate_query",
+            "arguments": {
+                "context": "discovering what tools are available",
+                "intent": "explore"
+            }
         }
     })).await;
 
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("mcp-test/integration"));
+    let parsed: Value = serde_json::from_str(text).expect("explore response should be JSON");
+    let caps = parsed["capabilities"].as_array().unwrap();
+    assert!(!caps.is_empty(), "should find at least one capability");
+    assert_eq!(caps[0]["capability"], "mcp-test/integration");
 
     // 7. Unknown method returns error
     let resp = rpc_call(&mut stdin, &mut lines, json!({

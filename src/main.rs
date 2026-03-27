@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use clap::{Parser, Subcommand};
+use thronglets::context::simhash;
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
@@ -35,32 +36,36 @@ enum Commands {
     /// Show node identity
     Id,
 
-    /// Emit a trace manually
-    Emit {
-        /// What the trace is about
-        about: String,
-
-        /// Tags (comma-separated)
-        #[arg(long, default_value = "")]
-        tags: String,
+    /// Record a trace manually (for testing/debugging)
+    Record {
+        /// Capability URI
+        capability: String,
 
         /// Outcome
         #[arg(long, default_value = "succeeded")]
         outcome: String,
 
-        /// Quality 0-100
-        #[arg(long, default_value_t = 50)]
-        quality: u8,
-
         /// Latency in ms
         #[arg(long, default_value_t = 0)]
         latency: u32,
+
+        /// Input size (tokens/bytes)
+        #[arg(long, default_value_t = 0)]
+        input_size: u32,
+
+        /// Task context (natural language)
+        #[arg(long, default_value = "")]
+        context: String,
+
+        /// Model identifier
+        #[arg(long, default_value = "cli")]
+        model: String,
     },
 
-    /// Query local aggregate stats
+    /// Query aggregate stats for a capability
     Query {
-        /// Subject to query
-        about: String,
+        /// Capability URI to query
+        capability: String,
     },
 
     /// Start MCP server for AI agent integration (JSON-RPC over stdio)
@@ -134,42 +139,41 @@ async fn main() {
             println!("Data directory:  {}", dir.display());
         }
 
-        Commands::Emit { about, tags, outcome, quality, latency } => {
+        Commands::Record { capability, outcome, latency, input_size, context, model } => {
             let store = open_store(&dir);
-            let tag_list: Vec<String> = tags.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
             let outcome = parse_outcome(&outcome);
+            let ctx_hash = simhash(&context);
             let trace = Trace::new(
-                about.clone(),
-                tag_list,
+                capability.clone(),
                 outcome,
                 latency,
-                quality,
+                input_size,
+                ctx_hash,
+                model,
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
             );
             store.insert(&trace).expect("failed to insert trace");
-            println!("Trace emitted:");
-            println!("  ID:      {}", hex_encode(&trace.id[..8]));
-            println!("  About:   {}", about);
-            println!("  Outcome: {:?}", outcome);
-            println!("  Quality: {}", quality);
+            println!("Trace recorded:");
+            println!("  ID:         {}", hex_encode(&trace.id[..8]));
+            println!("  Capability: {}", capability);
+            println!("  Outcome:    {:?}", outcome);
         }
 
-        Commands::Query { about } => {
+        Commands::Query { capability } => {
             let store = open_store(&dir);
-            match store.aggregate(&about).expect("query failed") {
+            match store.aggregate(&capability).expect("query failed") {
                 Some(stats) => {
-                    println!("Aggregate for '{}':", about);
+                    println!("Aggregate for '{}':", capability);
                     println!("  Total traces:  {}", stats.total_traces);
                     println!("  Success rate:  {:.1}%", stats.success_rate * 100.0);
-                    println!("  Avg latency:   {:.0}ms", stats.avg_latency_ms);
-                    println!("  Avg quality:   {:.1}", stats.avg_quality);
+                    println!("  P50 latency:   {:.0}ms", stats.p50_latency_ms);
+                    println!("  P95 latency:   {:.0}ms", stats.p95_latency_ms);
+                    println!("  Avg input:     {:.0}", stats.avg_input_size);
+                    println!("  Confidence:    {:.2}", stats.confidence);
                 }
                 None => {
-                    println!("No traces found for '{}'", about);
+                    println!("No traces found for '{}'", capability);
                 }
             }
         }
@@ -177,7 +181,6 @@ async fn main() {
         Commands::Run { port, bootstrap } => {
             let store = open_store(&dir);
 
-            // Convert ed25519-dalek key to libp2p identity
             let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(
                 &mut identity.secret_key_bytes()
             ).expect("failed to create libp2p keypair");
@@ -197,13 +200,11 @@ async fn main() {
 
             info!("Node {} running. Press Ctrl+C to stop.", identity.short_id());
 
-            // Periodic timers
             let mut evaporation_interval = tokio::time::interval(std::time::Duration::from_secs(3600));
             evaporation_interval.tick().await;
             let mut dht_publish_interval = tokio::time::interval(std::time::Duration::from_secs(300));
             dht_publish_interval.tick().await;
 
-            // Main event loop: handle network events
             loop {
                 tokio::select! {
                     Some(event) = event_rx.recv() => {
@@ -218,14 +219,12 @@ async fn main() {
                                 match store.insert(&trace) {
                                     Ok(true) => {
                                         info!(
-                                            about = %trace.about,
+                                            capability = %trace.capability,
                                             outcome = ?trace.outcome,
                                             "Stored new trace from network"
                                         );
                                     }
-                                    Ok(false) => {
-                                        // Duplicate, already have it
-                                    }
+                                    Ok(false) => {}
                                     Err(e) => {
                                         tracing::warn!(%e, "Failed to store received trace");
                                     }
@@ -241,12 +240,11 @@ async fn main() {
                         }
                     }
                     _ = dht_publish_interval.tick() => {
-                        // Publish aggregate summaries for all known subjects to DHT
-                        if let Ok(subjects) = store.distinct_subjects(100) {
-                            for about in subjects {
-                                if let Ok(Some(stats)) = store.aggregate(&about) {
+                        if let Ok(caps) = store.distinct_capabilities(100) {
+                            for cap in caps {
+                                if let Ok(Some(stats)) = store.aggregate(&cap) {
                                     let _ = cmd_tx.send(NetworkCommand::PublishSummary {
-                                        about,
+                                        capability: cap,
                                         stats,
                                     }).await;
                                 }
@@ -285,11 +283,10 @@ async fn main() {
                     .await
                     .expect("failed to start network");
 
-                // Spawn event handler for network events + periodic evaporation
                 let store_bg = Arc::clone(&store);
                 tokio::spawn(async move {
                     let mut evaporation_interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-                    evaporation_interval.tick().await; // consume the immediate first tick
+                    evaporation_interval.tick().await;
 
                     loop {
                         tokio::select! {
@@ -304,7 +301,7 @@ async fn main() {
                                     Some(NetworkEvent::TraceReceived(trace)) => {
                                         match store_bg.insert(&trace) {
                                             Ok(true) => {
-                                                info!(about = %trace.about, "Stored trace from network");
+                                                info!(capability = %trace.capability, "Stored trace from network");
                                             }
                                             Ok(false) => {}
                                             Err(e) => {
@@ -312,7 +309,7 @@ async fn main() {
                                             }
                                         }
                                     }
-                                    None => break, // channel closed
+                                    None => break,
                                 }
                             }
                             _ = evaporation_interval.tick() => {
@@ -348,7 +345,7 @@ async fn main() {
         Commands::Status => {
             let store = open_store(&dir);
             let trace_count = store.count().unwrap_or(0);
-            let subject_count = store.distinct_subjects(1000)
+            let cap_count = store.distinct_capabilities(1000)
                 .map(|s| s.len())
                 .unwrap_or(0);
             let db_path = dir.join("traces.db");
@@ -366,13 +363,13 @@ async fn main() {
 
             println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
             println!();
-            println!("  Node ID:           {}", identity.short_id());
-            println!("  Oasyce address:    {}", identity.oasyce_address());
-            println!("  Data directory:    {}", dir.display());
+            println!("  Node ID:          {}", identity.short_id());
+            println!("  Oasyce address:   {}", identity.oasyce_address());
+            println!("  Data directory:   {}", dir.display());
             println!();
-            println!("  Trace count:       {}", trace_count);
-            println!("  Distinct subjects: {}", subject_count);
-            println!("  Database size:     {}", size_display);
+            println!("  Trace count:      {}", trace_count);
+            println!("  Capabilities:     {}", cap_count);
+            println!("  Database size:    {}", size_display);
         }
     }
 }

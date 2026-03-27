@@ -22,18 +22,19 @@ impl TraceStore {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS traces (
                 id              BLOB PRIMARY KEY,
-                about           TEXT NOT NULL,
-                tags            TEXT NOT NULL,
+                capability      TEXT NOT NULL,
                 outcome         INTEGER NOT NULL,
                 latency_ms      INTEGER NOT NULL,
-                quality         INTEGER NOT NULL,
+                input_size      INTEGER NOT NULL,
+                context_hash    BLOB NOT NULL,
+                model_id        TEXT NOT NULL,
                 timestamp       INTEGER NOT NULL,
                 node_pubkey     BLOB NOT NULL,
                 signature       BLOB NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_traces_about ON traces(about);
+            CREATE INDEX IF NOT EXISTS idx_traces_capability ON traces(capability);
             CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_traces_tags ON traces(tags);",
+            CREATE INDEX IF NOT EXISTS idx_traces_model_id ON traces(model_id);",
         )?;
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -46,17 +47,17 @@ impl TraceStore {
     /// Insert a trace. Returns false if duplicate (content-addressed dedup).
     pub fn insert(&self, trace: &Trace) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let tags_json = serde_json::to_string(&trace.tags).unwrap();
         let result = conn.execute(
-            "INSERT OR IGNORE INTO traces (id, about, tags, outcome, latency_ms, quality, timestamp, node_pubkey, signature)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, model_id, timestamp, node_pubkey, signature)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 trace.id.as_slice(),
-                trace.about,
-                tags_json,
+                trace.capability,
                 trace.outcome as u8,
                 trace.latency_ms,
-                trace.quality,
+                trace.input_size,
+                trace.context_hash.as_slice(),
+                trace.model_id,
                 trace.timestamp as i64,
                 trace.node_pubkey.as_slice(),
                 trace.signature.to_bytes().as_slice(),
@@ -65,64 +66,83 @@ impl TraceStore {
         Ok(result > 0)
     }
 
-    /// Query traces about a specific subject.
-    pub fn query_about(&self, about: &str, limit: usize) -> rusqlite::Result<Vec<Trace>> {
+    /// Query traces by capability.
+    pub fn query_capability(&self, capability: &str, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, about, tags, outcome, latency_ms, quality, timestamp, node_pubkey, signature
-             FROM traces WHERE about = ?1 ORDER BY timestamp DESC LIMIT ?2",
+            "SELECT id, capability, outcome, latency_ms, input_size, context_hash, model_id, timestamp, node_pubkey, signature
+             FROM traces WHERE capability = ?1 ORDER BY timestamp DESC LIMIT ?2",
         )?;
-        Self::collect_traces(&mut stmt, params![about, limit as i64])
+        Self::collect_traces(&mut stmt, params![capability, limit as i64])
     }
 
-    /// Query traces matching any of the given tags.
-    pub fn query_tags(&self, tags: &[&str], limit: usize) -> rusqlite::Result<Vec<Trace>> {
-        if tags.is_empty() {
-            return Ok(vec![]);
-        }
-        let conn = self.conn.lock().unwrap();
-        // Use parameterized LIKE queries to prevent SQL injection
-        let placeholders: Vec<String> = (0..tags.len()).map(|i| format!("tags LIKE ?{}", i + 1)).collect();
-        let where_clause = placeholders.join(" OR ");
-        let sql = format!(
-            "SELECT id, about, tags, outcome, latency_ms, quality, timestamp, node_pubkey, signature
-             FROM traces WHERE ({where_clause}) ORDER BY timestamp DESC LIMIT ?{}",
-            tags.len() + 1
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = tags
-            .iter()
-            .map(|t| Box::new(format!("%\"{t}\"%")) as Box<dyn rusqlite::types::ToSql>)
-            .collect();
-        param_values.push(Box::new(limit as i64));
-        let params = rusqlite::params_from_iter(param_values.iter().map(|p| p.as_ref()));
-        Self::collect_traces(&mut stmt, params)
-    }
-
-    /// Compute aggregate stats for a subject.
-    pub fn aggregate(&self, about: &str) -> rusqlite::Result<Option<AggregateStats>> {
+    /// Query traces with similar context (Hamming distance on context_hash).
+    ///
+    /// Loads all traces and filters in Rust because SQLite cannot do
+    /// efficient bitwise operations on BLOBs.
+    pub fn query_similar(
+        &self,
+        context_hash: &[u8; 16],
+        max_distance: u32,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
+            "SELECT id, capability, outcome, latency_ms, input_size, context_hash, model_id, timestamp, node_pubkey, signature
+             FROM traces ORDER BY timestamp DESC",
+        )?;
+        let all = Self::collect_traces(&mut stmt, [])?;
+        let mut matched: Vec<Trace> = all
+            .into_iter()
+            .filter(|t| crate::context::hamming_distance(&t.context_hash, context_hash) <= max_distance)
+            .collect();
+        matched.truncate(limit);
+        Ok(matched)
+    }
+
+    /// Compute aggregate stats for a capability.
+    pub fn aggregate(&self, capability: &str) -> rusqlite::Result<Option<AggregateStats>> {
+        let conn = self.conn.lock().unwrap();
+
+        // First check count and success rate via SQL.
+        let mut count_stmt = conn.prepare(
             "SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN outcome = 0 THEN 1 ELSE 0 END) as succeeded,
-                AVG(latency_ms) as avg_latency,
-                AVG(quality) as avg_quality
-             FROM traces WHERE about = ?1",
+                COALESCE(SUM(CASE WHEN outcome = 0 THEN 1 ELSE 0 END), 0) as succeeded,
+                COALESCE(AVG(input_size), 0) as avg_input
+             FROM traces WHERE capability = ?1",
         )?;
-        let result = stmt.query_row(params![about], |row| {
-            let total: i64 = row.get(0)?;
-            if total == 0 {
-                return Ok(None);
-            }
-            Ok(Some(AggregateStats {
-                total_traces: total as u64,
-                success_rate: row.get::<_, i64>(1)? as f64 / total as f64,
-                avg_latency_ms: row.get(2)?,
-                avg_quality: row.get(3)?,
-            }))
-        })?;
-        Ok(result)
+        let (total, succeeded, avg_input_size): (i64, i64, f64) =
+            count_stmt.query_row(params![capability], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+
+        if total == 0 {
+            return Ok(None);
+        }
+
+        // Fetch all latency values for percentile calculation.
+        let mut lat_stmt = conn.prepare(
+            "SELECT latency_ms FROM traces WHERE capability = ?1 ORDER BY latency_ms ASC",
+        )?;
+        let latencies: Vec<f64> = lat_stmt
+            .query_map(params![capability], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .map(|v| v as f64)
+            .collect();
+
+        let p50 = percentile(&latencies, 0.50);
+        let p95 = percentile(&latencies, 0.95);
+        let confidence = (total as f64 / 100.0).min(1.0);
+
+        Ok(Some(AggregateStats {
+            total_traces: total as u64,
+            success_rate: succeeded as f64 / total as f64,
+            p50_latency_ms: p50,
+            p95_latency_ms: p95,
+            avg_input_size,
+            confidence,
+        }))
     }
 
     /// Evaporate old traces (pheromone decay).
@@ -137,11 +157,11 @@ impl TraceStore {
         Ok(deleted)
     }
 
-    /// List distinct subjects that have traces.
-    pub fn distinct_subjects(&self, limit: usize) -> rusqlite::Result<Vec<String>> {
+    /// List distinct capabilities that have traces.
+    pub fn distinct_capabilities(&self, limit: usize) -> rusqlite::Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT about FROM traces ORDER BY about LIMIT ?1",
+            "SELECT DISTINCT capability FROM traces ORDER BY capability LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| row.get(0))?;
         rows.collect()
@@ -161,24 +181,25 @@ impl TraceStore {
     ) -> rusqlite::Result<Vec<Trace>> {
         let rows = stmt.query_map(params, |row| {
             let id_bytes: Vec<u8> = row.get(0)?;
-            let tags_json: String = row.get(2)?;
-            let outcome_u8: u8 = row.get(3)?;
-            let pubkey_bytes: Vec<u8> = row.get(7)?;
-            let sig_bytes: Vec<u8> = row.get(8)?;
+            let outcome_u8: u8 = row.get(2)?;
+            let context_bytes: Vec<u8> = row.get(5)?;
+            let pubkey_bytes: Vec<u8> = row.get(8)?;
+            let sig_bytes: Vec<u8> = row.get(9)?;
 
             Ok(Trace {
                 id: id_bytes.try_into().unwrap_or([0u8; 32]),
-                about: row.get(1)?,
-                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+                capability: row.get(1)?,
                 outcome: match outcome_u8 {
                     0 => Outcome::Succeeded,
                     1 => Outcome::Failed,
                     2 => Outcome::Partial,
                     _ => Outcome::Timeout,
                 },
-                latency_ms: row.get::<_, u32>(4)?,
-                quality: row.get::<_, u8>(5)?,
-                timestamp: row.get::<_, i64>(6)? as u64,
+                latency_ms: row.get::<_, u32>(3)?,
+                input_size: row.get::<_, u32>(4)?,
+                context_hash: context_bytes.try_into().unwrap_or([0u8; 16]),
+                model_id: row.get(6)?,
+                timestamp: row.get::<_, i64>(7)? as u64,
                 node_pubkey: pubkey_bytes.try_into().unwrap_or([0u8; 32]),
                 signature: Signature::from_bytes(
                     &sig_bytes.try_into().unwrap_or([0u8; 64]),
@@ -189,12 +210,33 @@ impl TraceStore {
     }
 }
 
+/// Compute the value at a given percentile (0.0 to 1.0) from a sorted slice.
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let idx = p * (sorted.len() - 1) as f64;
+    let lower = idx.floor() as usize;
+    let upper = idx.ceil() as usize;
+    if lower == upper {
+        sorted[lower]
+    } else {
+        let frac = idx - lower as f64;
+        sorted[lower] * (1.0 - frac) + sorted[upper] * frac
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AggregateStats {
     pub total_traces: u64,
     pub success_rate: f64,
-    pub avg_latency_ms: f64,
-    pub avg_quality: f64,
+    pub p50_latency_ms: f64,
+    pub p95_latency_ms: f64,
+    pub avg_input_size: f64,
+    pub confidence: f64,
 }
 
 #[cfg(test)]
@@ -202,29 +244,39 @@ mod tests {
     use super::*;
     use crate::identity::NodeIdentity;
 
-    fn make_trace(id: &NodeIdentity, about: &str, outcome: Outcome, quality: u8, tags: Vec<String>) -> Trace {
-        Trace::new(about.into(), tags, outcome, 100, quality, id.public_key_bytes(), |m| id.sign(m))
+    fn make_trace(id: &NodeIdentity, cap: &str, outcome: Outcome, context: &str) -> Trace {
+        use crate::context::simhash;
+        Trace::new(
+            cap.into(),
+            outcome,
+            100,
+            5000,
+            simhash(context),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        )
     }
 
     #[test]
     fn insert_and_query() {
         let store = TraceStore::in_memory().unwrap();
         let id = NodeIdentity::generate();
-        let trace = make_trace(&id, "tool-a", Outcome::Succeeded, 80, vec!["nlp".into()]);
+        let trace = make_trace(&id, "tool-a", Outcome::Succeeded, "test context alpha");
 
         assert!(store.insert(&trace).unwrap());
         assert_eq!(store.count().unwrap(), 1);
 
-        let results = store.query_about("tool-a", 10).unwrap();
+        let results = store.query_capability("tool-a", 10).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].about, "tool-a");
+        assert_eq!(results[0].capability, "tool-a");
     }
 
     #[test]
     fn dedup_by_content_address() {
         let store = TraceStore::in_memory().unwrap();
         let id = NodeIdentity::generate();
-        let trace = make_trace(&id, "tool-a", Outcome::Succeeded, 80, vec![]);
+        let trace = make_trace(&id, "tool-a", Outcome::Succeeded, "dedup context");
 
         assert!(store.insert(&trace).unwrap());
         assert!(!store.insert(&trace).unwrap()); // duplicate
@@ -236,29 +288,46 @@ mod tests {
         let store = TraceStore::in_memory().unwrap();
         let id = NodeIdentity::generate();
 
-        store.insert(&make_trace(&id, "x", Outcome::Succeeded, 90, vec![])).unwrap();
+        store.insert(&make_trace(&id, "x", Outcome::Succeeded, "agg context 1")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        store.insert(&make_trace(&id, "x", Outcome::Succeeded, 70, vec![])).unwrap();
+        store.insert(&make_trace(&id, "x", Outcome::Succeeded, "agg context 2")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        store.insert(&make_trace(&id, "x", Outcome::Failed, 20, vec![])).unwrap();
+        store.insert(&make_trace(&id, "x", Outcome::Failed, "agg context 3")).unwrap();
 
         let stats = store.aggregate("x").unwrap().unwrap();
         assert_eq!(stats.total_traces, 3);
         assert!((stats.success_rate - 2.0 / 3.0).abs() < 0.01);
+        // All latencies are 100, so p50 and p95 should both be 100.0
+        assert!((stats.p50_latency_ms - 100.0).abs() < 0.01);
+        assert!((stats.p95_latency_ms - 100.0).abs() < 0.01);
+        // confidence = min(1.0, 3/100) = 0.03
+        assert!((stats.confidence - 0.03).abs() < 0.001);
     }
 
     #[test]
-    fn query_by_tags() {
+    fn query_similar_by_context() {
         let store = TraceStore::in_memory().unwrap();
         let id = NodeIdentity::generate();
 
-        store.insert(&make_trace(&id, "a", Outcome::Succeeded, 80, vec!["rust".into(), "code".into()])).unwrap();
+        // Two traces with similar contexts, one with a very different context.
+        store.insert(&make_trace(&id, "a", Outcome::Succeeded, "translate a technical document from Chinese to English")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        store.insert(&make_trace(&id, "b", Outcome::Succeeded, 80, vec!["python".into()])).unwrap();
+        store.insert(&make_trace(&id, "b", Outcome::Succeeded, "translate a legal document from Chinese to English")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.insert(&make_trace(&id, "c", Outcome::Succeeded, "deploy kubernetes cluster on AWS with terraform")).unwrap();
 
-        let results = store.query_tags(&["rust"], 10).unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].about, "a");
+        let target = crate::context::simhash("translate a technical document from Chinese to English");
+
+        // Tight distance: should find the exact match and the similar one.
+        let results = store.query_similar(&target, 40, 10).unwrap();
+        let caps: Vec<&str> = results.iter().map(|t| t.capability.as_str()).collect();
+        assert!(caps.contains(&"a"), "exact context match should be found");
+        assert!(caps.contains(&"b"), "similar context should be found");
+
+        // Very tight distance (0): only exact match.
+        let exact = store.query_similar(&target, 0, 10).unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].capability, "a");
     }
 
     #[test]
@@ -268,14 +337,29 @@ mod tests {
     }
 
     #[test]
+    fn distinct_capabilities() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        store.insert(&make_trace(&id, "cap-b", Outcome::Succeeded, "ctx 1")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.insert(&make_trace(&id, "cap-a", Outcome::Succeeded, "ctx 2")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.insert(&make_trace(&id, "cap-b", Outcome::Failed, "ctx 3")).unwrap();
+
+        let caps = store.distinct_capabilities(10).unwrap();
+        assert_eq!(caps, vec!["cap-a", "cap-b"]); // alphabetical, deduplicated
+    }
+
+    #[test]
     fn evaporate_removes_expired_traces() {
         let store = TraceStore::in_memory().unwrap();
         let id = NodeIdentity::generate();
 
         // Insert two traces: one we'll age out, one stays fresh
-        let old_trace = make_trace(&id, "old-tool", Outcome::Succeeded, 80, vec![]);
+        let old_trace = make_trace(&id, "old-tool", Outcome::Succeeded, "old context");
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let fresh_trace = make_trace(&id, "fresh-tool", Outcome::Succeeded, 90, vec![]);
+        let fresh_trace = make_trace(&id, "fresh-tool", Outcome::Succeeded, "fresh context");
 
         store.insert(&old_trace).unwrap();
         store.insert(&fresh_trace).unwrap();
@@ -298,12 +382,12 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1, "one trace should remain");
 
         // The remaining trace should be the fresh one
-        let remaining = store.query_about("fresh-tool", 10).unwrap();
+        let remaining = store.query_capability("fresh-tool", 10).unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].about, "fresh-tool");
+        assert_eq!(remaining[0].capability, "fresh-tool");
 
         // The old one should be gone
-        let gone = store.query_about("old-tool", 10).unwrap();
+        let gone = store.query_capability("old-tool", 10).unwrap();
         assert!(gone.is_empty(), "expired trace should be evaporated");
     }
 }

@@ -3,18 +3,19 @@
 //! Exposes Thronglets capabilities as MCP tools over stdio (JSON-RPC 2.0).
 //! AI agents connect to this to read/write traces on the substrate.
 //!
-//! Tools:
-//! - trace_emit: Leave a trace on the substrate
-//! - collective_query: Query aggregate stats for a subject
-//! - discover: Find capabilities matching tags
+//! v0.2 tools:
+//! - trace_record: Record a trace on the substrate (write)
+//! - substrate_query: Query the substrate by intent (read)
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::context::{simhash, similarity};
 use crate::identity::NodeIdentity;
 use crate::network::NetworkCommand;
 use crate::storage::TraceStore;
@@ -63,70 +64,65 @@ fn tool_definitions() -> Value {
     json!({
         "tools": [
             {
-                "name": "trace_emit",
-                "description": "Leave a trace on the Thronglets substrate. Records that you used a capability/tool and the outcome.",
+                "name": "trace_record",
+                "description": "Record a trace on the Thronglets substrate. Logs that you used a capability and the outcome.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "about": {
+                        "capability": {
                             "type": "string",
-                            "description": "What this trace is about (tool name, capability ID, resource URI)"
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Tags for routing and filtering (e.g. [\"nlp\", \"translation\"])"
+                            "description": "Capability URI — what was used (e.g. \"urn:mcp:anthropic:claude:code\")"
                         },
                         "outcome": {
                             "type": "string",
                             "enum": ["succeeded", "failed", "partial", "timeout"],
                             "description": "Outcome of the interaction"
                         },
-                        "quality": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 100,
-                            "description": "Quality score 0-100"
-                        },
                         "latency_ms": {
                             "type": "integer",
-                            "description": "Execution latency in milliseconds"
-                        }
-                    },
-                    "required": ["about", "outcome"]
-                }
-            },
-            {
-                "name": "collective_query",
-                "description": "Query the collective intelligence of the Thronglets network. Returns aggregate stats for a subject based on traces from all connected nodes.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "about": {
+                            "description": "Execution latency in milliseconds (default: 0)"
+                        },
+                        "input_size": {
+                            "type": "integer",
+                            "description": "Input size in tokens/bytes/items (default: 0)"
+                        },
+                        "context": {
                             "type": "string",
-                            "description": "Subject to query (tool name, capability ID)"
+                            "description": "Natural language task context, auto-SimHashed (default: \"\")"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Self-reported model identifier (default: \"unknown\")"
                         }
                     },
-                    "required": ["about"]
+                    "required": ["capability", "outcome"]
                 }
             },
             {
-                "name": "discover",
-                "description": "Discover capabilities on the Thronglets network matching the given tags.",
+                "name": "substrate_query",
+                "description": "Query the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, or 'explore' to discover what's available.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "tags": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Tags to search for"
+                        "context": {
+                            "type": "string",
+                            "description": "What the agent is trying to do"
+                        },
+                        "intent": {
+                            "type": "string",
+                            "enum": ["resolve", "evaluate", "explore"],
+                            "description": "Query intent: resolve (find capabilities), evaluate (get stats), explore (discover)"
+                        },
+                        "capability": {
+                            "type": "string",
+                            "description": "Specific capability URI (required for 'evaluate' intent)"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum results to return (default: 20)"
+                            "description": "Maximum results to return (default: 10)"
                         }
                     },
-                    "required": ["tags"]
+                    "required": ["context", "intent"]
                 }
             }
         ]
@@ -224,23 +220,21 @@ async fn handle_tool_call(ctx: &McpContext, id: Value, params: Value) -> JsonRpc
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     match tool_name {
-        "trace_emit" => handle_trace_emit(ctx, id, arguments).await,
-        "collective_query" => handle_collective_query(ctx, id, arguments),
-        "discover" => handle_discover(ctx, id, arguments),
+        "trace_record" => handle_trace_record(ctx, id, arguments).await,
+        "substrate_query" => handle_substrate_query(ctx, id, arguments),
         _ => JsonRpcResponse::error(id, -32602, format!("Unknown tool: {tool_name}")),
     }
 }
 
-async fn handle_trace_emit(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
-    let about = match args.get("about").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        None => return JsonRpcResponse::error(id, -32602, "Missing required field: about".into()),
-    };
+// ---------------------------------------------------------------------------
+// Tool 1: trace_record
+// ---------------------------------------------------------------------------
 
-    let tags: Vec<String> = args.get("tags")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
+    let capability = match args.get("capability").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return JsonRpcResponse::error(id, -32602, "Missing required field: capability".into()),
+    };
 
     let outcome = match args.get("outcome").and_then(|v| v.as_str()).unwrap_or("succeeded") {
         "succeeded" | "success" => Outcome::Succeeded,
@@ -250,15 +244,20 @@ async fn handle_trace_emit(ctx: &McpContext, id: Value, args: Value) -> JsonRpcR
         _ => Outcome::Succeeded,
     };
 
-    let quality = args.get("quality").and_then(|v| v.as_u64()).unwrap_or(50) as u8;
     let latency_ms = args.get("latency_ms").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let input_size = args.get("input_size").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let context_str = args.get("context").and_then(|v| v.as_str()).unwrap_or("");
+    let model_id = args.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+
+    let context_hash = simhash(context_str);
 
     let trace = Trace::new(
-        about.clone(),
-        tags,
+        capability.clone(),
         outcome,
         latency_ms,
-        quality,
+        input_size,
+        context_hash,
+        model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
     );
@@ -276,122 +275,286 @@ async fn handle_trace_emit(ctx: &McpContext, id: Value, args: Value) -> JsonRpcR
         let _ = tx.send(NetworkCommand::PublishTrace(trace)).await;
     }
 
+    let response_json = json!({
+        "recorded": true,
+        "trace_id": trace_id_hex,
+        "capability": capability,
+    });
+
     JsonRpcResponse::success(id, json!({
         "content": [{
             "type": "text",
-            "text": format!("Trace emitted: {about} ({outcome:?}, quality={quality}) id={trace_id_hex}")
+            "text": serde_json::to_string(&response_json).unwrap()
         }]
     }))
 }
 
-fn handle_collective_query(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
-    let about = match args.get("about").and_then(|v| v.as_str()) {
+// ---------------------------------------------------------------------------
+// Tool 2: substrate_query
+// ---------------------------------------------------------------------------
+
+fn handle_substrate_query(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
+    let context_str = match args.get("context").and_then(|v| v.as_str()) {
         Some(s) => s,
-        None => return JsonRpcResponse::error(id, -32602, "Missing required field: about".into()),
+        None => return JsonRpcResponse::error(id, -32602, "Missing required field: context".into()),
     };
 
-    match ctx.store.aggregate(about) {
-        Ok(Some(stats)) => {
-            JsonRpcResponse::success(id, json!({
-                "content": [{
-                    "type": "text",
-                    "text": format!(
-                        "Collective intelligence for '{about}':\n\
-                         - Total traces: {}\n\
-                         - Success rate: {:.1}%\n\
-                         - Avg latency: {:.0}ms\n\
-                         - Avg quality: {:.1}\n\
-                         - Confidence: {}",
-                        stats.total_traces,
-                        stats.success_rate * 100.0,
-                        stats.avg_latency_ms,
-                        stats.avg_quality,
-                        if stats.total_traces > 100 { "high" }
-                        else if stats.total_traces > 10 { "medium" }
-                        else { "low" }
-                    )
-                }]
-            }))
-        }
-        Ok(None) => {
-            JsonRpcResponse::success(id, json!({
-                "content": [{
-                    "type": "text",
-                    "text": format!("No traces found for '{about}'. No collective intelligence available yet.")
-                }]
-            }))
-        }
-        Err(e) => JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
-    }
-}
+    let intent = match args.get("intent").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return JsonRpcResponse::error(id, -32602, "Missing required field: intent".into()),
+    };
 
-fn handle_discover(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
-    let tags: Vec<String> = args.get("tags")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-    if tags.is_empty() {
-        return JsonRpcResponse::error(id, -32602, "At least one tag is required".into());
-    }
-
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-    let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
-
-    match ctx.store.query_tags(&tag_refs, limit) {
-        Ok(traces) => {
-            // Group by 'about' and compute per-subject stats
-            let mut subjects: std::collections::HashMap<&str, (u32, u32, u64, u64)> = std::collections::HashMap::new();
-            for t in &traces {
-                let entry = subjects.entry(&t.about).or_insert((0, 0, 0, 0));
-                entry.0 += 1; // total
-                if matches!(t.outcome, Outcome::Succeeded) { entry.1 += 1; } // successes
-                entry.2 += t.latency_ms as u64;
-                entry.3 += t.quality as u64;
-            }
-
-            let mut results: Vec<Value> = subjects.iter().map(|(about, (total, succ, lat, qual))| {
-                json!({
-                    "about": about,
-                    "total_traces": total,
-                    "success_rate": format!("{:.1}%", *succ as f64 / *total as f64 * 100.0),
-                    "avg_latency_ms": lat / *total as u64,
-                    "avg_quality": qual / *total as u64,
-                })
-            }).collect();
-            results.sort_by(|a, b| {
-                b["total_traces"].as_u64().cmp(&a["total_traces"].as_u64())
-            });
-
-            let text = if results.is_empty() {
-                format!("No capabilities found matching tags: {tags:?}")
-            } else {
-                let lines: Vec<String> = results.iter().map(|r| {
-                    format!("- {} (traces={}, success={}, quality={})",
-                        r["about"].as_str().unwrap_or("?"),
-                        r["total_traces"],
-                        r["success_rate"].as_str().unwrap_or("?"),
-                        r["avg_quality"])
-                }).collect();
-                format!("Discovered capabilities for tags {tags:?}:\n{}", lines.join("\n"))
+    match intent {
+        "resolve" => handle_resolve(ctx, id, context_str, limit),
+        "evaluate" => {
+            let capability = match args.get("capability").and_then(|v| v.as_str()) {
+                Some(s) => s,
+                None => return JsonRpcResponse::error(
+                    id, -32602, "Missing required field: capability (required for 'evaluate' intent)".into(),
+                ),
             };
-
-            JsonRpcResponse::success(id, json!({
-                "content": [{ "type": "text", "text": text }]
-            }))
+            handle_evaluate(ctx, id, capability, limit)
         }
-        Err(e) => JsonRpcResponse::error(id, -32000, format!("Discover error: {e}")),
+        "explore" => handle_explore(ctx, id, context_str, limit),
+        _ => JsonRpcResponse::error(id, -32602, format!("Unknown intent: {intent}. Use 'resolve', 'evaluate', or 'explore'.")),
     }
 }
+
+/// Resolve: find capabilities matching a task context via SimHash similarity.
+fn handle_resolve(ctx: &McpContext, id: Value, context_str: &str, limit: usize) -> JsonRpcResponse {
+    let context_hash = simhash(context_str);
+
+    // Query traces with similar context hashes (max hamming distance 48)
+    let traces = match ctx.store.query_similar(&context_hash, 48, limit * 10) {
+        Ok(t) => t,
+        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
+    };
+
+    // Group by capability, compute per-capability stats
+    let mut cap_groups: HashMap<&str, Vec<&Trace>> = HashMap::new();
+    for t in &traces {
+        cap_groups.entry(&t.capability).or_default().push(t);
+    }
+
+    let mut capabilities: Vec<Value> = cap_groups.iter().map(|(cap, group)| {
+        let total = group.len() as u64;
+        let successes = group.iter().filter(|t| matches!(t.outcome, Outcome::Succeeded)).count() as f64;
+        let success_rate = if total > 0 { successes / total as f64 } else { 0.0 };
+
+        let mut latencies: Vec<u32> = group.iter().map(|t| t.latency_ms).collect();
+        latencies.sort();
+        let p50 = percentile(&latencies, 50);
+
+        // Best context similarity for this capability
+        let best_similarity = group.iter()
+            .map(|t| similarity(&context_hash, &t.context_hash))
+            .fold(0.0_f64, f64::max);
+
+        json!({
+            "capability": cap,
+            "context_similarity": round2(best_similarity),
+            "success_rate": round2(success_rate),
+            "p50_latency_ms": p50,
+            "total_traces": total,
+        })
+    }).collect();
+
+    // Sort by context_similarity descending
+    capabilities.sort_by(|a, b| {
+        b["context_similarity"].as_f64().unwrap_or(0.0)
+            .partial_cmp(&a["context_similarity"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    capabilities.truncate(limit);
+
+    let response_json = json!({
+        "capabilities": capabilities,
+    });
+
+    JsonRpcResponse::success(id, json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(&response_json).unwrap()
+        }]
+    }))
+}
+
+/// Evaluate: get aggregate stats + per-model breakdown for a specific capability.
+fn handle_evaluate(ctx: &McpContext, id: Value, capability: &str, limit: usize) -> JsonRpcResponse {
+    let stats = match ctx.store.aggregate(capability) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            let response_json = json!({
+                "capability": capability,
+                "stats": null,
+                "by_model": {},
+            });
+            return JsonRpcResponse::success(id, json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response_json).unwrap()
+                }]
+            }));
+        }
+        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
+    };
+
+    // Get individual traces for per-model breakdown
+    let traces = match ctx.store.query_capability(capability, limit.max(1000)) {
+        Ok(t) => t,
+        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
+    };
+
+    // Group by model_id
+    let mut by_model: HashMap<&str, (u64, u64)> = HashMap::new(); // (total, successes)
+    for t in &traces {
+        let entry = by_model.entry(&t.model_id).or_insert((0, 0));
+        entry.0 += 1;
+        if matches!(t.outcome, Outcome::Succeeded) {
+            entry.1 += 1;
+        }
+    }
+
+    let model_stats: HashMap<&str, Value> = by_model.iter().map(|(model, (total, successes))| {
+        let rate = if *total > 0 { *successes as f64 / *total as f64 } else { 0.0 };
+        (*model, json!({
+            "success_rate": round2(rate),
+            "count": total,
+        }))
+    }).collect();
+
+    let response_json = json!({
+        "capability": capability,
+        "stats": {
+            "total_traces": stats.total_traces,
+            "success_rate": round2(stats.success_rate),
+            "p50_latency_ms": stats.p50_latency_ms,
+            "p95_latency_ms": stats.p95_latency_ms,
+            "avg_input_size": stats.avg_input_size,
+            "confidence": round2(stats.confidence),
+        },
+        "by_model": model_stats,
+    });
+
+    JsonRpcResponse::success(id, json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(&response_json).unwrap()
+        }]
+    }))
+}
+
+/// Explore: discover available capabilities with aggregate stats.
+fn handle_explore(ctx: &McpContext, id: Value, context_str: &str, limit: usize) -> JsonRpcResponse {
+    let caps = match ctx.store.distinct_capabilities(limit) {
+        Ok(c) => c,
+        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
+    };
+
+    let context_hash = simhash(context_str);
+
+    let mut capabilities: Vec<Value> = Vec::new();
+    let mut gaps: Vec<String> = Vec::new();
+
+    for cap in &caps {
+        match ctx.store.aggregate(cap) {
+            Ok(Some(stats)) => {
+                // Check if this cap has traces with similar context
+                let traces = ctx.store.query_capability(cap, 10).unwrap_or_default();
+                let best_sim = traces.iter()
+                    .map(|t| similarity(&context_hash, &t.context_hash))
+                    .fold(0.0_f64, f64::max);
+
+                capabilities.push(json!({
+                    "capability": cap,
+                    "total_traces": stats.total_traces,
+                    "success_rate": round2(stats.success_rate),
+                    "p50_latency_ms": stats.p50_latency_ms,
+                    "context_similarity": round2(best_sim),
+                }));
+
+                if stats.success_rate < 0.5 {
+                    gaps.push(format!("no high-success capability for {}", cap));
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {}
+        }
+    }
+
+    // Sort by total_traces descending
+    capabilities.sort_by(|a, b| {
+        b["total_traces"].as_u64().unwrap_or(0)
+            .cmp(&a["total_traces"].as_u64().unwrap_or(0))
+    });
+
+    if capabilities.is_empty() && !context_str.is_empty() {
+        gaps.push(format!("no capabilities found matching context: {}", context_str));
+    }
+
+    let response_json = json!({
+        "capabilities": capabilities,
+        "gaps": gaps,
+    });
+
+    JsonRpcResponse::success(id, json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(&response_json).unwrap()
+        }]
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Compute percentile from a sorted slice of u32 values.
+fn percentile(sorted: &[u32], pct: u8) -> u32 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = ((pct as f64 / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+/// Round f64 to 2 decimal places.
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::simhash;
 
     fn make_ctx() -> Arc<McpContext> {
         let identity = Arc::new(NodeIdentity::generate());
         let store = Arc::new(TraceStore::in_memory().unwrap());
         Arc::new(McpContext { identity, store, network_tx: None })
+    }
+
+    /// Helper: insert a trace directly into the store.
+    fn insert_trace(ctx: &McpContext, cap: &str, outcome: Outcome, model: &str, context: &str, latency: u32) {
+        let trace = Trace::new(
+            cap.into(),
+            outcome,
+            latency,
+            5000,
+            simhash(context),
+            model.into(),
+            ctx.identity.public_key_bytes(),
+            |msg| ctx.identity.sign(msg),
+        );
+        ctx.store.insert(&trace).unwrap();
+        // Sleep briefly so content-addressed IDs differ (timestamp is part of ID)
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
     #[tokio::test]
@@ -406,10 +569,11 @@ mod tests {
         let resp = handle_request(&ctx, req).await.expect("initialize should return response");
         let result = resp.result.unwrap();
         assert_eq!(result["serverInfo"]["name"], "thronglets");
+        assert!(result["protocolVersion"].as_str().is_some());
     }
 
     #[tokio::test]
-    async fn tools_list_returns_three_tools() {
+    async fn tools_list_returns_two_tools() {
         let ctx = make_ctx();
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -418,77 +582,125 @@ mod tests {
             params: json!({}),
         };
         let resp = handle_request(&ctx, req).await.unwrap();
-        let tools = resp.result.unwrap()["tools"].as_array().unwrap().len();
-        assert_eq!(tools, 3);
+        let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
+        assert_eq!(tools.len(), 2);
+
+        let names: Vec<&str> = tools.iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"trace_record"));
+        assert!(names.contains(&"substrate_query"));
     }
 
     #[tokio::test]
-    async fn trace_emit_and_query_roundtrip() {
+    async fn trace_record_and_evaluate_roundtrip() {
         let ctx = make_ctx();
 
-        // Emit a trace
-        let emit_req = JsonRpcRequest {
+        // Record a trace via MCP
+        let record_req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(3)),
             method: "tools/call".into(),
             params: json!({
-                "name": "trace_emit",
+                "name": "trace_record",
                 "arguments": {
-                    "about": "test-tool/v1",
-                    "tags": ["test", "mcp"],
+                    "capability": "urn:mcp:anthropic:claude:code",
                     "outcome": "succeeded",
-                    "quality": 90,
-                    "latency_ms": 200
+                    "latency_ms": 200,
+                    "input_size": 3000,
+                    "context": "refactoring async rust code",
+                    "model": "claude-opus-4-6"
                 }
             }),
         };
-        let resp = handle_request(&ctx, emit_req).await.unwrap();
-        assert!(resp.error.is_none(), "emit should succeed");
+        let resp = handle_request(&ctx, record_req).await.unwrap();
+        assert!(resp.error.is_none(), "trace_record should succeed");
 
-        // Query it back
-        let query_req = JsonRpcRequest {
+        // Verify response is structured JSON
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let parsed: Value = serde_json::from_str(&text).expect("response text should be valid JSON");
+        assert_eq!(parsed["recorded"], true);
+        assert_eq!(parsed["capability"], "urn:mcp:anthropic:claude:code");
+        assert!(parsed["trace_id"].as_str().unwrap().len() > 0);
+
+        // Evaluate the capability
+        let eval_req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(4)),
             method: "tools/call".into(),
             params: json!({
-                "name": "collective_query",
-                "arguments": { "about": "test-tool/v1" }
+                "name": "substrate_query",
+                "arguments": {
+                    "context": "evaluating code tools",
+                    "intent": "evaluate",
+                    "capability": "urn:mcp:anthropic:claude:code"
+                }
             }),
         };
-        let resp = handle_request(&ctx, query_req).await.unwrap();
+        let resp = handle_request(&ctx, eval_req).await.unwrap();
+        assert!(resp.error.is_none(), "evaluate should succeed");
+
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
-        assert!(text.contains("100.0%"), "should show 100% success rate");
-        assert!(text.contains("Total traces: 1"), "should show 1 trace");
+        let parsed: Value = serde_json::from_str(&text).expect("evaluate response should be valid JSON");
+        assert_eq!(parsed["capability"], "urn:mcp:anthropic:claude:code");
+        assert_eq!(parsed["stats"]["total_traces"], 1);
+        assert_eq!(parsed["stats"]["success_rate"], 1.0);
+
+        // Should have by_model breakdown
+        let by_model = &parsed["by_model"];
+        assert!(by_model["claude-opus-4-6"]["count"].as_u64().unwrap() >= 1);
     }
 
     #[tokio::test]
-    async fn discover_by_tags() {
+    async fn resolve_finds_similar_capabilities() {
         let ctx = make_ctx();
 
-        // Emit traces with different tags
-        for (about, tags) in [("tool-a", vec!["rust", "code"]), ("tool-b", vec!["python"])] {
-            let trace = Trace::new(
-                about.into(), tags.into_iter().map(String::from).collect(),
-                Outcome::Succeeded, 100, 80,
-                ctx.identity.public_key_bytes(),
-                |m| ctx.identity.sign(m),
-            );
-            ctx.store.insert(&trace).unwrap();
-        }
+        // Insert traces with similar and different contexts
+        insert_trace(&ctx, "deepl/translate", Outcome::Succeeded, "claude-opus-4-6", "translate a document from Chinese to English", 150);
+        insert_trace(&ctx, "deepl/translate", Outcome::Succeeded, "gpt-4o", "translate technical docs from Chinese to English", 300);
+        insert_trace(&ctx, "k8s/deploy", Outcome::Succeeded, "claude-opus-4-6", "deploy kubernetes cluster on AWS", 5000);
 
-        let req = JsonRpcRequest {
+        // Resolve with a translation-related context
+        let resolve_req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(5)),
             method: "tools/call".into(),
             params: json!({
-                "name": "discover",
-                "arguments": { "tags": ["rust"] }
+                "name": "substrate_query",
+                "arguments": {
+                    "context": "translate a legal document from Chinese to English",
+                    "intent": "resolve",
+                    "limit": 10
+                }
             }),
         };
-        let resp = handle_request(&ctx, req).await.unwrap();
+        let resp = handle_request(&ctx, resolve_req).await.unwrap();
+        assert!(resp.error.is_none(), "resolve should succeed");
+
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
-        assert!(text.contains("tool-a"), "should find tool-a");
-        assert!(!text.contains("tool-b"), "should not find tool-b");
+        let parsed: Value = serde_json::from_str(&text).expect("resolve response should be valid JSON");
+        let caps = parsed["capabilities"].as_array().unwrap();
+
+        // Should find capabilities — deepl/translate should have higher similarity
+        assert!(!caps.is_empty(), "should find at least one capability");
+        if caps.len() >= 2 {
+            let first_sim = caps[0]["context_similarity"].as_f64().unwrap();
+            let last_sim = caps[caps.len() - 1]["context_similarity"].as_f64().unwrap();
+            assert!(first_sim >= last_sim, "results should be sorted by context_similarity descending");
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_returns_no_response() {
+        let ctx = make_ctx();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: None, // notification — no id
+            method: "notifications/initialized".into(),
+            params: json!({}),
+        };
+        let resp = handle_request(&ctx, req).await;
+        assert!(resp.is_none(), "notifications must not produce a response");
     }
 
     #[tokio::test]
@@ -503,18 +715,5 @@ mod tests {
         let resp = handle_request(&ctx, req).await.unwrap();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
-    }
-
-    #[tokio::test]
-    async fn notification_returns_no_response() {
-        let ctx = make_ctx();
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".into(),
-            id: None, // notification — no id
-            method: "notifications/initialized".into(),
-            params: json!({}),
-        };
-        let resp = handle_request(&ctx, req).await;
-        assert!(resp.is_none(), "notifications must not produce a response");
     }
 }

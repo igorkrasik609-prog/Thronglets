@@ -40,7 +40,7 @@ pub enum NetworkEvent {
 /// A capability summary retrieved from the DHT.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DhtCapabilitySummary {
-    pub about: String,
+    pub capability: String,
     pub stats: AggregateStats,
     pub node_count: u32,
     pub updated_at: u64,
@@ -55,12 +55,12 @@ pub enum NetworkCommand {
     GetPeers(tokio::sync::oneshot::Sender<Vec<PeerId>>),
     /// Publish a capability summary to the DHT.
     PublishSummary {
-        about: String,
+        capability: String,
         stats: AggregateStats,
     },
     /// Query the DHT for a capability summary.
     QuerySummary {
-        about: String,
+        capability: String,
         reply: tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>,
     },
 }
@@ -219,14 +219,14 @@ pub async fn start(
                                 ..
                             }
                         )) => {
-                            if let Some((about, reply)) = pending_dht_queries.remove(&id) {
+                            if let Some((capability, reply)) = pending_dht_queries.remove(&id) {
                                 let summary = match result {
                                     Ok(kad::GetRecordOk::FoundRecord(rec)) => {
                                         serde_json::from_slice::<DhtCapabilitySummary>(&rec.record.value)
                                             .ok()
                                     }
                                     _ => {
-                                        debug!(%about, "DHT query returned no results");
+                                        debug!(%capability, "DHT query returned no results");
                                         None
                                     }
                                 };
@@ -276,10 +276,10 @@ pub async fn start(
                             let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
                             let _ = reply.send(peers);
                         }
-                        NetworkCommand::PublishSummary { about, stats } => {
-                            let key_str = format!("{DHT_CAP_PREFIX}{about}");
+                        NetworkCommand::PublishSummary { capability, stats } => {
+                            let key_str = format!("{DHT_CAP_PREFIX}{capability}");
                             let summary = DhtCapabilitySummary {
-                                about: about.clone(),
+                                capability: capability.clone(),
                                 stats,
                                 node_count: 1,
                                 updated_at: chrono::Utc::now().timestamp_millis() as u64,
@@ -296,20 +296,20 @@ pub async fn start(
                                         record,
                                         kad::Quorum::One,
                                     ) {
-                                        warn!(%e, %about, "Failed to publish summary to DHT");
+                                        warn!(%e, %capability, "Failed to publish summary to DHT");
                                     } else {
-                                        debug!(%about, "Publishing capability summary to DHT");
+                                        debug!(%capability, "Publishing capability summary to DHT");
                                     }
                                 }
                                 Err(e) => warn!(%e, "Failed to serialize capability summary"),
                             }
                         }
-                        NetworkCommand::QuerySummary { about, reply } => {
-                            let key_str = format!("{DHT_CAP_PREFIX}{about}");
+                        NetworkCommand::QuerySummary { capability, reply } => {
+                            let key_str = format!("{DHT_CAP_PREFIX}{capability}");
                             let query_id = swarm.behaviour_mut().kademlia.get_record(
                                 kad::RecordKey::new(&key_str),
                             );
-                            pending_dht_queries.insert(query_id, (about, reply));
+                            pending_dht_queries.insert(query_id, (capability, reply));
                         }
                     }
                 }

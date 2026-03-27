@@ -3,6 +3,7 @@
 //! This proves the core P2P loop works.
 
 use std::time::Duration;
+use thronglets::context::simhash;
 use thronglets::identity::NodeIdentity;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use thronglets::storage::TraceStore;
@@ -65,10 +66,11 @@ async fn two_nodes_sync_trace_via_mdns() {
     // --- Node A emits a trace ---
     let trace = Trace::new(
         "test-capability/v1".into(),
-        vec!["test".into(), "integration".into()],
         Outcome::Succeeded,
         42,
-        95,
+        1000,
+        simhash("integration test for P2P trace sync"),
+        "test-model".into(),
         id_a.public_key_bytes(),
         |msg| id_a.sign(msg),
     );
@@ -99,9 +101,11 @@ async fn two_nodes_sync_trace_via_mdns() {
 
     // Verify the received trace
     assert_eq!(received.id, trace_id, "Trace ID should match");
-    assert_eq!(received.about, "test-capability/v1");
+    assert_eq!(received.capability, "test-capability/v1");
     assert_eq!(received.outcome, Outcome::Succeeded);
-    assert_eq!(received.quality, 95);
+    assert_eq!(received.latency_ms, 42);
+    assert_eq!(received.input_size, 1000);
+    assert_eq!(received.model_id, "test-model");
     assert!(received.verify(), "Received trace signature should be valid");
     assert!(received.verify_id(), "Received trace ID should be valid");
 
