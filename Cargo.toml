@@ -5,7 +5,7 @@ edition = "2024"
 description = "P2P shared memory substrate for AI agents — stigmergic knowledge network via libp2p"
 license = "MIT"
 repository = "https://github.com/Shangri-la-0428/Thronglets"
-readme = "README.md"
+readme = "README.en.md"
 keywords = ["p2p", "ai-agents", "mcp", "libp2p", "stigmergy"]
 categories = ["network-programming", "command-line-utilities"]
 
