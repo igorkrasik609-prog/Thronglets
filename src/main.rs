@@ -76,6 +76,9 @@ enum Commands {
 
     /// Show connected peers
     Peers,
+
+    /// Show node status and statistics
+    Status,
 }
 
 fn data_dir(cli_override: &Option<PathBuf>) -> PathBuf {
@@ -340,6 +343,36 @@ async fn main() {
         Commands::Peers => {
             println!("The 'peers' command requires a running node.");
             println!("Use 'thronglets run' to start a node, then peers are logged to console.");
+        }
+
+        Commands::Status => {
+            let store = open_store(&dir);
+            let trace_count = store.count().unwrap_or(0);
+            let subject_count = store.distinct_subjects(1000)
+                .map(|s| s.len())
+                .unwrap_or(0);
+            let db_path = dir.join("traces.db");
+            let db_size = std::fs::metadata(&db_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let size_display = if db_size >= 1_048_576 {
+                format!("{:.1} MB", db_size as f64 / 1_048_576.0)
+            } else if db_size >= 1024 {
+                format!("{:.1} KB", db_size as f64 / 1024.0)
+            } else {
+                format!("{} B", db_size)
+            };
+
+            println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
+            println!();
+            println!("  Node ID:           {}", identity.short_id());
+            println!("  Oasyce address:    {}", identity.oasyce_address());
+            println!("  Data directory:    {}", dir.display());
+            println!();
+            println!("  Trace count:       {}", trace_count);
+            println!("  Distinct subjects: {}", subject_count);
+            println!("  Database size:     {}", size_display);
         }
     }
 }

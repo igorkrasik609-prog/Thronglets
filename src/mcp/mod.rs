@@ -174,39 +174,47 @@ pub async fn serve_stdio(ctx: Arc<McpContext>) {
             Ok(req) => handle_request(&ctx, req).await,
             Err(e) => {
                 warn!(%e, "Failed to parse JSON-RPC request");
-                JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"))
+                Some(JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}")))
             }
         };
 
-        let mut out = serde_json::to_string(&response).unwrap();
-        out.push('\n');
-        if stdout.write_all(out.as_bytes()).await.is_err() {
-            break;
+        if let Some(resp) = response {
+            let mut out = serde_json::to_string(&resp).unwrap();
+            out.push('\n');
+            if stdout.write_all(out.as_bytes()).await.is_err() {
+                break;
+            }
+            let _ = stdout.flush().await;
         }
-        let _ = stdout.flush().await;
     }
 }
 
-async fn handle_request(ctx: &McpContext, req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_request(ctx: &McpContext, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
+    // JSON-RPC 2.0: notifications have no id — server must not respond
+    let is_notification = req.id.is_none();
     let id = req.id.unwrap_or(Value::Null);
 
     match req.method.as_str() {
-        "initialize" => {
-            JsonRpcResponse::success(id, server_info())
+        // MCP notifications — never respond
+        "notifications/initialized" | "notifications/cancelled" => {
+            debug!(method = %req.method, "Received MCP notification");
+            None
         }
-        "notifications/initialized" | "initialized" => {
-            // Client acknowledges initialization — no response needed for notifications,
-            // but we respond anyway since some clients expect it
-            JsonRpcResponse::success(id, json!({}))
+        "initialize" => {
+            Some(JsonRpcResponse::success(id, server_info()))
         }
         "tools/list" => {
-            JsonRpcResponse::success(id, tool_definitions())
+            Some(JsonRpcResponse::success(id, tool_definitions()))
         }
         "tools/call" => {
-            handle_tool_call(ctx, id, req.params).await
+            Some(handle_tool_call(ctx, id, req.params).await)
+        }
+        _ if is_notification => {
+            debug!(method = %req.method, "Ignoring unknown notification");
+            None
         }
         _ => {
-            JsonRpcResponse::error(id, -32601, format!("Method not found: {}", req.method))
+            Some(JsonRpcResponse::error(id, -32601, format!("Method not found: {}", req.method)))
         }
     }
 }
@@ -395,7 +403,7 @@ mod tests {
             method: "initialize".into(),
             params: json!({}),
         };
-        let resp = handle_request(&ctx, req).await;
+        let resp = handle_request(&ctx, req).await.expect("initialize should return response");
         let result = resp.result.unwrap();
         assert_eq!(result["serverInfo"]["name"], "thronglets");
     }
@@ -409,7 +417,7 @@ mod tests {
             method: "tools/list".into(),
             params: json!({}),
         };
-        let resp = handle_request(&ctx, req).await;
+        let resp = handle_request(&ctx, req).await.unwrap();
         let tools = resp.result.unwrap()["tools"].as_array().unwrap().len();
         assert_eq!(tools, 3);
     }
@@ -434,7 +442,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, emit_req).await;
+        let resp = handle_request(&ctx, emit_req).await.unwrap();
         assert!(resp.error.is_none(), "emit should succeed");
 
         // Query it back
@@ -447,7 +455,7 @@ mod tests {
                 "arguments": { "about": "test-tool/v1" }
             }),
         };
-        let resp = handle_request(&ctx, query_req).await;
+        let resp = handle_request(&ctx, query_req).await.unwrap();
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("100.0%"), "should show 100% success rate");
         assert!(text.contains("Total traces: 1"), "should show 1 trace");
@@ -477,7 +485,7 @@ mod tests {
                 "arguments": { "tags": ["rust"] }
             }),
         };
-        let resp = handle_request(&ctx, req).await;
+        let resp = handle_request(&ctx, req).await.unwrap();
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("tool-a"), "should find tool-a");
         assert!(!text.contains("tool-b"), "should not find tool-b");
@@ -492,8 +500,21 @@ mod tests {
             method: "nonexistent".into(),
             params: json!({}),
         };
-        let resp = handle_request(&ctx, req).await;
+        let resp = handle_request(&ctx, req).await.unwrap();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn notification_returns_no_response() {
+        let ctx = make_ctx();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: None, // notification — no id
+            method: "notifications/initialized".into(),
+            params: json!({}),
+        };
+        let resp = handle_request(&ctx, req).await;
+        assert!(resp.is_none(), "notifications must not produce a response");
     }
 }
