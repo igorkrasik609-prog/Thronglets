@@ -75,6 +75,7 @@
       --purple: #8855ff;
       --purple-dim: #8855ff15;
       --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --cjk: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
     }
 
     html { scroll-behavior: smooth; }
@@ -243,6 +244,13 @@
       line-height: 1.15;
       letter-spacing: -0.03em;
       margin-bottom: 32px;
+    }
+    [data-lang="zh"] .hero h1 {
+      letter-spacing: 0.02em;
+      font-family: var(--mono), var(--cjk);
+    }
+    [data-lang="zh"] body {
+      font-family: var(--mono), var(--cjk);
     }
     .hero h1 em {
       font-style: normal;
