@@ -316,6 +316,66 @@ impl WorkspaceState {
         if lines.is_empty() { None } else { Some(lines.join("\n")) }
     }
 
+    /// Infer current strategy from recent tool call sequence.
+    /// Returns a short label like "analyze-modify", "debug-cycle", "explore".
+    pub fn infer_strategy(&self) -> Option<String> {
+        if self.recent_actions.len() < 3 {
+            return None;
+        }
+
+        // Look at last 8 actions (most recent first)
+        let recent: Vec<&str> = self.recent_actions.iter()
+            .take(8)
+            .map(|a| a.tool.as_str())
+            .collect();
+
+        // Pattern detection (newest first, so patterns are reversed)
+        let reads = recent.iter().filter(|t| **t == "Read").count();
+        let edits = recent.iter().filter(|t| **t == "Edit" || **t == "Write").count();
+        let bashes = recent.iter().filter(|t| **t == "Bash").count();
+        let greps = recent.iter().filter(|t| **t == "Grep" || **t == "Glob").count();
+        let agents = recent.iter().filter(|t| **t == "Agent").count();
+
+        // Debug cycle: Bash(fail) → Read → Edit → Bash
+        if bashes >= 2 && edits >= 1 {
+            return Some("build-fix-cycle".to_string());
+        }
+
+        // Explore: lots of Grep/Glob/Read, no edits
+        if greps >= 2 && reads >= 1 && edits == 0 {
+            return Some("codebase-exploration".to_string());
+        }
+
+        // Analyze-modify: Read(s) → Edit
+        if reads >= 2 && edits >= 1 && bashes == 0 {
+            return Some("analyze-modify".to_string());
+        }
+
+        // Multi-file refactor: many Edits across different files
+        if edits >= 3 {
+            let unique_files: std::collections::HashSet<_> = self.recent_actions.iter()
+                .take(8)
+                .filter(|a| a.tool == "Edit" || a.tool == "Write")
+                .filter_map(|a| a.file_path.as_deref())
+                .collect();
+            if unique_files.len() >= 3 {
+                return Some("multi-file-refactor".to_string());
+            }
+        }
+
+        // Agent delegation
+        if agents >= 1 {
+            return Some("delegated-research".to_string());
+        }
+
+        // Read-heavy = understanding
+        if reads >= 3 && edits == 0 {
+            return Some("code-review".to_string());
+        }
+
+        None
+    }
+
     /// Record a tool call in the action sequence.
     pub fn record_action(&mut self, tool: &str, file_path: Option<String>) {
         let now = chrono::Utc::now().timestamp_millis();

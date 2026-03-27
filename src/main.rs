@@ -487,8 +487,16 @@ async fn main() {
             let model = std::env::var("CLAUDE_MODEL")
                 .unwrap_or_else(|_| "claude-opus-4-6".to_string());
 
+            // Enrich context with strategy inference
+            let ws_for_strategy = WorkspaceState::load(&dir);
+            let enriched_context = if let Some(strategy) = ws_for_strategy.infer_strategy() {
+                format!("[{strategy}] {context_text}")
+            } else {
+                context_text.clone()
+            };
+
             let store = open_store(&dir);
-            let ctx_hash = simhash(&context_text);
+            let ctx_hash = simhash(&enriched_context);
             let is_error = matches!(outcome, Outcome::Failed);
             let trace = Trace::new(
                 capability.clone(),
@@ -496,7 +504,7 @@ async fn main() {
                 0, // latency not available from hook
                 input_size,
                 ctx_hash,
-                Some(context_text.clone()),
+                Some(enriched_context),
                 session_id.clone(),
                 model,
                 identity.public_key_bytes(),
@@ -661,6 +669,11 @@ async fn main() {
             // 7. Feedback: edit retention rate + per-file feedback
             if let Some(fb_hints) = ws.feedback_hints(current_file.as_deref()) {
                 hints.push(fb_hints);
+            }
+
+            // 8. Current strategy inference
+            if let Some(strategy) = ws.infer_strategy() {
+                hints.push(format!("  current pattern: {strategy}"));
             }
 
             // Output to stdout (appears in agent's context)
