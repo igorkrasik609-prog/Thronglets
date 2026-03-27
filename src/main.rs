@@ -3,7 +3,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
-use thronglets::network::{NetworkConfig, NetworkEvent};
+use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
 use tracing::info;
@@ -194,6 +194,12 @@ async fn main() {
 
             info!("Node {} running. Press Ctrl+C to stop.", identity.short_id());
 
+            // Periodic timers
+            let mut evaporation_interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            evaporation_interval.tick().await;
+            let mut dht_publish_interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            dht_publish_interval.tick().await;
+
             // Main event loop: handle network events
             loop {
                 tokio::select! {
@@ -220,6 +226,26 @@ async fn main() {
                                     Err(e) => {
                                         tracing::warn!(%e, "Failed to store received trace");
                                     }
+                                }
+                            }
+                        }
+                    }
+                    _ = evaporation_interval.tick() => {
+                        match store.evaporate(None) {
+                            Ok(n) if n > 0 => info!(deleted = n, "Evaporated expired traces"),
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!(%e, "Evaporation failed"),
+                        }
+                    }
+                    _ = dht_publish_interval.tick() => {
+                        // Publish aggregate summaries for all known subjects to DHT
+                        if let Ok(subjects) = store.distinct_subjects(100) {
+                            for about in subjects {
+                                if let Ok(Some(stats)) = store.aggregate(&about) {
+                                    let _ = cmd_tx.send(NetworkCommand::PublishSummary {
+                                        about,
+                                        stats,
+                                    }).await;
                                 }
                             }
                         }
@@ -256,26 +282,41 @@ async fn main() {
                     .await
                     .expect("failed to start network");
 
-                // Spawn event handler for network events
+                // Spawn event handler for network events + periodic evaporation
                 let store_bg = Arc::clone(&store);
                 tokio::spawn(async move {
-                    while let Some(event) = event_rx.recv().await {
-                        match event {
-                            NetworkEvent::PeerConnected(peer) => {
-                                info!(%peer, "Peer connected");
-                            }
-                            NetworkEvent::PeerDisconnected(peer) => {
-                                info!(%peer, "Peer disconnected");
-                            }
-                            NetworkEvent::TraceReceived(trace) => {
-                                match store_bg.insert(&trace) {
-                                    Ok(true) => {
-                                        info!(about = %trace.about, "Stored trace from network");
+                    let mut evaporation_interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+                    evaporation_interval.tick().await; // consume the immediate first tick
+
+                    loop {
+                        tokio::select! {
+                            event = event_rx.recv() => {
+                                match event {
+                                    Some(NetworkEvent::PeerConnected(peer)) => {
+                                        info!(%peer, "Peer connected");
                                     }
-                                    Ok(false) => {}
-                                    Err(e) => {
-                                        tracing::warn!(%e, "Failed to store received trace");
+                                    Some(NetworkEvent::PeerDisconnected(peer)) => {
+                                        info!(%peer, "Peer disconnected");
                                     }
+                                    Some(NetworkEvent::TraceReceived(trace)) => {
+                                        match store_bg.insert(&trace) {
+                                            Ok(true) => {
+                                                info!(about = %trace.about, "Stored trace from network");
+                                            }
+                                            Ok(false) => {}
+                                            Err(e) => {
+                                                tracing::warn!(%e, "Failed to store received trace");
+                                            }
+                                        }
+                                    }
+                                    None => break, // channel closed
+                                }
+                            }
+                            _ = evaporation_interval.tick() => {
+                                match store_bg.evaporate(None) {
+                                    Ok(n) if n > 0 => info!(deleted = n, "Evaporated expired traces"),
+                                    Ok(_) => {}
+                                    Err(e) => tracing::warn!(%e, "Evaporation failed"),
                                 }
                             }
                         }

@@ -137,6 +137,16 @@ impl TraceStore {
         Ok(deleted)
     }
 
+    /// List distinct subjects that have traces.
+    pub fn distinct_subjects(&self, limit: usize) -> rusqlite::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT about FROM traces ORDER BY about LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| row.get(0))?;
+        rows.collect()
+    }
+
     /// Total trace count.
     pub fn count(&self) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();
@@ -179,7 +189,7 @@ impl TraceStore {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AggregateStats {
     pub total_traces: u64,
     pub success_rate: f64,
@@ -255,5 +265,45 @@ mod tests {
     fn no_traces_returns_none_aggregate() {
         let store = TraceStore::in_memory().unwrap();
         assert!(store.aggregate("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn evaporate_removes_expired_traces() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // Insert two traces: one we'll age out, one stays fresh
+        let old_trace = make_trace(&id, "old-tool", Outcome::Succeeded, 80, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let fresh_trace = make_trace(&id, "fresh-tool", Outcome::Succeeded, 90, vec![]);
+
+        store.insert(&old_trace).unwrap();
+        store.insert(&fresh_trace).unwrap();
+        assert_eq!(store.count().unwrap(), 2);
+
+        // Manually set old_trace's timestamp to 8 days ago
+        let eight_days_ago_ms = chrono::Utc::now().timestamp_millis() - (8 * 86_400_000);
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE traces SET timestamp = ?1 WHERE id = ?2",
+                params![eight_days_ago_ms, old_trace.id.as_slice()],
+            )
+            .unwrap();
+        }
+
+        // Evaporate with default 7-day TTL
+        let deleted = store.evaporate(None).unwrap();
+        assert_eq!(deleted, 1, "should evaporate exactly one expired trace");
+        assert_eq!(store.count().unwrap(), 1, "one trace should remain");
+
+        // The remaining trace should be the fresh one
+        let remaining = store.query_about("fresh-tool", 10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].about, "fresh-tool");
+
+        // The old one should be gone
+        let gone = store.query_about("old-tool", 10).unwrap();
+        assert!(gone.is_empty(), "expired trace should be evaporated");
     }
 }

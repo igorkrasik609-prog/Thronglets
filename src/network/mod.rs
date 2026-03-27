@@ -17,10 +17,14 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn, debug};
 
+use crate::storage::AggregateStats;
 use crate::trace::Trace;
 
 /// Topic name for the global trace gossip channel.
 const TRACE_TOPIC: &str = "thronglets/traces/v1";
+
+/// DHT key prefix for capability summaries.
+const DHT_CAP_PREFIX: &str = "/thronglets/cap/v1/";
 
 /// Events emitted by the network layer to the node runtime.
 #[derive(Debug)]
@@ -33,6 +37,15 @@ pub enum NetworkEvent {
     TraceReceived(Trace),
 }
 
+/// A capability summary retrieved from the DHT.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DhtCapabilitySummary {
+    pub about: String,
+    pub stats: AggregateStats,
+    pub node_count: u32,
+    pub updated_at: u64,
+}
+
 /// Commands sent from the node runtime to the network layer.
 #[derive(Debug)]
 pub enum NetworkCommand {
@@ -40,6 +53,16 @@ pub enum NetworkCommand {
     PublishTrace(Trace),
     /// Get the list of connected peers.
     GetPeers(tokio::sync::oneshot::Sender<Vec<PeerId>>),
+    /// Publish a capability summary to the DHT.
+    PublishSummary {
+        about: String,
+        stats: AggregateStats,
+    },
+    /// Query the DHT for a capability summary.
+    QuerySummary {
+        about: String,
+        reply: tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>,
+    },
 }
 
 /// Combined libp2p behaviour for Thronglets.
@@ -140,6 +163,12 @@ pub async fn start(
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(256);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<NetworkCommand>(256);
 
+    // Pending DHT query replies
+    let mut pending_dht_queries: std::collections::HashMap<
+        kad::QueryId,
+        (String, tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>),
+    > = std::collections::HashMap::new();
+
     // Spawn the network event loop
     tokio::spawn(async move {
         loop {
@@ -183,6 +212,42 @@ pub async fn start(
                                 let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
                             }
                         }
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Kademlia(
+                            kad::Event::OutboundQueryProgressed {
+                                id,
+                                result: kad::QueryResult::GetRecord(result),
+                                ..
+                            }
+                        )) => {
+                            if let Some((about, reply)) = pending_dht_queries.remove(&id) {
+                                let summary = match result {
+                                    Ok(kad::GetRecordOk::FoundRecord(rec)) => {
+                                        serde_json::from_slice::<DhtCapabilitySummary>(&rec.record.value)
+                                            .ok()
+                                    }
+                                    _ => {
+                                        debug!(%about, "DHT query returned no results");
+                                        None
+                                    }
+                                };
+                                let _ = reply.send(summary);
+                            }
+                        }
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Kademlia(
+                            kad::Event::OutboundQueryProgressed {
+                                result: kad::QueryResult::PutRecord(result),
+                                ..
+                            }
+                        )) => {
+                            match result {
+                                Ok(kad::PutRecordOk { key }) => {
+                                    debug!(?key, "Published capability summary to DHT");
+                                }
+                                Err(e) => {
+                                    debug!(?e, "Failed to publish summary to DHT");
+                                }
+                            }
+                        }
                         SwarmEvent::NewListenAddr { address, .. } => {
                             info!(%address, "Listening on");
                         }
@@ -210,6 +275,41 @@ pub async fn start(
                         NetworkCommand::GetPeers(reply) => {
                             let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
                             let _ = reply.send(peers);
+                        }
+                        NetworkCommand::PublishSummary { about, stats } => {
+                            let key_str = format!("{DHT_CAP_PREFIX}{about}");
+                            let summary = DhtCapabilitySummary {
+                                about: about.clone(),
+                                stats,
+                                node_count: 1,
+                                updated_at: chrono::Utc::now().timestamp_millis() as u64,
+                            };
+                            match serde_json::to_vec(&summary) {
+                                Ok(value) => {
+                                    let record = kad::Record {
+                                        key: kad::RecordKey::new(&key_str),
+                                        value,
+                                        publisher: Some(local_peer_id),
+                                        expires: Some(std::time::Instant::now() + Duration::from_secs(3600)),
+                                    };
+                                    if let Err(e) = swarm.behaviour_mut().kademlia.put_record(
+                                        record,
+                                        kad::Quorum::One,
+                                    ) {
+                                        warn!(%e, %about, "Failed to publish summary to DHT");
+                                    } else {
+                                        debug!(%about, "Publishing capability summary to DHT");
+                                    }
+                                }
+                                Err(e) => warn!(%e, "Failed to serialize capability summary"),
+                            }
+                        }
+                        NetworkCommand::QuerySummary { about, reply } => {
+                            let key_str = format!("{DHT_CAP_PREFIX}{about}");
+                            let query_id = swarm.behaviour_mut().kademlia.get_record(
+                                kad::RecordKey::new(&key_str),
+                            );
+                            pending_dht_queries.insert(query_id, (about, reply));
                         }
                     }
                 }
