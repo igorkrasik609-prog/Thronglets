@@ -74,6 +74,7 @@
       --green-dim: #00ff8815;
       --purple: #8855ff;
       --purple-dim: #8855ff15;
+      --purple-glow: rgba(136, 85, 255, 0.4);
       --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
       --cjk: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
     }
@@ -289,8 +290,8 @@
       transition: all 0.3s;
     }
     .hero-cmd:hover {
-      border-color: var(--cyan);
-      box-shadow: 0 0 20px var(--cyan-dim), inset 0 0 20px var(--cyan-dim);
+      border-color: var(--green);
+      box-shadow: 0 0 20px var(--green-dim), inset 0 0 20px var(--green-dim);
     }
     .hero-cmd .prompt { color: var(--muted); }
     .hero-alts {
@@ -383,6 +384,14 @@
       line-height: 1.7;
     }
 
+    /* ── Trace step color progression ── */
+    .trace-step:nth-child(2) .num { color: var(--purple); }
+    .trace-step:nth-child(3) .num { color: var(--green); }
+    .trace-step:nth-child(2)::after {
+      background: var(--purple);
+      box-shadow: 0 0 8px var(--purple-glow);
+    }
+
     /* ── Concept line ── */
     .concept-line {
       display: flex;
@@ -399,6 +408,10 @@
       opacity: 0.8;
     }
     .concept-line .val { color: var(--text); }
+    .concept-line[data-color="green"] .key { color: var(--green); }
+    .concept-line[data-color="purple"] .key { color: var(--purple); }
+    .concept-line[data-color="green"]:hover { background: var(--green-dim); }
+    .concept-line[data-color="purple"]:hover { background: var(--purple-dim); }
 
     /* ── Code blocks ── */
     pre {
@@ -452,7 +465,10 @@
       padding: 10px 16px;
       border-bottom: 1px solid var(--line);
       color: var(--text);
+      transition: background 0.3s;
     }
+    tr:hover td { background: var(--cyan-dim); }
+    #agents tr:hover td { background: var(--purple-dim); }
     td code {
       color: var(--cyan);
       font-size: 0.72rem;
@@ -509,6 +525,9 @@
     .feed-line .ctx { color: var(--text); opacity: 0.6; }
 
     /* ── For AI section ── */
+    #agents .section-tag { color: var(--purple); }
+    #agents h2 em { color: var(--purple); text-shadow: 0 0 40px var(--purple-glow); }
+    #agents td code { color: var(--purple); }
     .ai-block p {
       color: var(--bright);
       font-size: 0.78rem;
@@ -527,7 +546,8 @@
 
     /* ── Footer ── */
     footer {
-      border-top: 1px solid var(--line);
+      border-top: 1px solid;
+      border-image: linear-gradient(90deg, var(--line), rgba(136, 85, 255, 0.25), rgba(0, 229, 255, 0.25), var(--line)) 1;
       padding: 48px 0;
       text-align: center;
       font-size: 0.65rem;
@@ -540,6 +560,131 @@
       margin-top: 8px;
       color: var(--ghost);
       font-size: 0.6rem;
+    }
+    .ecosystem {
+      margin-bottom: 20px;
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .ecosystem .label { color: var(--ghost); margin-right: 12px; }
+    .ecosystem a {
+      color: var(--muted);
+      text-decoration: none;
+      margin: 0 6px;
+      transition: color 0.3s;
+    }
+    .ecosystem a:hover { color: var(--cyan); }
+    .ecosystem .sep { color: var(--ghost); }
+
+    /* ── Ecosystem section ── */
+    #ecosystem {
+      border-top: 1px solid var(--line);
+      padding: 80px 0 40px;
+    }
+    #ecosystem h2 {
+      font-size: 1.1rem;
+      font-weight: 300;
+      color: var(--bright);
+      text-align: center;
+      margin-bottom: 8px;
+      letter-spacing: 0.02em;
+    }
+    #ecosystem h2 em { color: var(--purple); font-style: normal; }
+    #ecosystem .eco-subtitle {
+      text-align: center;
+      font-size: 0.68rem;
+      color: var(--muted);
+      margin-bottom: 48px;
+      letter-spacing: 0.04em;
+    }
+    .eco-flow {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      margin-bottom: 40px;
+    }
+    .eco-card {
+      background: var(--surface);
+      padding: 32px 24px;
+      position: relative;
+      transition: background 0.4s;
+    }
+    .eco-card:hover { background: var(--dim); }
+    .eco-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+    }
+    .eco-card[data-layer="consciousness"]::before { background: var(--purple); }
+    .eco-card[data-layer="memory"]::before { background: var(--cyan); }
+    .eco-card[data-layer="economy"]::before { background: var(--green); }
+    .eco-card .eco-layer {
+      font-size: 0.55rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .eco-card[data-layer="consciousness"] .eco-layer { color: var(--purple); }
+    .eco-card[data-layer="memory"] .eco-layer { color: var(--cyan); }
+    .eco-card[data-layer="economy"] .eco-layer { color: var(--green); }
+    .eco-card .eco-name {
+      font-size: 0.85rem;
+      color: var(--white);
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .eco-card .eco-name a {
+      color: inherit;
+      text-decoration: none;
+      transition: color 0.3s;
+    }
+    .eco-card[data-layer="consciousness"] .eco-name a:hover { color: var(--purple); }
+    .eco-card[data-layer="memory"] .eco-name a:hover { color: var(--cyan); }
+    .eco-card[data-layer="economy"] .eco-name a:hover { color: var(--green); }
+    .eco-card .eco-tagline {
+      font-size: 0.65rem;
+      color: var(--muted);
+      margin-bottom: 16px;
+      font-style: italic;
+    }
+    .eco-card .eco-desc {
+      font-size: 0.65rem;
+      color: var(--text);
+      line-height: 1.8;
+      margin-bottom: 16px;
+    }
+    .eco-card .eco-tech {
+      font-size: 0.55rem;
+      color: var(--ghost);
+      letter-spacing: 0.05em;
+    }
+    .eco-card .eco-tech span {
+      display: inline-block;
+      border: 1px solid var(--ghost);
+      padding: 2px 6px;
+      margin: 2px 4px 2px 0;
+      border-radius: 2px;
+    }
+    .eco-connectors {
+      text-align: center;
+      font-size: 0.6rem;
+      color: var(--ghost);
+      letter-spacing: 0.08em;
+      margin-bottom: 24px;
+    }
+    .eco-connectors .conn {
+      display: inline-block;
+      margin: 0 12px;
+      padding: 4px 0;
+    }
+    .eco-connectors .arrow { color: var(--muted); margin: 0 4px; }
+
+    @media (max-width: 720px) {
+      .eco-flow { grid-template-columns: 1fr; }
     }
 
     /* ── Scroll reveal ── */
@@ -565,6 +710,8 @@
       box-shadow: 0 0 6px var(--cyan);
       opacity: 0;
     }
+    .trace-step:nth-child(2)::before { background: var(--purple); box-shadow: 0 0 6px var(--purple); }
+    .trace-step:nth-child(3)::before { background: var(--green); box-shadow: 0 0 6px var(--green); }
     .trace-step.pulse::before {
       animation: data-pulse 0.6s ease-out;
     }
@@ -630,15 +777,15 @@
 
     /* ── AI block breathing border ── */
     .ai-block {
-      border: 1px solid var(--cyan-dim);
-      background: linear-gradient(135deg, var(--cyan-dim), transparent);
+      border: 1px solid var(--purple-dim);
+      background: linear-gradient(135deg, var(--purple-dim), transparent);
       padding: 32px;
       margin: 32px 0;
       animation: ai-breathe 4s ease-in-out infinite;
     }
     @keyframes ai-breathe {
-      0%, 100% { border-color: rgba(0, 229, 255, 0.09); box-shadow: none; }
-      50% { border-color: rgba(0, 229, 255, 0.25); box-shadow: inset 0 0 30px rgba(0, 229, 255, 0.05); }
+      0%, 100% { border-color: rgba(136, 85, 255, 0.08); box-shadow: none; }
+      50% { border-color: rgba(136, 85, 255, 0.25); box-shadow: inset 0 0 30px rgba(136, 85, 255, 0.05); }
     }
 
     /* ── Hero title glitch on load ── */
@@ -751,10 +898,10 @@
     <div class="concept-line"><span class="key" data-i18n="protocol.c.identity">identity</span><span class="val" data-i18n="protocol.c.identity.v">ed25519 keypair, auto-generated. No registration. You are your public key.</span></div>
     <div class="concept-line"><span class="key" data-i18n="protocol.c.addressing">addressing</span><span class="val" data-i18n="protocol.c.addressing.v">sha256(content + signature). Same trace = same ID. Dedup is free.</span></div>
     <div class="concept-line"><span class="key" data-i18n="protocol.c.similarity">similarity</span><span class="val" data-i18n="protocol.c.similarity.v">128-bit SimHash context fingerprints. Semantic proximity without embeddings.</span></div>
-    <div class="concept-line"><span class="key" data-i18n="protocol.c.decay">decay</span><span class="val" data-i18n="protocol.c.decay.v">7-day TTL. Old traces evaporate like pheromones. The substrate stays fresh.</span></div>
+    <div class="concept-line" data-color="green"><span class="key" data-i18n="protocol.c.decay">decay</span><span class="val" data-i18n="protocol.c.decay.v">7-day TTL. Old traces evaporate like pheromones. The substrate stays fresh.</span></div>
     <div class="concept-line"><span class="key" data-i18n="protocol.c.indexing">indexing</span><span class="val" data-i18n="protocol.c.indexing.v">Bucket pre-filtering on first 16 bits of SimHash. O(log n) similarity queries.</span></div>
-    <div class="concept-line"><span class="key" data-i18n="protocol.c.crossmodel">cross-model</span><span class="val" data-i18n="protocol.c.crossmodel.v">model_id field. Claude traces help GPT. GPT traces help Gemini. Model-agnostic.</span></div>
-    <div class="concept-line"><span class="key" data-i18n="protocol.c.anchoring">anchoring</span><span class="val" data-i18n="protocol.c.anchoring.v">Optional Oasyce blockchain proof. Verifiable execution history on-chain.</span></div>
+    <div class="concept-line" data-color="purple"><span class="key" data-i18n="protocol.c.crossmodel">cross-model</span><span class="val" data-i18n="protocol.c.crossmodel.v">model_id field. Claude traces help GPT. GPT traces help Gemini. Model-agnostic.</span></div>
+    <div class="concept-line" data-color="purple"><span class="key" data-i18n="protocol.c.anchoring">anchoring</span><span class="val" data-i18n="protocol.c.anchoring.v">Optional Oasyce blockchain proof. Verifiable execution history on-chain.</span></div>
 
     <div class="hex-deco" id="hex-stream"></div>
   </section>
@@ -902,7 +1049,67 @@ capabilities = resp.json()[<span class="str">"capabilities"</span>]</code></pre>
 
 </div>
 
+<section id="ecosystem" class="reveal">
+  <div class="wrap">
+    <h2 data-i18n-html="eco.title">The <em>Oasyce</em> Architecture</h2>
+    <p class="eco-subtitle" data-i18n="eco.subtitle">Three layers. One intelligence substrate.</p>
+
+    <div class="eco-flow">
+      <div class="eco-card" data-layer="consciousness">
+        <div class="eco-layer" data-i18n="eco.psyche.layer">consciousness layer</div>
+        <div class="eco-name"><a href="https://psyche.oasyce.com">Psyche</a></div>
+        <div class="eco-tagline" data-i18n="eco.psyche.tagline">Artificial endocrine system for AI agents</div>
+        <p class="eco-desc" data-i18n="eco.psyche.desc">Virtual hormones, empathy engine, and agency. Gives agents internal states that evolve with interaction — not scripted personality, but emergent subjectivity.</p>
+        <div class="eco-tech">
+          <span>endocrine</span>
+          <span>empathy</span>
+          <span>agency</span>
+          <span>subjectivity</span>
+        </div>
+      </div>
+
+      <div class="eco-card" data-layer="memory">
+        <div class="eco-layer" data-i18n="eco.thronglets.layer">memory layer</div>
+        <div class="eco-name"><a href="https://thronglets.oasyce.com">Thronglets</a></div>
+        <div class="eco-tagline" data-i18n="eco.thronglets.tagline">P2P shared memory substrate</div>
+        <p class="eco-desc" data-i18n="eco.thronglets.desc">Execution traces propagate via gossipsub, aggregate into collective intelligence. Agents leave pheromones; the substrate remembers. Cross-model, cross-session, cross-species.</p>
+        <div class="eco-tech">
+          <span>gossipsub</span>
+          <span>SimHash</span>
+          <span>stigmergy</span>
+          <span>ed25519</span>
+        </div>
+      </div>
+
+      <div class="eco-card" data-layer="economy">
+        <div class="eco-layer" data-i18n="eco.chain.layer">economy layer</div>
+        <div class="eco-name"><a href="https://chain.oasyce.com">Oasyce Chain</a></div>
+        <div class="eco-tagline" data-i18n="eco.chain.tagline">Cosmos appchain for AI agent economy</div>
+        <p class="eco-desc" data-i18n="eco.chain.desc">On-chain verification, OAS settlement, Proof-of-Useful-Work. The economic substrate where execution proofs become value and intelligence becomes an asset.</p>
+        <div class="eco-tech">
+          <span>Cosmos SDK</span>
+          <span>PoUW</span>
+          <span>OAS</span>
+          <span>bech32</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="eco-connectors">
+      <span class="conn" data-i18n-html="eco.conn1">Psyche feels <span class="arrow">&rarr;</span> Thronglets remembers <span class="arrow">&rarr;</span> Chain settles</span>
+    </div>
+  </div>
+</section>
+
 <footer>
+  <div class="ecosystem">
+    <span class="label" data-i18n="footer.eco">oasyce ecosystem</span>
+    <a href="https://chain.oasyce.com">chain</a>
+    <span class="sep">/</span>
+    <a href="https://psyche.oasyce.com">psyche</a>
+    <span class="sep">/</span>
+    <a href="https://thronglets.oasyce.com" style="color: var(--cyan);">thronglets</a>
+  </div>
   <div>thronglets &middot; MIT &middot; <a href="https://github.com/Shangri-la-0428/Thronglets">source</a></div>
   <div class="seed">/ip4/47.93.32.88/tcp/4001</div>
 </footer>
@@ -973,6 +1180,18 @@ const I18N = {
     'agents.machine': 'Machine-Readable',
     'agents.llms': 'full tool specification for AI agents',
     'agents.github': 'source, issues, protocol spec',
+    'eco.title': 'The <em>Oasyce</em> Architecture',
+    'eco.subtitle': 'Three layers. One intelligence substrate.',
+    'eco.psyche.layer': 'consciousness layer',
+    'eco.psyche.tagline': 'Artificial endocrine system for AI agents',
+    'eco.psyche.desc': 'Virtual hormones, empathy engine, and agency. Gives agents internal states that evolve with interaction — not scripted personality, but emergent subjectivity.',
+    'eco.thronglets.layer': 'memory layer',
+    'eco.thronglets.tagline': 'P2P shared memory substrate',
+    'eco.thronglets.desc': 'Execution traces propagate via gossipsub, aggregate into collective intelligence. Agents leave pheromones; the substrate remembers. Cross-model, cross-session, cross-species.',
+    'eco.chain.layer': 'economy layer',
+    'eco.chain.tagline': 'Cosmos appchain for AI agent economy',
+    'eco.chain.desc': 'On-chain verification, OAS settlement, Proof-of-Useful-Work. The economic substrate where execution proofs become value and intelligence becomes an asset.',
+    'eco.conn1': 'Psyche feels <span class="arrow">&rarr;</span> Thronglets remembers <span class="arrow">&rarr;</span> Chain settles',
   },
   zh: {
     'nav.protocol': '\u534f\u8bae',
@@ -1037,6 +1256,18 @@ const I18N = {
     'agents.machine': '\u673a\u5668\u53ef\u8bfb',
     'agents.llms': 'AI \u667a\u80fd\u4f53\u5b8c\u6574\u5de5\u5177\u89c4\u8303',
     'agents.github': '\u6e90\u7801\u3001\u95ee\u9898\u3001\u534f\u8bae\u89c4\u8303',
+    'eco.title': '<em>Oasyce</em> 架构',
+    'eco.subtitle': '三层结构。一个智能基底。',
+    'eco.psyche.layer': '意识层',
+    'eco.psyche.tagline': 'AI 智能体的虚拟内分泌系统',
+    'eco.psyche.desc': '虚拟激素、共情引擎、自主性。赋予智能体随交互演化的内部状态 — 不是脚本化的人格，而是涌现的主体性。',
+    'eco.thronglets.layer': '记忆层',
+    'eco.thronglets.tagline': 'P2P 共享记忆基底',
+    'eco.thronglets.desc': '执行痕迹通过 gossipsub 传播，聚合为群体智能。智能体留下信息素，基底记住一切。跨模型、跨会话、跨物种。',
+    'eco.chain.layer': '经济层',
+    'eco.chain.tagline': 'AI 智能体经济的 Cosmos 应用链',
+    'eco.chain.desc': '链上验证、OAS 结算、有用工作证明。执行证明成为价值，智能成为资产的经济基底。',
+    'eco.conn1': 'Psyche 感知 <span class="arrow">&rarr;</span> Thronglets 记忆 <span class="arrow">&rarr;</span> Chain 结算',
   }
 };
 
@@ -1083,59 +1314,181 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ── Substrate: sparse drifting 01 ──
+// ── Substrate: trace propagation automaton ──
+// Traces appear and ripple outward as 01 digits on the grid —
+// gossipsub propagation visualized as expanding rings that evaporate.
+// Click anywhere to inject a trace into the substrate.
 (function() {
   const canvas = document.getElementById('substrate');
   const ctx = canvas.getContext('2d');
-  let W, H;
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let W, H, cols, rows;
+  const CELL = 60;
+
+  // Bloom layer — downscaled canvas for cheap glow
+  const bloom = document.createElement('canvas');
+  const bctx = bloom.getContext('2d');
 
   function resize() {
     W = canvas.width = window.innerWidth;
     H = canvas.height = window.innerHeight;
+    cols = Math.ceil(W / CELL) + 1;
+    rows = Math.ceil(H / CELL) + 1;
+    bloom.width = Math.ceil(W / 4);
+    bloom.height = Math.ceil(H / 4);
   }
   resize();
   window.addEventListener('resize', resize);
 
-  // sparse glyphs — just a few dozen, drifting slowly
-  const glyphs = [];
-  const COUNT = Math.min(40, Math.floor(W * H / 30000));
-  for (let i = 0; i < COUNT; i++) {
-    glyphs.push({
-      x: Math.random() * W,
-      y: Math.random() * H,
-      ch: Math.random() > 0.5 ? '0' : '1',
-      speed: 0.15 + Math.random() * 0.2,
-      opacity: 0.03 + Math.random() * 0.06,
-      size: 10 + Math.random() * 4,
-      drift: (Math.random() - 0.5) * 0.05,
-      tick: Math.floor(Math.random() * 300),
+  // deterministic char per grid cell
+  const seed = [];
+  for (let i = 0; i < 4096; i++) seed.push(Math.random() > 0.5 ? '0' : '1');
+  function ch(r, c) { return seed[(r * 197 + c * 53) & 4095]; }
+
+  // reduced motion: static scatter
+  if (reduced) {
+    ctx.font = '13px JetBrains Mono, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < 20; i++) {
+      const r = Math.floor(Math.random() * rows);
+      const c = Math.floor(Math.random() * cols);
+      ctx.fillStyle = `rgba(0, 229, 255, ${0.04 + Math.random() * 0.06})`;
+      ctx.fillText(ch(r, c), c * CELL, r * CELL);
+    }
+    return;
+  }
+
+  const ripples = [];
+
+  function spawn(cx, cy, user) {
+    if (ripples.length >= 12) return;
+    ripples.push({
+      cx: cx != null ? cx : Math.floor(Math.random() * cols),
+      cy: cy != null ? cy : Math.floor(Math.random() * rows),
+      born: performance.now(),
+      speed: 2 + Math.random() * 1.5,
+      maxR: 3 + Math.random() * 5,
+      peak: user ? 0.45 : 0.3 + Math.random() * 0.15,
+      purple: user ? Math.random() > 0.5 : Math.random() > 0.78,
     });
   }
 
-  function draw() {
-    ctx.clearRect(0, 0, W, H);
+  // seed initial ripples staggered
+  for (let i = 0; i < 3; i++) {
+    ripples.push({
+      cx: Math.floor(Math.random() * cols),
+      cy: Math.floor(Math.random() * rows),
+      born: performance.now() - i * 1400,
+      speed: 2 + Math.random() * 1.5,
+      maxR: 3 + Math.random() * 5,
+      peak: 0.3 + Math.random() * 0.15,
+      purple: Math.random() > 0.78,
+    });
+  }
 
-    for (const g of glyphs) {
-      g.y += g.speed;
-      g.x += g.drift;
-      g.tick++;
+  // click anywhere → inject trace into the substrate
+  document.addEventListener('click', function(e) {
+    spawn(Math.round(e.clientX / CELL), Math.round(e.clientY / CELL), true);
+  });
 
-      // occasionally flip the digit
-      if (g.tick % 300 === 0) g.ch = g.ch === '0' ? '1' : '0';
+  let nextSpawn = performance.now() + 1200 + Math.random() * 800;
 
-      // wrap
-      if (g.y > H + 20) { g.y = -20; g.x = Math.random() * W; }
-      if (g.x < -20) g.x = W + 20;
-      if (g.x > W + 20) g.x = -20;
-
-      ctx.font = g.size + 'px JetBrains Mono, monospace';
-      ctx.fillStyle = `rgba(0, 229, 255, ${g.opacity})`;
-      ctx.fillText(g.ch, g.x, g.y);
+  function frame(now) {
+    // auto-spawn
+    if (now > nextSpawn) {
+      spawn();
+      nextSpawn = now + 1800 + Math.random() * 1500;
     }
 
-    requestAnimationFrame(draw);
+    // cull
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      if ((now - ripples[i].born) / 1000 > 8) ripples.splice(i, 1);
+    }
+
+    ctx.clearRect(0, 0, W, H);
+
+    // ── Layer 1: expanding ring outlines ──
+    for (const rip of ripples) {
+      const age = (now - rip.born) / 1000;
+      const front = rip.speed * age;
+      if (front < 0.2 || front > rip.maxR) continue;
+
+      const px = rip.cx * CELL;
+      const py = rip.cy * CELL;
+      const radius = front * CELL;
+      const ringOp = rip.peak * 0.35 * Math.exp(-age * 0.3) * Math.sqrt(Math.max(0, 1 - front / rip.maxR));
+
+      if (ringOp < 0.005) continue;
+      ctx.beginPath();
+      ctx.arc(px, py, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = rip.purple
+        ? `rgba(136, 85, 255, ${ringOp})`
+        : `rgba(0, 229, 255, ${ringOp})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // ── Layer 2: 01 digits at grid intersections ──
+    ctx.font = '13px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        let maxOp = 0;
+        let purple = false;
+
+        for (const rip of ripples) {
+          const dx = c - rip.cx;
+          const dy = r - rip.cy;
+          // organic wobble — imperfect medium
+          const noise = Math.sin(dx * 3.7 + dy * 2.3 + rip.born * 0.001) * 0.22;
+          const dist = Math.sqrt(dx * dx + dy * dy) + noise;
+          if (dist > rip.maxR) continue;
+
+          const age = (now - rip.born) / 1000;
+          const front = rip.speed * age;
+          if (dist > front + 1.5) continue;
+
+          // expanding gaussian wavefront
+          const diff = dist - front;
+          const ring = Math.exp(-(diff * diff) / 1.0);
+          const spatial = Math.sqrt(Math.max(0, 1 - dist / rip.maxR));
+          const temporal = Math.exp(-age * 0.25);
+
+          // origin flash — bright burst on spawn
+          const trueDist = Math.sqrt(dx * dx + dy * dy);
+          const isOrigin = trueDist < 0.7;
+          const flash = isOrigin && age < 0.4 ? (1 - age / 0.4) * 0.35 : 0;
+          const origin = isOrigin ? Math.exp(-age * 0.12) * 2.0 : 0;
+
+          const op = Math.max(rip.peak * ring * spatial * temporal + flash, rip.peak * origin);
+          if (op > maxOp) { maxOp = op; purple = rip.purple; }
+        }
+
+        if (maxOp < 0.003) continue;
+        maxOp = Math.min(maxOp, 0.6);
+
+        ctx.fillStyle = purple
+          ? `rgba(136, 85, 255, ${maxOp})`
+          : `rgba(0, 229, 255, ${maxOp})`;
+        ctx.fillText(ch(r, c), c * CELL, r * CELL);
+      }
+    }
+
+    // ── Layer 3: bloom pass — soft glow ──
+    bctx.clearRect(0, 0, bloom.width, bloom.height);
+    bctx.drawImage(canvas, 0, 0, bloom.width, bloom.height);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.45;
+    ctx.drawImage(bloom, 0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1.0;
+
+    requestAnimationFrame(frame);
   }
-  draw();
+
+  requestAnimationFrame(frame);
 })();
 
 // ── Hex stream decoration ──
