@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Output};
 
-const SCHEMA_VERSION: &str = "thronglets.bootstrap.v1";
+const SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
 
 fn run_bin(args: &[&str], home: &Path, data_dir: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_thronglets"))
@@ -43,10 +43,10 @@ fn detect_json_reports_present_adapters_and_generic_contract() {
     );
 
     let summary = parse_command_data(&output, "detect");
-    assert_eq!(summary["status"], Value::String("ready".into()));
+    assert_eq!(summary["summary"]["status"], Value::String("ready".into()));
     let detections = summary["detections"].as_array().unwrap();
     assert!(
-        summary["recommended_agents"]
+        summary["summary"]["recommended_agents"]
             .as_array()
             .unwrap()
             .iter()
@@ -89,8 +89,8 @@ fn install_plan_generic_json_includes_contract_examples() {
     );
 
     let summary = parse_command_data(&output, "install-plan");
-    assert_eq!(summary["status"], Value::String("planned".into()));
-    assert_eq!(summary["restart_required"], Value::Bool(false));
+    assert_eq!(summary["summary"]["status"], Value::String("planned".into()));
+    assert_eq!(summary["summary"]["restart_required"], Value::Bool(false));
     let plans = summary["plans"].as_array().unwrap();
     assert_eq!(plans.len(), 1);
     let plan = &plans[0];
@@ -117,10 +117,10 @@ fn apply_plan_codex_then_doctor_reports_healthy() {
         String::from_utf8_lossy(&apply_output.stderr)
     );
     let summary = parse_command_data(&apply_output, "apply-plan");
-    assert_eq!(summary["status"], Value::String("applied".into()));
-    assert_eq!(summary["restart_required"], Value::Bool(true));
+    assert_eq!(summary["summary"]["status"], Value::String("applied".into()));
+    assert_eq!(summary["summary"]["restart_required"], Value::Bool(true));
     assert!(
-        summary["next_steps"]
+        summary["summary"]["next_steps"]
             .as_array()
             .unwrap()
             .iter()
@@ -137,9 +137,9 @@ fn apply_plan_codex_then_doctor_reports_healthy() {
         String::from_utf8_lossy(&doctor_output.stderr)
     );
     let summary = parse_doctor_envelope(&doctor_output);
-    assert_eq!(summary["status"], Value::String("healthy".into()));
-    assert_eq!(summary["healthy"], Value::Bool(true));
-    assert!(summary["next_steps"].as_array().unwrap().is_empty());
+    assert_eq!(summary["summary"]["status"], Value::String("healthy".into()));
+    assert_eq!(summary["summary"]["healthy"], Value::Bool(true));
+    assert!(summary["summary"]["next_steps"].as_array().unwrap().is_empty());
     let reports = summary["reports"].as_array().unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["healthy"], Value::Bool(true));
@@ -162,10 +162,10 @@ fn doctor_fails_for_unconfigured_specific_adapter() {
     );
 
     let summary = parse_doctor_envelope(&output);
-    assert_eq!(summary["status"], Value::String("needs-fix".into()));
-    assert_eq!(summary["healthy"], Value::Bool(false));
+    assert_eq!(summary["summary"]["status"], Value::String("needs-fix".into()));
+    assert_eq!(summary["summary"]["healthy"], Value::Bool(false));
     assert_eq!(
-        summary["next_steps"].as_array().unwrap()[0],
+        summary["summary"]["next_steps"].as_array().unwrap()[0],
         Value::String("thronglets apply-plan --agent codex".into())
     );
     let reports = summary["reports"].as_array().unwrap();
@@ -202,19 +202,19 @@ fn bootstrap_codex_json_applies_and_reports_healthy() {
         Value::String(SCHEMA_VERSION.into())
     );
     assert_eq!(envelope["command"], Value::String("bootstrap".into()));
-    assert_eq!(envelope["data"]["status"], Value::String("healthy".into()));
-    assert_eq!(envelope["data"]["healthy"], Value::Bool(true));
-    assert_eq!(envelope["data"]["restart_required"], Value::Bool(true));
+    assert_eq!(envelope["data"]["summary"]["status"], Value::String("healthy".into()));
+    assert_eq!(envelope["data"]["summary"]["healthy"], Value::Bool(true));
+    assert_eq!(envelope["data"]["summary"]["restart_required"], Value::Bool(true));
     assert!(
-        envelope["data"]["next_steps"]
+        envelope["data"]["summary"]["next_steps"]
             .as_array()
             .unwrap()
             .iter()
             .any(|step| step == "Restart the targeted agent so the new integration is loaded.")
     );
-    assert_eq!(envelope["data"]["applied"].as_array().unwrap().len(), 1);
+    assert_eq!(envelope["data"]["results"].as_array().unwrap().len(), 1);
     assert_eq!(
-        envelope["data"]["doctor"].as_array().unwrap()[0]["healthy"],
+        envelope["data"]["reports"].as_array().unwrap()[0]["healthy"],
         Value::Bool(true)
     );
 }

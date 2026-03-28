@@ -78,9 +78,11 @@ thronglets bootstrap --agent codex --json
 
 ```json
 {
-  "schema_version": "thronglets.bootstrap.v1",
+  "schema_version": "thronglets.bootstrap.v2",
   "command": "bootstrap",
-  "data": {}
+  "data": {
+    "summary": {}
+  }
 }
 ```
 

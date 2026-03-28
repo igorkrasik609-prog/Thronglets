@@ -30,7 +30,7 @@ use thronglets::trace::{Outcome, Trace};
 use thronglets::workspace::{self, WorkspaceState};
 use tracing::info;
 
-const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v1";
+const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
 
 #[derive(Serialize)]
 struct MachineEnvelope<T> {
@@ -40,46 +40,71 @@ struct MachineEnvelope<T> {
 }
 
 #[derive(Serialize)]
-struct BootstrapReport {
+struct BootstrapSummary {
     status: &'static str,
-    detections: Vec<AdapterDetection>,
-    plans: Vec<AdapterPlan>,
-    applied: Vec<AdapterApplyResult>,
-    doctor: Vec<AdapterDoctor>,
     healthy: bool,
     restart_required: bool,
     next_steps: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct DoctorReport {
-    status: &'static str,
-    healthy: bool,
-    next_steps: Vec<String>,
+struct BootstrapData {
+    summary: BootstrapSummary,
+    detections: Vec<AdapterDetection>,
+    plans: Vec<AdapterPlan>,
+    results: Vec<AdapterApplyResult>,
     reports: Vec<AdapterDoctor>,
 }
 
 #[derive(Serialize)]
-struct DetectReport {
+struct DoctorSummary {
+    status: &'static str,
+    healthy: bool,
+    next_steps: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct DoctorData {
+    summary: DoctorSummary,
+    reports: Vec<AdapterDoctor>,
+}
+
+#[derive(Serialize)]
+struct DetectSummary {
     status: &'static str,
     detected_agents: Vec<String>,
     recommended_agents: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct DetectData {
+    summary: DetectSummary,
     detections: Vec<AdapterDetection>,
 }
 
 #[derive(Serialize)]
-struct InstallPlanReport {
+struct PlanSummary {
     status: &'static str,
     restart_required: bool,
     next_steps: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct InstallPlanData {
+    summary: PlanSummary,
     plans: Vec<AdapterPlan>,
 }
 
 #[derive(Serialize)]
-struct ApplyPlanReport {
+struct ApplySummary {
     status: &'static str,
     restart_required: bool,
     next_steps: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ApplyPlanData {
+    summary: ApplySummary,
     results: Vec<AdapterApplyResult>,
 }
 
@@ -468,20 +493,20 @@ fn render_detections(detections: &[AdapterDetection]) {
     }
 }
 
-fn render_detect_report(summary: &DetectReport) {
-    println!("Detect status: {}", summary.status);
+fn render_detect_report(data: &DetectData) {
+    println!("Detect status: {}", data.summary.status);
     println!(
         "Detected: {}",
-        if summary.detected_agents.is_empty() {
+        if data.summary.detected_agents.is_empty() {
             "none".into()
         } else {
-            summary.detected_agents.join(", ")
+            data.summary.detected_agents.join(", ")
         }
     );
-    if !summary.recommended_agents.is_empty() {
-        println!("Recommended: {}", summary.recommended_agents.join(", "));
+    if !data.summary.recommended_agents.is_empty() {
+        println!("Recommended: {}", data.summary.recommended_agents.join(", "));
     }
-    let attention: Vec<_> = summary
+    let attention: Vec<_> = data
         .detections
         .iter()
         .filter(|detection| detection.agent != AdapterKind::Generic.key())
@@ -514,22 +539,22 @@ fn render_install_plans(plans: &[AdapterPlan]) {
     }
 }
 
-fn render_install_plan_report(summary: &InstallPlanReport) {
-    println!("Install plan status: {}", summary.status);
-    let planned_agents: Vec<_> = summary.plans.iter().map(|plan| plan.agent.as_str()).collect();
+fn render_install_plan_report(data: &InstallPlanData) {
+    println!("Install plan status: {}", data.summary.status);
+    let planned_agents: Vec<_> = data.plans.iter().map(|plan| plan.agent.as_str()).collect();
     if !planned_agents.is_empty() {
         println!("Plan: {}", planned_agents.join(", "));
     }
-    if summary.restart_required {
+    if data.summary.restart_required {
         println!("Restart required: yes");
     }
-    for step in &summary.next_steps {
+    for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
-    if summary.plans.iter().any(|plan| plan.contract.is_some()) {
+    if data.plans.iter().any(|plan| plan.contract.is_some()) {
         println!("Next: rerun with --json to inspect contract examples.");
         println!();
-        render_install_plans(&summary.plans);
+        render_install_plans(&data.plans);
     }
 }
 
@@ -554,9 +579,9 @@ fn render_doctor_reports(reports: &[AdapterDoctor]) {
     }
 }
 
-fn render_doctor_report(summary: &DoctorReport) {
-    println!("Doctor status: {}", summary.status);
-    let healthy_agents: Vec<_> = summary
+fn render_doctor_report(data: &DoctorData) {
+    println!("Doctor status: {}", data.summary.status);
+    let healthy_agents: Vec<_> = data
         .reports
         .iter()
         .filter(|report| report.healthy)
@@ -565,10 +590,10 @@ fn render_doctor_report(summary: &DoctorReport) {
     if !healthy_agents.is_empty() {
         println!("Healthy: {}", healthy_agents.join(", "));
     }
-    for step in &summary.next_steps {
+    for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
-    let unhealthy: Vec<_> = summary
+    let unhealthy: Vec<_> = data
         .reports
         .iter()
         .filter(|report| !report.healthy)
@@ -603,9 +628,9 @@ fn render_apply_results(results: &[AdapterApplyResult]) {
     }
 }
 
-fn render_apply_plan_report(summary: &ApplyPlanReport) {
-    println!("Apply status: {}", summary.status);
-    let applied_agents: Vec<_> = summary
+fn render_apply_plan_report(data: &ApplyPlanData) {
+    println!("Apply status: {}", data.summary.status);
+    let applied_agents: Vec<_> = data
         .results
         .iter()
         .filter(|result| result.applied)
@@ -614,13 +639,13 @@ fn render_apply_plan_report(summary: &ApplyPlanReport) {
     if !applied_agents.is_empty() {
         println!("Applied: {}", applied_agents.join(", "));
     }
-    if summary.restart_required {
+    if data.summary.restart_required {
         println!("Restart required: yes");
     }
-    for step in &summary.next_steps {
+    for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
-    let skipped: Vec<_> = summary
+    let skipped: Vec<_> = data
         .results
         .iter()
         .filter(|result| !result.applied)
@@ -632,10 +657,10 @@ fn render_apply_plan_report(summary: &ApplyPlanReport) {
     }
 }
 
-fn render_bootstrap_report(report: &BootstrapReport) {
-    println!("Bootstrap status: {}", report.status);
-    let installed: Vec<_> = report
-        .applied
+fn render_bootstrap_report(data: &BootstrapData) {
+    println!("Bootstrap status: {}", data.summary.status);
+    let installed: Vec<_> = data
+        .results
         .iter()
         .filter(|result| result.applied)
         .map(|result| result.agent.as_str())
@@ -643,15 +668,15 @@ fn render_bootstrap_report(report: &BootstrapReport) {
     if !installed.is_empty() {
         println!("Installed: {}", installed.join(", "));
     }
-    if report.restart_required {
+    if data.summary.restart_required {
         println!("Restart required: yes");
     }
-    for step in &report.next_steps {
+    for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
-    if !report.healthy {
-        let unhealthy: Vec<_> = report
-            .doctor
+    if !data.summary.healthy {
+        let unhealthy: Vec<_> = data
+            .reports
             .iter()
             .filter(|doctor| !doctor.healthy)
             .cloned()
@@ -663,10 +688,10 @@ fn render_bootstrap_report(report: &BootstrapReport) {
     }
 }
 
-fn render_setup_report(report: &BootstrapReport) {
-    println!("Thronglets setup: {}", report.status);
-    let installed: Vec<_> = report
-        .applied
+fn render_setup_report(data: &BootstrapData) {
+    println!("Thronglets setup: {}", data.summary.status);
+    let installed: Vec<_> = data
+        .results
         .iter()
         .filter(|result| result.applied)
         .map(|result| result.agent.as_str())
@@ -674,16 +699,16 @@ fn render_setup_report(report: &BootstrapReport) {
     if !installed.is_empty() {
         println!("Installed: {}", installed.join(", "));
     }
-    if report.restart_required {
+    if data.summary.restart_required {
         println!("Restart required: yes");
     }
-    for step in &report.next_steps {
+    for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
     println!("Other agents can reuse `thronglets prehook` and `thronglets hook`.");
 }
 
-fn summarize_doctor_reports(target: AdapterArg, reports: Vec<AdapterDoctor>) -> DoctorReport {
+fn summarize_doctor_reports(target: AdapterArg, reports: Vec<AdapterDoctor>) -> DoctorData {
     let healthy = !doctor_should_fail(target, &reports);
     let mut next_steps: Vec<_> = reports
         .iter()
@@ -692,15 +717,17 @@ fn summarize_doctor_reports(target: AdapterArg, reports: Vec<AdapterDoctor>) -> 
     next_steps.sort();
     next_steps.dedup();
 
-    DoctorReport {
-        status: if healthy { "healthy" } else { "needs-fix" },
-        healthy,
-        next_steps,
+    DoctorData {
+        summary: DoctorSummary {
+            status: if healthy { "healthy" } else { "needs-fix" },
+            healthy,
+            next_steps,
+        },
         reports,
     }
 }
 
-fn summarize_detections(detections: Vec<AdapterDetection>) -> DetectReport {
+fn summarize_detections(detections: Vec<AdapterDetection>) -> DetectData {
     let detected_agents = detections
         .iter()
         .filter(|detection| detection.present)
@@ -712,15 +739,17 @@ fn summarize_detections(detections: Vec<AdapterDetection>) -> DetectReport {
         .map(|detection| detection.agent.clone())
         .collect();
 
-    DetectReport {
-        status: "ready",
-        detected_agents,
-        recommended_agents,
+    DetectData {
+        summary: DetectSummary {
+            status: "ready",
+            detected_agents,
+            recommended_agents,
+        },
         detections,
     }
 }
 
-fn summarize_install_plans(plans: Vec<AdapterPlan>) -> InstallPlanReport {
+fn summarize_install_plans(plans: Vec<AdapterPlan>) -> InstallPlanData {
     let restart_required = plans.iter().any(|plan| plan.requires_restart);
     let mut next_steps: Vec<_> = plans
         .iter()
@@ -729,25 +758,29 @@ fn summarize_install_plans(plans: Vec<AdapterPlan>) -> InstallPlanReport {
     next_steps.sort();
     next_steps.dedup();
 
-    InstallPlanReport {
-        status: "planned",
-        restart_required,
-        next_steps,
+    InstallPlanData {
+        summary: PlanSummary {
+            status: "planned",
+            restart_required,
+            next_steps,
+        },
         plans,
     }
 }
 
-fn summarize_apply_results(results: Vec<AdapterApplyResult>) -> ApplyPlanReport {
+fn summarize_apply_results(results: Vec<AdapterApplyResult>) -> ApplyPlanData {
     let restart_required = results.iter().any(|result| result.requires_restart);
     let mut next_steps = Vec::new();
     if restart_required {
         next_steps.push("Restart the targeted agent so the new integration is loaded.".into());
     }
 
-    ApplyPlanReport {
-        status: "applied",
-        restart_required,
-        next_steps,
+    ApplyPlanData {
+        summary: ApplySummary {
+            status: "applied",
+            restart_required,
+            next_steps,
+        },
         results,
     }
 }
@@ -869,7 +902,7 @@ fn bootstrap_selected_adapters(
     home_dir: &Path,
     data_dir: &Path,
     bin_path: &Path,
-) -> std::io::Result<BootstrapReport> {
+) -> std::io::Result<BootstrapData> {
     let detections: Vec<_> = selected_adapters(target)
         .into_iter()
         .map(|adapter| detect_adapter(home_dir, data_dir, adapter))
@@ -884,24 +917,26 @@ fn bootstrap_selected_adapters(
         .map(|adapter| doctor_adapter(home_dir, data_dir, adapter))
         .collect();
     let doctor_summary = summarize_doctor_reports(target, doctor_reports);
-    let healthy = doctor_summary.healthy;
+    let healthy = doctor_summary.summary.healthy;
     let restart_required = applied.iter().any(|result| result.requires_restart);
-    let mut next_steps = doctor_summary.next_steps.clone();
+    let mut next_steps = doctor_summary.summary.next_steps.clone();
     if restart_required {
         next_steps.push("Restart the targeted agent so the new integration is loaded.".into());
     }
     next_steps.sort();
     next_steps.dedup();
 
-    Ok(BootstrapReport {
-        status: if healthy { "healthy" } else { "needs-fix" },
+    Ok(BootstrapData {
+        summary: BootstrapSummary {
+            status: if healthy { "healthy" } else { "needs-fix" },
+            healthy,
+            restart_required,
+            next_steps,
+        },
         detections,
         plans,
-        applied,
-        doctor: doctor_summary.reports,
-        healthy,
-        restart_required,
-        next_steps,
+        results: applied,
+        reports: doctor_summary.reports,
     })
 }
 
@@ -1587,7 +1622,7 @@ async fn main() {
             let report = bootstrap_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
                 .expect("failed to bootstrap adapter plan");
             render_setup_report(&report);
-            if !report.healthy {
+            if !report.summary.healthy {
                 std::process::exit(1);
             }
         }
@@ -1646,7 +1681,7 @@ async fn main() {
             } else {
                 render_doctor_report(&summary);
             }
-            if !summary.healthy {
+            if !summary.summary.healthy {
                 std::process::exit(1);
             }
         }
@@ -1661,7 +1696,7 @@ async fn main() {
             } else {
                 render_bootstrap_report(&report);
             }
-            if !report.healthy {
+            if !report.summary.healthy {
                 std::process::exit(1);
             }
         }

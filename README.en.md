@@ -78,9 +78,11 @@ All machine-facing commands now share one stable envelope:
 
 ```json
 {
-  "schema_version": "thronglets.bootstrap.v1",
+  "schema_version": "thronglets.bootstrap.v2",
   "command": "bootstrap",
-  "data": {}
+  "data": {
+    "summary": {}
+  }
 }
 ```
 
