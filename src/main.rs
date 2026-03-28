@@ -187,6 +187,10 @@ enum Commands {
         /// Fail if no prehook profile samples are supplied on stdin.
         #[arg(long, default_value_t = false)]
         require_profile_samples: bool,
+
+        /// Emit machine-readable JSON instead of a text summary.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 
     /// Replay recent sessions offline and score sparse-signal usefulness.
@@ -1126,33 +1130,63 @@ async fn main() {
             project_root,
             global,
             require_profile_samples,
+            json,
         } => {
             let mut input = String::new();
             let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
+            let profile_thresholds = ProfileCheckThresholds::default();
 
             let profile_section = match summarize_prehook_profiles(&input) {
                 Some(summary) => {
-                    let (passed, rendered) =
-                        summary.render_check(&ProfileCheckThresholds::default());
+                    let violations = summary.check(&profile_thresholds);
+                    let passed = violations.is_empty();
+                    let (_, rendered) = summary.render_check(&profile_thresholds);
                     (
                         if passed { "PASS" } else { "FAIL" },
                         !passed,
                         strip_check_header(&rendered),
+                        serde_json::json!({
+                            "status": if passed { "PASS" } else { "FAIL" },
+                            "thresholds": profile_thresholds,
+                            "summary": summary,
+                            "violations": violations,
+                            "notes": Vec::<String>::new(),
+                        }),
                     )
                 }
-                None => (
-                    if require_profile_samples {
+                None => {
+                    let status = if require_profile_samples {
                         "FAIL"
                     } else {
                         "SKIP"
-                    },
-                    require_profile_samples,
-                    if require_profile_samples {
-                        "violations: no prehook profile samples found".to_string()
+                    };
+                    let violations = if require_profile_samples {
+                        vec!["no prehook profile samples found".to_string()]
                     } else {
-                        "notes: no prehook profile samples found".to_string()
-                    },
-                ),
+                        Vec::new()
+                    };
+                    let notes = if require_profile_samples {
+                        Vec::new()
+                    } else {
+                        vec!["no prehook profile samples found".to_string()]
+                    };
+                    (
+                        status,
+                        require_profile_samples,
+                        if require_profile_samples {
+                            "violations: no prehook profile samples found".to_string()
+                        } else {
+                            "notes: no prehook profile samples found".to_string()
+                        },
+                        serde_json::json!({
+                            "status": status,
+                            "thresholds": profile_thresholds,
+                            "summary": serde_json::Value::Null,
+                            "violations": violations,
+                            "notes": notes,
+                        }),
+                    )
+                }
             };
 
             let store = open_store(&dir);
@@ -1163,6 +1197,7 @@ async fn main() {
                     std::env::current_dir().expect("failed to determine current working directory")
                 }))
             };
+            let eval_thresholds = EvalCheckThresholds::default();
             let eval_section = match evaluate_signal_quality(
                 &store,
                 hours,
@@ -1173,24 +1208,59 @@ async fn main() {
             .expect("failed to evaluate signal quality")
             {
                 Some(summary) => {
-                    let (status, rendered) = summary.render_check(&EvalCheckThresholds::default());
+                    let check = summary.check(&eval_thresholds);
+                    let (status, rendered) = summary.render_check(&eval_thresholds);
                     (
                         status.label(),
                         matches!(status, EvalCheckStatus::Fail),
                         strip_check_header(&rendered),
+                        serde_json::json!({
+                            "status": status.label(),
+                            "thresholds": eval_thresholds,
+                            "summary": summary,
+                            "check": check,
+                        }),
                     )
                 }
-                None => (
-                    "SKIP",
-                    false,
-                    "notes: not enough recent session history to evaluate signals yet".to_string(),
-                ),
+                None => {
+                    let notes = vec![
+                        "not enough recent session history to evaluate signals yet".to_string()
+                    ];
+                    (
+                        "SKIP",
+                        false,
+                        "notes: not enough recent session history to evaluate signals yet"
+                            .to_string(),
+                        serde_json::json!({
+                            "status": "SKIP",
+                            "thresholds": eval_thresholds,
+                            "summary": serde_json::Value::Null,
+                            "check": {
+                                "status": "Skip",
+                                "violations": Vec::<String>::new(),
+                                "notes": notes,
+                            },
+                        }),
+                    )
+                }
             };
 
             let overall_failed = profile_section.1 || eval_section.1;
-            println!("{}", if overall_failed { "FAIL" } else { "PASS" });
-            print_release_section("profile", profile_section.0, &profile_section.2);
-            print_release_section("eval", eval_section.0, &eval_section.2);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": if overall_failed { "FAIL" } else { "PASS" },
+                        "profile": profile_section.3,
+                        "eval": eval_section.3,
+                    }))
+                    .expect("failed to serialize release check")
+                );
+            } else {
+                println!("{}", if overall_failed { "FAIL" } else { "PASS" });
+                print_release_section("profile", profile_section.0, &profile_section.2);
+                print_release_section("eval", eval_section.0, &eval_section.2);
+            }
             if overall_failed {
                 std::process::exit(1);
             }

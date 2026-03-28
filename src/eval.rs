@@ -27,7 +27,7 @@ pub enum EvalFocus {
     Adjacency,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum EvalCheckStatus {
     Pass,
     Fail,
@@ -73,7 +73,7 @@ pub struct SignalEvalSummary {
     pub adjacency_breakdown: BTreeMap<String, FileGuidanceEvalBreakdown>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EvalCheckThresholds {
     pub min_scored_sessions: usize,
     pub min_edit_points: usize,
@@ -101,7 +101,7 @@ impl Default for EvalCheckThresholds {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvalCheckResult {
     pub status: EvalCheckStatus,
     pub violations: Vec<String>,

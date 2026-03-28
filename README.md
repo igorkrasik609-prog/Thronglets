@@ -101,6 +101,12 @@ cat prehook.log | thronglets release-check --global
 cat prehook.log | thronglets release-check --global --require-profile-samples
 ```
 
+如果你想让 CI 或其他 agent 直接消费结构化 gate 结果，可以再加：
+
+```bash
+cat prehook.log | thronglets release-check --global --json
+```
+
 如果你想看全局 trace 池，而不是当前项目，显式加：
 
 ```bash

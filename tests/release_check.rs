@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
+use serde_json::Value;
 use thronglets::context::simhash;
 use thronglets::identity::NodeIdentity;
 use thronglets::storage::TraceStore;
@@ -147,4 +148,82 @@ fn release_check_can_require_profile_samples() {
     assert!(stdout.starts_with("FAIL"));
     assert!(stdout.contains("profile: FAIL"));
     assert!(stdout.contains("no prehook profile samples found"));
+}
+
+#[test]
+fn release_check_can_emit_json() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let output = run_release_check(
+        dir.path().to_str().unwrap(),
+        &["--json"],
+        &sparse_profile_input(),
+    );
+
+    assert!(
+        output.status.success(),
+        "release-check --json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("parse release-check json");
+    assert_eq!(parsed["status"], "PASS");
+    assert_eq!(parsed["profile"]["status"], "PASS");
+    assert_eq!(parsed["eval"]["status"], "SKIP");
+}
+
+#[test]
+fn release_check_json_reports_eval_failures() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = TraceStore::open(&dir.path().join("traces.db")).unwrap();
+    let identity = NodeIdentity::generate();
+
+    let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
+    for session in ["s1", "s2", "s3", "s4", "s5", "s6", "s7"] {
+        let companion = if matches!(session, "s1" | "s2") {
+            "helper.rs"
+        } else {
+            "other.rs"
+        };
+        let events = [
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                "edit file: main.rs".to_string(),
+            ),
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                format!("edit file: {companion}"),
+            ),
+        ];
+        for (capability, outcome, context) in events {
+            let trace = make_trace(&identity, capability, outcome, &context, session, timestamp);
+            store.insert(&trace).unwrap();
+            timestamp += 1_000;
+        }
+        timestamp += 60_000;
+    }
+
+    let output = run_release_check(
+        dir.path().to_str().unwrap(),
+        &["--global", "--json"],
+        &sparse_profile_input(),
+    );
+
+    assert!(
+        !output.status.success(),
+        "release-check --json unexpectedly passed"
+    );
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("parse release-check failure json");
+    assert_eq!(parsed["status"], "FAIL");
+    assert_eq!(parsed["profile"]["status"], "PASS");
+    assert_eq!(parsed["eval"]["status"], "FAIL");
+    assert!(
+        parsed["eval"]["check"]["violations"]
+            .as_array()
+            .expect("violations array")
+            .len()
+            >= 1
+    );
 }

@@ -1,4 +1,5 @@
 use crate::contracts::PREHOOK_MAX_HINTS;
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 const PREHOOK_PROFILE_PREFIX: &str = "[thronglets:prehook] ";
@@ -21,7 +22,7 @@ pub struct PrehookProfileSample {
     pub total_us: u128,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PrehookProfileSummary {
     pub samples: usize,
     pub avg_total_us: f64,
@@ -40,7 +41,7 @@ pub struct PrehookProfileSummary {
     pub decision_path_costs: BTreeMap<String, DecisionPathCost>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DecisionPathCost {
     pub samples: usize,
     pub total_stdout_bytes: usize,
@@ -48,7 +49,7 @@ pub struct DecisionPathCost {
     pub collective_queries_used: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProfileCheckThresholds {
     pub min_samples: usize,
     pub max_avg_stdout_bytes: f64,
@@ -152,19 +153,24 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
         *output_modes.entry(sample.output_mode).or_insert(0) += 1;
         *decision_paths.entry(decision_path.clone()).or_insert(0) += 1;
         *evidence_scopes.entry(sample.evidence_scope).or_insert(0) += 1;
-        *file_guidance_gates.entry(sample.file_guidance_gate).or_insert(0) += 1;
-        let cost = decision_path_costs.entry(decision_path.clone()).or_insert(DecisionPathCost {
-            samples: 0,
-            total_stdout_bytes: 0,
-            total_us: 0,
-            collective_queries_used: 0,
-        });
+        *file_guidance_gates
+            .entry(sample.file_guidance_gate)
+            .or_insert(0) += 1;
+        let cost = decision_path_costs
+            .entry(decision_path.clone())
+            .or_insert(DecisionPathCost {
+                samples: 0,
+                total_stdout_bytes: 0,
+                total_us: 0,
+                collective_queries_used: 0,
+            });
         cost.samples += 1;
         cost.total_stdout_bytes += sample.stdout_bytes;
         cost.total_us += sample.total_us;
         cost.collective_queries_used += sample.collective_queries_used;
         if sample.collective_queries_used > 0 {
-            *collective_query_paths.entry(decision_path).or_insert(0) += sample.collective_queries_used;
+            *collective_query_paths.entry(decision_path).or_insert(0) +=
+                sample.collective_queries_used;
         }
     }
 
@@ -199,7 +205,10 @@ impl PrehookProfileSummary {
                 "avg collective_queries_used: {:.2}",
                 self.avg_collective_queries_used
             ),
-            format!("emitted lines: {}", render_emitted_counts(&self.emitted_counts)),
+            format!(
+                "emitted lines: {}",
+                render_emitted_counts(&self.emitted_counts)
+            ),
             format!(
                 "max-hint saturation: {:.1}% ({}/{})",
                 self.saturated_samples as f64 / self.samples as f64 * 100.0,
@@ -210,7 +219,10 @@ impl PrehookProfileSummary {
             format!("output modes: {}", render_counts(&self.output_modes)),
             format!("decision paths: {}", render_counts(&self.decision_paths)),
             format!("evidence scopes: {}", render_counts(&self.evidence_scopes)),
-            format!("file guidance gates: {}", render_counts(&self.file_guidance_gates)),
+            format!(
+                "file guidance gates: {}",
+                render_counts(&self.file_guidance_gates)
+            ),
             format!(
                 "collective query paths: {}",
                 render_counts_or_none(&self.collective_query_paths)
@@ -230,7 +242,10 @@ impl PrehookProfileSummary {
     pub fn top_optimization_candidate(&self) -> String {
         let Some((path, cost)) = sorted_decision_path_costs(&self.decision_path_costs)
             .into_iter()
-            .find(|(path, cost)| *path != "none" && (cost.collective_queries_used > 0 || cost.total_stdout_bytes > 0)) else {
+            .find(|(path, cost)| {
+                *path != "none" && (cost.collective_queries_used > 0 || cost.total_stdout_bytes > 0)
+            })
+        else {
             return "no strong hotspot yet".to_string();
         };
 
@@ -295,8 +310,14 @@ impl PrehookProfileSummary {
         let failures = self.check(thresholds);
         let mut lines = vec![
             format!("samples: {}", self.samples),
-            format!("avg stdout_bytes: {:.1} <= {:.1}", self.avg_stdout_bytes, thresholds.max_avg_stdout_bytes),
-            format!("p95 stdout_bytes: {} <= {}", self.p95_stdout_bytes, thresholds.max_p95_stdout_bytes),
+            format!(
+                "avg stdout_bytes: {:.1} <= {:.1}",
+                self.avg_stdout_bytes, thresholds.max_avg_stdout_bytes
+            ),
+            format!(
+                "p95 stdout_bytes: {} <= {}",
+                self.p95_stdout_bytes, thresholds.max_p95_stdout_bytes
+            ),
             format!(
                 "avg collective_queries_used: {:.2} <= {:.2}",
                 self.avg_collective_queries_used, thresholds.max_avg_collective_queries
@@ -378,8 +399,14 @@ fn sorted_decision_path_costs<'a>(
         cost_b
             .collective_queries_used
             .cmp(&cost_a.collective_queries_used)
-            .then_with(|| avg_usize(cost_b.total_stdout_bytes, cost_b.samples).total_cmp(&avg_usize(cost_a.total_stdout_bytes, cost_a.samples)))
-            .then_with(|| avg_u128(cost_b.total_us, cost_b.samples).total_cmp(&avg_u128(cost_a.total_us, cost_a.samples)))
+            .then_with(|| {
+                avg_usize(cost_b.total_stdout_bytes, cost_b.samples)
+                    .total_cmp(&avg_usize(cost_a.total_stdout_bytes, cost_a.samples))
+            })
+            .then_with(|| {
+                avg_u128(cost_b.total_us, cost_b.samples)
+                    .total_cmp(&avg_u128(cost_a.total_us, cost_a.samples))
+            })
             .then_with(|| cost_b.samples.cmp(&cost_a.samples))
             .then_with(|| label_a.cmp(label_b))
     });
@@ -444,7 +471,10 @@ mod tests {
         assert_eq!(summary.file_guidance_gates["open"], 1);
         assert_eq!(summary.file_guidance_gates["closed"], 1);
         assert_eq!(summary.collective_query_paths["repair"], 1);
-        assert_eq!(summary.decision_path_costs["repair"].collective_queries_used, 1);
+        assert_eq!(
+            summary.decision_path_costs["repair"].collective_queries_used,
+            1
+        );
         assert_eq!(summary.decision_path_costs["repair"].total_stdout_bytes, 88);
         assert_eq!(
             summary.top_optimization_candidate(),
@@ -493,6 +523,7 @@ mod tests {
         assert!(!passed);
         assert!(rendered.starts_with("FAIL"));
         assert!(rendered.contains("violations:"));
-        assert!(rendered.contains("top optimization candidate: reduce collective queries in adjacency path"));
+        assert!(rendered
+            .contains("top optimization candidate: reduce collective queries in adjacency path"));
     }
 }

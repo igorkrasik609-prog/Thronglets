@@ -9,6 +9,7 @@
 - **Offline threshold trials** — `thronglets eval-signals` now accepts `--local-history-gate-min` and `--pattern-support-min` so operators can test stricter or looser signal thresholds without touching live hooks
 - **Threshold deltas** — non-default `eval-signals` trials now auto-compare against the default `2/2` baseline so operators can see coverage and precision tradeoffs in one run
 - **Release gate** — `thronglets release-check` now combines prehook profile cost checks with offline signal quality checks, using `SKIP` for low-data repos and `FAIL` when measured precision is bad enough to matter
+- **Structured release checks** — `thronglets release-check --json` now emits machine-readable profile/eval gate results so CI and other agents can consume the release decision directly
 
 ## v0.4.0 — 2026-03-28
 

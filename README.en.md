@@ -101,6 +101,12 @@ It prints an overall `PASS / FAIL` plus separate `profile` and `eval` sections. 
 cat prehook.log | thronglets release-check --global --require-profile-samples
 ```
 
+If you want CI or another agent to consume the gate result directly, add:
+
+```bash
+cat prehook.log | thronglets release-check --global --json
+```
+
 If you want the entire trace pool instead of the current project, add:
 
 ```bash
