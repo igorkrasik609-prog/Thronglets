@@ -202,6 +202,17 @@ If you want CI or another agent to consume the gate result directly, add:
 cat prehook.log | thronglets release-check --global --json
 ```
 
+If you also want the same gate to answer “did this release regress relative to the previous baseline?”, add:
+
+```bash
+cat prehook.log | thronglets release-check --global --compare-baseline baseline.json
+```
+
+That reuses the existing `eval-signals --json` baseline comparison inside `release-check`, and only enforces regression checks on the 3 core outcome metrics:
+- `local edit retention`
+- `failed command rate`
+- `first successful change latency`
+
 `release-check` now also supports explicit evaluation scope strategies:
 
 ```bash

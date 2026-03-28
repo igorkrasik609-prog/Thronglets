@@ -61,12 +61,16 @@ Thronglets 现在的主线已经明确：
 
 目标：证明它不只是“设计得优雅”，而是真的让 AI 更稳。
 
-完成标准：
+当前状态：
 - 固定输出 3 个核心结果指标：
   - `local edit retention`
   - `holdout failed command rate`
   - `first successful change latency`
-- 支持和上次 baseline 做自动比较
+- `eval-signals`
+- `release-check`
+都已经支持和上次 baseline 做自动比较
+
+剩余完成标准：
 - 能明确回答：
   - 这版更安静了，还是只是更沉默了
   - 这版更准了，还是只是覆盖更低了

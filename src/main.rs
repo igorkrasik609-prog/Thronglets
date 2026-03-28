@@ -16,8 +16,8 @@ use thronglets::contracts::{
     GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_COLLECTIVE_QUERIES, PREHOOK_MAX_HINTS,
 };
 use thronglets::eval::{
-    EvalCheckStatus, EvalCheckThresholds, EvalConfig, EvalFocus, LocalFeedbackSummary,
-    evaluate_signal_quality,
+    EvalBaselineComparison, EvalCheckStatus, EvalCheckThresholds, EvalConfig, EvalFocus,
+    LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
 };
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
@@ -32,6 +32,9 @@ use thronglets::workspace::{self, WorkspaceState};
 use tracing::info;
 
 const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
+const RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP: i32 = 50;
+const RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP: i32 = 50;
+const RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS: i64 = 5_000;
 
 #[derive(Serialize)]
 struct MachineEnvelope<T> {
@@ -113,6 +116,13 @@ struct ApplySummary {
 struct ApplyPlanData {
     summary: ApplySummary,
     results: Vec<AdapterApplyResult>,
+}
+
+#[derive(Serialize)]
+struct ReleaseBaselineCheck {
+    status: &'static str,
+    violations: Vec<String>,
+    notes: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -397,6 +407,10 @@ enum Commands {
         /// Fail if no prehook profile samples are supplied on stdin.
         #[arg(long, default_value_t = false)]
         require_profile_samples: bool,
+
+        /// Compare offline eval against a previous `eval-signals --json` baseline file.
+        #[arg(long)]
+        compare_baseline: Option<PathBuf>,
 
         /// Emit machine-readable JSON instead of a text summary.
         #[arg(long, default_value_t = false)]
@@ -2009,6 +2023,7 @@ async fn main() {
             eval_scope,
             global,
             require_profile_samples,
+            compare_baseline,
             json,
         } => {
             let mut input = String::new();
@@ -2019,6 +2034,11 @@ async fn main() {
             } else {
                 eval_scope
             };
+            let baseline = compare_baseline
+                .as_deref()
+                .map(load_eval_baseline)
+                .transpose()
+                .expect("failed to load eval baseline");
 
             let profile_section = match summarize_prehook_profiles(&input) {
                 Some(summary) => {
@@ -2092,6 +2112,7 @@ async fn main() {
                         Some(default_project_root.as_path()),
                         local_feedback.clone(),
                         &eval_thresholds,
+                        baseline.as_ref(),
                     ),
                 )],
                 ReleaseEvalScopeArg::Global => vec![(
@@ -2103,6 +2124,7 @@ async fn main() {
                         None,
                         None,
                         &eval_thresholds,
+                        baseline.as_ref(),
                     ),
                 )],
                 ReleaseEvalScopeArg::Both => vec![
@@ -2115,6 +2137,7 @@ async fn main() {
                             Some(default_project_root.as_path()),
                             local_feedback,
                             &eval_thresholds,
+                            baseline.as_ref(),
                         ),
                     ),
                     (
@@ -2126,6 +2149,7 @@ async fn main() {
                             None,
                             None,
                             &eval_thresholds,
+                            baseline.as_ref(),
                         ),
                     ),
                 ],
@@ -2578,6 +2602,7 @@ fn run_release_eval_section(
     project_scope: Option<&Path>,
     local_feedback: Option<LocalFeedbackSummary>,
     thresholds: &EvalCheckThresholds,
+    baseline: Option<&SignalEvalSummary>,
 ) -> (&'static str, bool, String, serde_json::Value) {
     match evaluate_signal_quality(
         store,
@@ -2589,18 +2614,50 @@ fn run_release_eval_section(
     .expect("failed to evaluate signal quality")
     {
         Some(summary) => {
-            let summary = summary.with_local_feedback(local_feedback);
+            let mut summary = summary.with_local_feedback(local_feedback);
+            if let Some(baseline) = baseline {
+                summary = summary.with_comparison_to_baseline(baseline);
+            }
             let check = summary.check(thresholds);
             let (status, rendered) = summary.render_check(thresholds);
+            let baseline_check =
+                release_baseline_check(summary.comparison_to_baseline.as_ref(), check.status);
+            let mut body = strip_check_header(&rendered);
+            if let Some(comparison) = summary.comparison_to_baseline.as_ref() {
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                body.push_str(&render_release_baseline_outcome_line(comparison));
+                body.push('\n');
+                body.push_str(&render_release_baseline_signal_line(comparison));
+                if !baseline_check.violations.is_empty() {
+                    body.push('\n');
+                    body.push_str(&format!(
+                        "baseline violations: {}",
+                        baseline_check.violations.join("; ")
+                    ));
+                } else if !baseline_check.notes.is_empty() {
+                    body.push('\n');
+                    body.push_str(&format!("baseline notes: {}", baseline_check.notes.join("; ")));
+                }
+            }
+            let effective_status = if matches!(status, EvalCheckStatus::Fail)
+                || baseline_check.status == "FAIL"
+            {
+                "FAIL"
+            } else {
+                status.label()
+            };
             (
-                status.label(),
-                matches!(status, EvalCheckStatus::Fail),
-                strip_check_header(&rendered),
+                effective_status,
+                effective_status == "FAIL",
+                body,
                 serde_json::json!({
-                    "status": status.label(),
+                    "status": effective_status,
                     "thresholds": thresholds,
                     "summary": summary,
                     "check": check,
+                    "baseline_check": baseline_check,
                 }),
             )
         }
@@ -2620,9 +2677,109 @@ fn run_release_eval_section(
                         "violations": Vec::<String>::new(),
                         "notes": notes,
                     },
+                    "baseline_check": serde_json::Value::Null,
                 }),
             )
         }
+    }
+}
+
+fn release_baseline_check(
+    comparison: Option<&EvalBaselineComparison>,
+    eval_status: EvalCheckStatus,
+) -> ReleaseBaselineCheck {
+    let Some(comparison) = comparison else {
+        return ReleaseBaselineCheck {
+            status: "SKIP",
+            violations: Vec::new(),
+            notes: Vec::new(),
+        };
+    };
+
+    if matches!(eval_status, EvalCheckStatus::Skip) {
+        return ReleaseBaselineCheck {
+            status: "SKIP",
+            violations: Vec::new(),
+            notes: vec!["baseline comparison inactive because offline eval is still in SKIP".into()],
+        };
+    }
+
+    let mut violations = Vec::new();
+    if let Some(delta) = comparison.local_retention_delta_tenths_pp
+        && delta < -RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP
+    {
+        violations.push(format!(
+            "local edit retention regressed by {}",
+            format_release_option_tenths_pp(Some(delta))
+        ));
+    }
+    if comparison.failed_command_rate_delta_tenths_pp > RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP
+    {
+        violations.push(format!(
+            "failed command rate regressed by {}",
+            format_release_tenths_pp(comparison.failed_command_rate_delta_tenths_pp)
+        ));
+    }
+    if let Some(delta) = comparison.first_successful_change_latency_avg_delta_ms
+        && delta > RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS
+    {
+        violations.push(format!(
+            "first successful change latency avg regressed by {}",
+            format_release_option_ms(Some(delta))
+        ));
+    }
+    if let Some(delta) = comparison.first_successful_change_latency_p50_delta_ms
+        && delta > RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS
+    {
+        violations.push(format!(
+            "first successful change latency p50 regressed by {}",
+            format_release_option_ms(Some(delta))
+        ));
+    }
+
+    ReleaseBaselineCheck {
+        status: if violations.is_empty() { "PASS" } else { "FAIL" },
+        violations,
+        notes: Vec::new(),
+    }
+}
+
+fn render_release_baseline_outcome_line(comparison: &EvalBaselineComparison) -> String {
+    format!(
+        "vs baseline ({} scored): retention {}, failed cmds {}, first change avg {}, p50 {}",
+        comparison.baseline_sessions_scored,
+        format_release_option_tenths_pp(comparison.local_retention_delta_tenths_pp),
+        format_release_tenths_pp(comparison.failed_command_rate_delta_tenths_pp),
+        format_release_option_ms(comparison.first_successful_change_latency_avg_delta_ms),
+        format_release_option_ms(comparison.first_successful_change_latency_p50_delta_ms),
+    )
+}
+
+fn render_release_baseline_signal_line(comparison: &EvalBaselineComparison) -> String {
+    format!(
+        "vs baseline signals: silence {}, repair cov {}, repair step {}, repair exact {}, prep {}, adj {}",
+        format_release_tenths_pp(comparison.edit_silence_rate_delta_tenths_pp),
+        format_release_tenths_pp(comparison.repair_coverage_delta_tenths_pp),
+        format_release_tenths_pp(comparison.repair_first_step_precision_delta_tenths_pp),
+        format_release_tenths_pp(comparison.repair_exact_precision_delta_tenths_pp),
+        format_release_tenths_pp(comparison.preparation_precision_delta_tenths_pp),
+        format_release_tenths_pp(comparison.adjacency_precision_delta_tenths_pp),
+    )
+}
+
+fn format_release_tenths_pp(delta: i32) -> String {
+    format!("{:+}.{}pp", delta / 10, delta.abs() % 10)
+}
+
+fn format_release_option_tenths_pp(delta: Option<i32>) -> String {
+    delta.map(format_release_tenths_pp)
+        .unwrap_or_else(|| "n/a".into())
+}
+
+fn format_release_option_ms(delta: Option<i64>) -> String {
+    match delta {
+        Some(delta) => format!("{delta:+}ms"),
+        None => "n/a".into(),
     }
 }
 
@@ -2675,4 +2832,94 @@ fn print_release_section(name: &str, status: &str, body: &str) {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn eval_summary(
+        retention_percent: u32,
+        failed_calls: usize,
+        command_calls: usize,
+        avg_latency_ms: Option<u64>,
+        p50_latency_ms: Option<u64>,
+    ) -> SignalEvalSummary {
+        SignalEvalSummary {
+            project_scope: Some("/tmp/project".into()),
+            eval_config: EvalConfig::default(),
+            local_feedback: Some(LocalFeedbackSummary {
+                resolved_edits: 10,
+                committed_edits: (retention_percent / 10) as usize,
+                reverted_edits: 0,
+                retention_percent,
+            }),
+            comparison_to_default: None,
+            comparison_to_baseline: None,
+            sessions_considered: 8,
+            sessions_scored: 8,
+            holdout_command_calls: command_calls,
+            holdout_failed_command_calls: failed_calls,
+            sessions_with_successful_change: 8,
+            first_successful_change_latency_avg_ms: avg_latency_ms,
+            first_successful_change_latency_p50_ms: p50_latency_ms,
+            edit_points: 20,
+            edit_points_with_signal: 1,
+            repair_opportunities: 4,
+            repair_predictions: 3,
+            repair_first_step_hits: 2,
+            repair_exact_hits: 1,
+            preparation_gated_edit_points: 2,
+            preparation_predictions: 5,
+            preparation_hits: 2,
+            adjacency_gated_edit_points: 2,
+            adjacency_predictions: 5,
+            adjacency_hits: 2,
+            repair_breakdown: BTreeMap::new(),
+            preparation_breakdown: BTreeMap::new(),
+            adjacency_breakdown: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn release_baseline_check_fails_on_outcome_regressions() {
+        let baseline = eval_summary(90, 0, 10, Some(1_000), Some(1_000));
+        let candidate = eval_summary(80, 2, 10, Some(7_000), Some(7_000))
+            .with_comparison_to_baseline(&baseline);
+
+        let check = release_baseline_check(
+            candidate.comparison_to_baseline.as_ref(),
+            EvalCheckStatus::Pass,
+        );
+
+        assert_eq!(check.status, "FAIL");
+        assert_eq!(check.violations.len(), 4);
+        assert!(check.violations.iter().any(|v| v.contains("local edit retention")));
+        assert!(check.violations.iter().any(|v| v.contains("failed command rate")));
+        assert!(check
+            .violations
+            .iter()
+            .any(|v| v.contains("first successful change latency avg")));
+        assert!(check
+            .violations
+            .iter()
+            .any(|v| v.contains("first successful change latency p50")));
+    }
+
+    #[test]
+    fn release_baseline_check_skips_while_eval_is_skip() {
+        let baseline = eval_summary(90, 0, 10, Some(1_000), Some(1_000));
+        let candidate = eval_summary(80, 2, 10, Some(7_000), Some(7_000))
+            .with_comparison_to_baseline(&baseline);
+
+        let check = release_baseline_check(
+            candidate.comparison_to_baseline.as_ref(),
+            EvalCheckStatus::Skip,
+        );
+
+        assert_eq!(check.status, "SKIP");
+        assert!(check.violations.is_empty());
+        assert_eq!(check.notes.len(), 1);
+    }
 }

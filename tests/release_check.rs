@@ -318,6 +318,95 @@ fn release_check_can_evaluate_both_scopes() {
 }
 
 #[test]
+fn release_check_can_fail_on_baseline_outcome_regression() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let baseline_path = dir.path().join("baseline.json");
+    let store = TraceStore::open(&dir.path().join("traces.db")).unwrap();
+    let identity = NodeIdentity::generate();
+
+    std::fs::write(
+        &baseline_path,
+        serde_json::json!({
+            "project_scope": serde_json::Value::Null,
+            "eval_config": {
+                "local_history_gate_min": 2,
+                "pattern_support_min": 2
+            },
+            "comparison_to_default": serde_json::Value::Null,
+            "sessions_considered": 6,
+            "sessions_scored": 6,
+            "holdout_command_calls": 6,
+            "holdout_failed_command_calls": 0,
+            "sessions_with_successful_change": 6,
+            "first_successful_change_latency_avg_ms": 0,
+            "first_successful_change_latency_p50_ms": 0,
+            "edit_points": 12,
+            "edit_points_with_signal": 0,
+            "repair_opportunities": 0,
+            "repair_predictions": 0,
+            "repair_first_step_hits": 0,
+            "repair_exact_hits": 0,
+            "preparation_gated_edit_points": 0,
+            "preparation_predictions": 0,
+            "preparation_hits": 0,
+            "adjacency_gated_edit_points": 0,
+            "adjacency_predictions": 0,
+            "adjacency_hits": 0,
+            "repair_breakdown": {},
+            "preparation_breakdown": {},
+            "adjacency_breakdown": {}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
+    for session in ["s1", "s2", "s3", "s4", "s5", "s6"] {
+        for (capability, outcome, context) in [
+            ("claude-code/Bash", Outcome::Failed, "bash: cargo test".to_string()),
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                "edit file: main.rs".to_string(),
+            ),
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                "edit file: helper.rs".to_string(),
+            ),
+        ] {
+            let trace = make_trace(&identity, capability, outcome, &context, session, timestamp);
+            store.insert(&trace).unwrap();
+            timestamp += 5_000;
+        }
+        timestamp += 60_000;
+    }
+
+    let output = run_release_check(
+        dir.path().to_str().unwrap(),
+        &[
+            "--global",
+            "--json",
+            "--compare-baseline",
+            baseline_path.to_str().unwrap(),
+        ],
+        &sparse_profile_input(),
+    );
+
+    assert!(
+        !output.status.success(),
+        "release-check unexpectedly passed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("parse release-check baseline json");
+    assert_eq!(parsed["status"], "FAIL");
+    assert_eq!(parsed["eval"]["status"], "FAIL");
+    assert_eq!(parsed["eval"]["baseline_check"]["status"], "FAIL");
+    assert!(parsed["eval"]["summary"]["comparison_to_baseline"].is_object());
+}
+
+#[test]
 fn release_check_fails_when_local_doctor_is_restart_pending() {
     let dir = tempfile::TempDir::new().unwrap();
     let home = dir.path().join("home");

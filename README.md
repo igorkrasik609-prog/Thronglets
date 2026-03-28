@@ -202,6 +202,17 @@ cat prehook.log | thronglets release-check --global --require-profile-samples
 cat prehook.log | thronglets release-check --global --json
 ```
 
+如果你还想把“相对上一个 baseline 是否退化”也并进同一个 gate，可以直接加：
+
+```bash
+cat prehook.log | thronglets release-check --global --compare-baseline baseline.json
+```
+
+这会把 `eval-signals --json` 里已有的 baseline comparison 一起带进 `release-check`，并且只对 3 个 outcome 指标做回归判断：
+- `local edit retention`
+- `failed command rate`
+- `first successful change latency`
+
 现在 `release-check` 也支持显式作用域策略：
 
 ```bash

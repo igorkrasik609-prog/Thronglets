@@ -17,6 +17,7 @@
 - **Structured release checks** — `thronglets release-check --json` now emits machine-readable profile/eval gate results so CI and other agents can consume the release decision directly
 - **Explicit release scopes** — `thronglets release-check` now supports `--eval-scope project|global|both`, so operators can gate repo-local quality and global collective quality separately or together
 - **CI release recipe** — CI now runs adapter/operator integration suites plus a real `release-check` smoke pass, so the documented release gate is also the automated one
+- **Baseline-aware release gate** — `thronglets release-check --compare-baseline <file>` now reuses `eval-signals --json` baselines and fails on clear regressions in retention, failed command rate, or first successful change latency
 
 ## v0.4.0 — 2026-03-28
 
