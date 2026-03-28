@@ -5,9 +5,14 @@
 //! next session pick up where the last one left off without the AI
 //! needing to re-discover everything.
 
+use crate::signals::{StepAction, StepCandidate};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+
+fn default_succeeded() -> String {
+    "succeeded".to_string()
+}
 
 /// Maximum number of recent file entries to keep.
 const MAX_RECENT_FILES: usize = 20;
@@ -17,6 +22,8 @@ const MAX_RECENT_ERRORS: usize = 10;
 const MAX_SESSIONS: usize = 5;
 /// Maximum number of recent tool calls to keep (for decision context).
 const MAX_RECENT_ACTIONS: usize = 50;
+/// Maximum number of learned repair patterns.
+const MAX_REPAIR_PATTERNS: usize = 20;
 /// Maximum number of pending feedback items.
 const MAX_PENDING_FEEDBACK: usize = 30;
 
@@ -54,7 +61,55 @@ pub struct PendingFeedback {
 pub struct RecentAction {
     pub tool: String,
     pub file_path: Option<String>,  // if the tool targets a file
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default = "default_succeeded")]
+    pub outcome: String,            // "succeeded" | "failed"
     pub timestamp_ms: i64,
+}
+
+/// A lightweight local repair pattern.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairPattern {
+    pub error_tool: String,
+    pub repair_tool: String,
+    #[serde(default)]
+    pub repair_target: Option<String>,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    pub count: u32,
+    pub last_seen_ms: i64,
+}
+
+/// AI-facing repair hint with an explicit ranking score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairHint {
+    pub body: String,
+    pub score: i32,
+    pub candidate: StepCandidate,
+}
+
+/// AI-facing adjacency hint with an explicit ranking score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdjacencyHint {
+    pub body: String,
+    pub score: i32,
+    pub candidate: StepCandidate,
+}
+
+/// AI-facing preparation hint with an explicit ranking score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparationHint {
+    pub body: String,
+    pub score: i32,
+    pub candidate: StepCandidate,
+}
+
+/// AI-facing danger hint with an explicit ranking score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DangerHint {
+    pub body: String,
+    pub score: i32,
 }
 
 /// A session summary.
@@ -81,6 +136,9 @@ pub struct WorkspaceState {
     /// Recent tool call sequence (for decision context / co-edit patterns).
     #[serde(default)]
     pub recent_actions: VecDeque<RecentAction>,
+    /// Learned local repair paths: what usually comes after a failed tool.
+    #[serde(default)]
+    pub repair_patterns: VecDeque<RepairPattern>,
     /// Pending feedback: edits waiting to see if they were committed.
     #[serde(default)]
     pub pending_feedback: VecDeque<PendingFeedback>,
@@ -89,6 +147,48 @@ pub struct WorkspaceState {
 }
 
 impl WorkspaceState {
+    fn repair_recency_weight(age_ms: i64) -> f64 {
+        if age_ms < 3_600_000 {
+            1.0
+        } else if age_ms < 21_600_000 {
+            0.7
+        } else if age_ms < 86_400_000 {
+            0.4
+        } else {
+            0.0
+        }
+    }
+
+    fn repair_confidence(weighted_support: f64, count: u32) -> Option<(&'static str, i32)> {
+        if weighted_support >= 2.2 || count >= 3 {
+            Some(("high", 290))
+        } else if weighted_support >= 1.2 || count >= 2 {
+            Some(("medium", 270))
+        } else {
+            None
+        }
+    }
+
+    fn adjacency_confidence(weighted_support: f64, count: u32) -> Option<(&'static str, i32)> {
+        if weighted_support >= 2.2 || count >= 3 {
+            Some(("high", 240))
+        } else if weighted_support >= 1.2 || count >= 2 {
+            Some(("medium", 220))
+        } else {
+            None
+        }
+    }
+
+    fn preparation_confidence(weighted_support: f64, count: u32) -> Option<(&'static str, i32)> {
+        if weighted_support >= 2.2 || count >= 3 {
+            Some(("high", 260))
+        } else if weighted_support >= 1.2 || count >= 2 {
+            Some(("medium", 230))
+        } else {
+            None
+        }
+    }
+
     /// Load workspace state from disk. Returns default if file doesn't exist or is corrupt.
     pub fn load(data_dir: &Path) -> Self {
         let path = Self::path(data_dir);
@@ -108,6 +208,72 @@ impl WorkspaceState {
 
     fn path(data_dir: &Path) -> PathBuf {
         data_dir.join("workspace.json")
+    }
+
+    fn step_action(tool: &str, file_path: Option<&str>) -> StepAction {
+        let target = match file_path {
+            Some(path) if matches!(tool, "Read" | "Edit" | "Write") => Some(Self::short_target(path)),
+            _ => None,
+        };
+        StepAction::new(tool, target)
+    }
+
+    fn short_target(path: &str) -> String {
+        std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path)
+            .to_string()
+    }
+
+    fn push_unique_source(target: &mut Vec<String>, session_id: Option<&str>) {
+        let Some(session_id) = session_id else { return; };
+        if !target.iter().any(|id| id == session_id) {
+            target.push(session_id.to_string());
+        }
+    }
+
+    fn source_count(source_ids: &[String]) -> u32 {
+        source_ids.len().max(1) as u32
+    }
+
+    fn independence_bonus(source_count: u32) -> i32 {
+        source_count.saturating_sub(1).min(2) as i32 * 10
+    }
+
+    fn record_repair_pattern(
+        &mut self,
+        error_tool: &str,
+        repair_tool: &str,
+        repair_target: Option<&str>,
+        session_id: Option<&str>,
+        now: i64,
+    ) {
+        let repair_target = repair_target.map(Self::short_target);
+        if let Some(existing) = self.repair_patterns.iter_mut()
+            .find(|p| {
+                p.error_tool == error_tool
+                    && p.repair_tool == repair_tool
+                    && p.repair_target == repair_target
+            })
+        {
+            existing.count += 1;
+            existing.last_seen_ms = now;
+            Self::push_unique_source(&mut existing.source_ids, session_id);
+            return;
+        }
+
+        let mut source_ids = Vec::new();
+        Self::push_unique_source(&mut source_ids, session_id);
+        self.repair_patterns.push_front(RepairPattern {
+            error_tool: error_tool.to_string(),
+            repair_tool: repair_tool.to_string(),
+            repair_target,
+            source_ids,
+            count: 1,
+            last_seen_ms: now,
+        });
+        self.repair_patterns.truncate(MAX_REPAIR_PATTERNS);
     }
 
     /// Record a file interaction from a PostToolUse hook.
@@ -335,6 +501,39 @@ impl WorkspaceState {
         if lines.is_empty() { None } else { Some(lines.join("\n")) }
     }
 
+    /// Emit a localized retention warning only when the current file has
+    /// enough poor outcomes to be decision-relevant.
+    pub fn retention_warning(&self, current_file: Option<&str>) -> Option<DangerHint> {
+        let file = current_file?;
+        let file_feedback: Vec<&PendingFeedback> = self.pending_feedback.iter()
+            .filter(|p| p.resolved && p.file_path == file)
+            .filter(|p| matches!(p.outcome.as_deref(), Some("committed" | "reverted")))
+            .collect();
+
+        let total = file_feedback.len();
+        if total < 2 {
+            return None;
+        }
+
+        let committed = file_feedback.iter()
+            .filter(|p| p.outcome.as_deref() == Some("committed"))
+            .count();
+        let rate = committed as f64 / total as f64 * 100.0;
+        if rate >= 50.0 {
+            return None;
+        }
+
+        let fname = std::path::Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(file);
+
+        Some(DangerHint {
+            body: format!("  ⚠ low retention for {fname}: {committed}/{total} edits committed"),
+            score: 340,
+        })
+    }
+
     /// Infer current strategy from recent tool call sequence.
     /// Returns a short label like "analyze-modify", "debug-cycle", "explore".
     pub fn infer_strategy(&self) -> Option<String> {
@@ -396,14 +595,338 @@ impl WorkspaceState {
     }
 
     /// Record a tool call in the action sequence.
-    pub fn record_action(&mut self, tool: &str, file_path: Option<String>) {
+    pub fn record_action(
+        &mut self,
+        tool: &str,
+        file_path: Option<String>,
+        outcome: &str,
+        session_id: Option<&str>,
+    ) {
         let now = chrono::Utc::now().timestamp_millis();
+
+        if outcome != "failed" {
+            if let Some((prev_tool, prev_outcome, prev_timestamp_ms)) = self.recent_actions.front()
+                .map(|prev| (prev.tool.clone(), prev.outcome.clone(), prev.timestamp_ms))
+            {
+                if prev_outcome == "failed"
+                    && prev_tool != tool
+                    && (now - prev_timestamp_ms) < 600_000
+                {
+                    self.record_repair_pattern(&prev_tool, tool, file_path.as_deref(), session_id, now);
+                }
+            }
+        }
+
         self.recent_actions.push_front(RecentAction {
             tool: tool.to_string(),
             file_path,
+            session_id: session_id.map(str::to_string),
+            outcome: outcome.to_string(),
             timestamp_ms: now,
         });
         self.recent_actions.truncate(MAX_RECENT_ACTIONS);
+        self.updated_ms = now;
+    }
+
+    /// Suggest likely repair paths after failures of the current tool.
+    pub fn repair_hints(&self, current_tool: &str) -> Option<RepairHint> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let repairs: Vec<_> = self.repair_patterns.iter()
+            .filter(|p| p.error_tool == current_tool && (now - p.last_seen_ms) < 86_400_000)
+            .collect();
+
+        if repairs.is_empty() {
+            return None;
+        }
+
+        let best = repairs.into_iter()
+            .filter_map(|p| {
+                let age_ms = now - p.last_seen_ms;
+                let weighted_support = p.count as f64 * Self::repair_recency_weight(age_ms);
+                let source_count = Self::source_count(&p.source_ids);
+                let (confidence, score) = Self::repair_confidence(weighted_support, p.count)?;
+                let step = match &p.repair_target {
+                    Some(target) => format!("{} {}", p.repair_tool, target),
+                    None => p.repair_tool.clone(),
+                };
+                let candidate = StepCandidate::single(
+                    p.repair_tool.clone(),
+                    p.repair_target.clone(),
+                    confidence,
+                    p.count,
+                    source_count,
+                );
+                Some((
+                    weighted_support + source_count as f64 * 0.1,
+                    p.last_seen_ms,
+                    RepairHint {
+                        body: format!(
+                            "  repair path after {current_tool} failure: {step} ({confidence}, {}x)",
+                            p.count
+                        ),
+                        score: score + Self::independence_bonus(source_count),
+                        candidate,
+                    },
+                ))
+            })
+            .max_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.cmp(&b.1))
+            })?;
+
+        Some(best.2)
+    }
+
+    /// Suggest a short multi-step repair trajectory after failures of the current tool.
+    /// Uses only recent local actions, so it stays cheap enough for prehook.
+    pub fn repair_trajectory_hint(&self, current_tool: &str) -> Option<RepairHint> {
+        use std::collections::HashMap;
+
+        if self.recent_actions.len() < 2 {
+            return None;
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let actions: Vec<_> = self.recent_actions.iter().rev().collect(); // oldest first
+        let mut patterns: HashMap<String, (f64, u32, i64, Vec<StepAction>, Vec<String>)> = HashMap::new();
+
+        for (i, action) in actions.iter().enumerate() {
+            if action.tool != current_tool || action.outcome != "failed" {
+                continue;
+            }
+
+            let mut steps: Vec<StepAction> = Vec::new();
+            let mut last_ts = action.timestamp_ms;
+            for next in actions.iter().skip(i + 1) {
+                if next.timestamp_ms - last_ts > 600_000 {
+                    break;
+                }
+                if next.outcome == "failed" {
+                    break;
+                }
+                steps.push(Self::step_action(&next.tool, next.file_path.as_deref()));
+                last_ts = next.timestamp_ms;
+                if steps.len() == 2 {
+                    break;
+                }
+            }
+
+            if steps.is_empty() {
+                continue;
+            }
+
+            let key = steps.iter()
+                .map(StepAction::render)
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            let age_ms = now - action.timestamp_ms;
+            let weight = Self::repair_recency_weight(age_ms);
+            let entry = patterns.entry(key).or_insert((0.0, 0, action.timestamp_ms, steps.clone(), Vec::new()));
+            entry.0 += weight;
+            entry.1 += 1;
+            entry.2 = entry.2.max(action.timestamp_ms);
+            Self::push_unique_source(&mut entry.4, action.session_id.as_deref());
+        }
+
+        let best = patterns.into_iter()
+            .filter_map(|(trajectory, (weighted_support, count, last_seen_ms, steps, source_ids))| {
+                let source_count = Self::source_count(&source_ids);
+                let (confidence, score) = Self::repair_confidence(weighted_support, count)?;
+                let candidate = StepCandidate::sequence(steps, confidence, count, source_count);
+                Some((
+                    weighted_support + source_count as f64 * 0.1,
+                    last_seen_ms,
+                    RepairHint {
+                        body: format!(
+                            "  repair trajectory after {current_tool} failure: {trajectory} ({confidence}, {count}x)",
+                        ),
+                        score: score + Self::independence_bonus(source_count),
+                        candidate,
+                    },
+                ))
+            })
+            .max_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.cmp(&b.1))
+            })?;
+
+        Some(best.2)
+    }
+
+    /// Suggest the most likely companion file to touch alongside the current file.
+    /// Suppresses low-confidence patterns to avoid wasting tokens on weak co-edit guesses.
+    pub fn adjacency_hint(&self, tool_name: &str, current_file: Option<&str>) -> Option<AdjacencyHint> {
+        use std::collections::HashMap;
+
+        let file = current_file?;
+        if !matches!(tool_name, "Edit" | "Write") {
+            return None;
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let actions: Vec<_> = self.recent_actions.iter().collect();
+        let mut co_edits: HashMap<String, (f64, u32, i64, Vec<String>)> = HashMap::new();
+
+        for (i, action) in actions.iter().enumerate() {
+            if action.file_path.as_deref() != Some(file) {
+                continue;
+            }
+            if !matches!(action.tool.as_str(), "Edit" | "Write") {
+                continue;
+            }
+
+            let age_ms = now - action.timestamp_ms;
+            let weight = Self::repair_recency_weight(age_ms);
+            if weight == 0.0 {
+                continue;
+            }
+
+            let start = i.saturating_sub(10);
+            let end = (i + 10).min(actions.len());
+            let mut seen_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for j in start..end {
+                if j == i {
+                    continue;
+                }
+                let other = &actions[j];
+                if !matches!(other.tool.as_str(), "Edit" | "Write") {
+                    continue;
+                }
+                if let Some(ref other_path) = other.file_path {
+                    if other_path != file
+                        && (other.timestamp_ms - action.timestamp_ms).abs() < 300_000
+                    {
+                        let short = Self::short_target(other_path);
+                        if !seen_targets.insert(short.clone()) {
+                            continue;
+                        }
+                        let entry = co_edits.entry(short).or_insert((0.0, 0, action.timestamp_ms, Vec::new()));
+                        entry.0 += weight;
+                        entry.1 += 1;
+                        entry.2 = entry.2.max(action.timestamp_ms);
+                        Self::push_unique_source(&mut entry.3, action.session_id.as_deref());
+                    }
+                }
+            }
+        }
+
+        let fname = Self::short_target(file);
+        let best = co_edits.into_iter()
+            .filter_map(|(target, (weighted_support, count, last_seen_ms, source_ids))| {
+                let source_count = Self::source_count(&source_ids);
+                let (confidence, score) = Self::adjacency_confidence(weighted_support, count)?;
+                let candidate = StepCandidate::single(
+                    "Edit",
+                    Some(target.clone()),
+                    confidence,
+                    count,
+                    source_count,
+                );
+                Some((
+                    weighted_support + source_count as f64 * 0.1,
+                    last_seen_ms,
+                    AdjacencyHint {
+                        body: format!(
+                            "  companion edit for {fname}: {target} ({confidence}, {count}x)"
+                        ),
+                        score: score + Self::independence_bonus(source_count),
+                        candidate,
+                    },
+                ))
+            })
+            .max_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.cmp(&b.1))
+            })?;
+
+        Some(best.2)
+    }
+
+    /// Suggest what file is usually read before editing the current file.
+    pub fn preparation_hint(&self, tool_name: &str, current_file: Option<&str>) -> Option<PreparationHint> {
+        use std::collections::HashMap;
+
+        let file = current_file?;
+        if !matches!(tool_name, "Edit" | "Write") {
+            return None;
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let actions: Vec<_> = self.recent_actions.iter().collect();
+        let mut prep_reads: HashMap<String, (f64, u32, i64, Vec<String>)> = HashMap::new();
+
+        for (i, action) in actions.iter().enumerate() {
+            if action.file_path.as_deref() != Some(file) {
+                continue;
+            }
+            if !matches!(action.tool.as_str(), "Edit" | "Write") {
+                continue;
+            }
+
+            let age_ms = now - action.timestamp_ms;
+            let weight = Self::repair_recency_weight(age_ms);
+            if weight == 0.0 {
+                continue;
+            }
+
+            let start = i + 1; // actions are newest-first, so older reads are at higher indexes
+            let end = (i + 6).min(actions.len());
+            let mut seen_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for j in start..end {
+                let prev = &actions[j];
+                if prev.tool != "Read" {
+                    continue;
+                }
+                if action.timestamp_ms - prev.timestamp_ms > 300_000 {
+                    continue;
+                }
+                if let Some(ref read_path) = prev.file_path {
+                    if read_path == file {
+                        continue;
+                    }
+                    let short = Self::short_target(read_path);
+                    if !seen_targets.insert(short.clone()) {
+                        continue;
+                    }
+                    let entry = prep_reads.entry(short).or_insert((0.0, 0, action.timestamp_ms, Vec::new()));
+                    entry.0 += weight;
+                    entry.1 += 1;
+                    entry.2 = entry.2.max(action.timestamp_ms);
+                    Self::push_unique_source(&mut entry.3, action.session_id.as_deref());
+                }
+            }
+        }
+
+        let fname = Self::short_target(file);
+        let best = prep_reads.into_iter()
+            .filter_map(|(target, (weighted_support, count, last_seen_ms, source_ids))| {
+                let source_count = Self::source_count(&source_ids);
+                let (confidence, score) = Self::preparation_confidence(weighted_support, count)?;
+                let candidate = StepCandidate::single(
+                    "Read",
+                    Some(target.clone()),
+                    confidence,
+                    count,
+                    source_count,
+                );
+                Some((
+                    weighted_support + source_count as f64 * 0.1,
+                    last_seen_ms,
+                    PreparationHint {
+                        body: format!(
+                            "  read before editing {fname}: Read {target} ({confidence}, {count}x)"
+                        ),
+                        score: score + Self::independence_bonus(source_count),
+                        candidate,
+                    },
+                ))
+            })
+            .max_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.cmp(&b.1))
+            })?;
+
+        Some(best.2)
     }
 
     /// Generate decision context hints for a file operation.
@@ -684,11 +1207,201 @@ mod tests {
     #[test]
     fn record_action_tracks_sequence() {
         let mut ws = make_ws();
-        ws.record_action("Read", Some("/a.rs".into()));
-        ws.record_action("Edit", Some("/a.rs".into()));
-        ws.record_action("Bash", None);
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Edit", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Bash", None, "succeeded", None);
         assert_eq!(ws.recent_actions.len(), 3);
         assert_eq!(ws.recent_actions[0].tool, "Bash"); // most recent first
+    }
+
+    #[test]
+    fn record_action_learns_repair_path_after_failure() {
+        let mut ws = make_ws();
+        ws.record_action("Bash", None, "failed", None);
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Bash", None, "failed", None);
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+
+        let hints = ws.repair_hints("Bash").unwrap();
+        assert!(hints.body.contains("repair path after Bash failure"));
+        assert!(hints.body.contains("Read a.rs (medium, 2x)"));
+    }
+
+    #[test]
+    fn repair_trajectory_learns_two_steps_after_failure() {
+        let mut ws = make_ws();
+        ws.record_action("Bash", None, "failed", None);
+        ws.record_action("Read", Some("/Cargo.toml".into()), "succeeded", None);
+        ws.record_action("Bash", None, "succeeded", None);
+        ws.record_action("Bash", None, "failed", None);
+        ws.record_action("Read", Some("/Cargo.toml".into()), "succeeded", None);
+        ws.record_action("Bash", None, "succeeded", None);
+
+        let hints = ws.repair_trajectory_hint("Bash").unwrap();
+        assert!(hints.body.contains("repair trajectory after Bash failure"));
+        assert!(hints.body.contains("Read Cargo.toml -> Bash (medium, 2x)"));
+    }
+
+    #[test]
+    fn single_repair_example_is_suppressed() {
+        let mut ws = make_ws();
+        ws.record_action("Bash", None, "failed", None);
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+
+        assert!(ws.repair_hints("Bash").is_none());
+        assert!(ws.repair_trajectory_hint("Bash").is_none());
+    }
+
+    #[test]
+    fn adjacency_hint_requires_repeated_companion_edits() {
+        let mut ws = make_ws();
+        let now = chrono::Utc::now().timestamp_millis();
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/a.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/b.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 1_000,
+        });
+
+        assert!(ws.adjacency_hint("Edit", Some("/a.rs")).is_none());
+
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/a.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 10_000,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/b.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 11_000,
+        });
+
+        let hint = ws.adjacency_hint("Edit", Some("/a.rs")).unwrap();
+        assert!(hint.body.contains("companion edit for a.rs: b.rs (medium, 2x)"));
+    }
+
+    #[test]
+    fn preparation_hint_requires_repeated_prep_reads() {
+        let mut ws = make_ws();
+        let now = chrono::Utc::now().timestamp_millis();
+        ws.recent_actions.push_back(RecentAction {
+            tool: "Read".into(),
+            file_path: Some("/helper.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/main.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 1_000,
+        });
+
+        assert!(ws.preparation_hint("Edit", Some("/main.rs")).is_none());
+    }
+
+    #[test]
+    fn preparation_hint_emits_confident_read_step() {
+        let mut ws = make_ws();
+        let now = chrono::Utc::now().timestamp_millis();
+        ws.recent_actions.push_back(RecentAction {
+            tool: "Read".into(),
+            file_path: Some("/helper.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/main.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 1_000,
+        });
+        ws.recent_actions.push_back(RecentAction {
+            tool: "Read".into(),
+            file_path: Some("/helper.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 10_000,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/main.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 11_000,
+        });
+
+        let hint = ws.preparation_hint("Edit", Some("/main.rs")).unwrap();
+        assert!(hint.body.contains("read before editing main.rs: Read helper.rs (medium, 2x)"));
+        assert_eq!(hint.score, 230);
+        assert_eq!(hint.candidate.source_count, 1);
+    }
+
+    #[test]
+    fn preparation_hint_counts_independent_sources() {
+        let mut ws = make_ws();
+        let now = chrono::Utc::now().timestamp_millis();
+        ws.recent_actions.push_back(RecentAction {
+            tool: "Read".into(),
+            file_path: Some("/helper.rs".into()),
+            session_id: Some("s1".into()),
+            outcome: "succeeded".into(),
+            timestamp_ms: now,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/main.rs".into()),
+            session_id: Some("s1".into()),
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 1_000,
+        });
+        ws.recent_actions.push_back(RecentAction {
+            tool: "Read".into(),
+            file_path: Some("/helper.rs".into()),
+            session_id: Some("s2".into()),
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 10_000,
+        });
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/main.rs".into()),
+            session_id: Some("s2".into()),
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 11_000,
+        });
+
+        let hint = ws.preparation_hint("Edit", Some("/main.rs")).unwrap();
+        assert_eq!(hint.candidate.source_count, 2);
+        assert_eq!(hint.score, 240);
+    }
+
+    #[test]
+    fn repair_hint_does_not_overcount_same_source() {
+        let mut ws = make_ws();
+        ws.record_action("Bash", None, "failed", Some("s1"));
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", Some("s1"));
+        ws.record_action("Bash", None, "failed", Some("s1"));
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", Some("s1"));
+
+        let hint = ws.repair_hints("Bash").unwrap();
+        assert_eq!(hint.candidate.source_count, 1);
+        assert_eq!(hint.score, 270);
     }
 
     // ── infer_strategy ──
@@ -696,63 +1409,63 @@ mod tests {
     #[test]
     fn infer_strategy_too_few_actions() {
         let mut ws = make_ws();
-        ws.record_action("Read", None);
-        ws.record_action("Read", None);
+        ws.record_action("Read", None, "succeeded", None);
+        ws.record_action("Read", None, "succeeded", None);
         assert!(ws.infer_strategy().is_none());
     }
 
     #[test]
     fn infer_strategy_build_fix_cycle() {
         let mut ws = make_ws();
-        ws.record_action("Bash", None);
-        ws.record_action("Edit", Some("/a.rs".into()));
-        ws.record_action("Read", Some("/a.rs".into()));
-        ws.record_action("Bash", None);
+        ws.record_action("Bash", None, "succeeded", None);
+        ws.record_action("Edit", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Bash", None, "succeeded", None);
         assert_eq!(ws.infer_strategy().unwrap(), "build-fix-cycle");
     }
 
     #[test]
     fn infer_strategy_codebase_exploration() {
         let mut ws = make_ws();
-        ws.record_action("Grep", None);
-        ws.record_action("Glob", None);
-        ws.record_action("Read", Some("/a.rs".into()));
+        ws.record_action("Grep", None, "succeeded", None);
+        ws.record_action("Glob", None, "succeeded", None);
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
         assert_eq!(ws.infer_strategy().unwrap(), "codebase-exploration");
     }
 
     #[test]
     fn infer_strategy_analyze_modify() {
         let mut ws = make_ws();
-        ws.record_action("Read", Some("/a.rs".into()));
-        ws.record_action("Read", Some("/b.rs".into()));
-        ws.record_action("Edit", Some("/a.rs".into()));
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Read", Some("/b.rs".into()), "succeeded", None);
+        ws.record_action("Edit", Some("/a.rs".into()), "succeeded", None);
         assert_eq!(ws.infer_strategy().unwrap(), "analyze-modify");
     }
 
     #[test]
     fn infer_strategy_code_review() {
         let mut ws = make_ws();
-        ws.record_action("Read", Some("/a.rs".into()));
-        ws.record_action("Read", Some("/b.rs".into()));
-        ws.record_action("Read", Some("/c.rs".into()));
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Read", Some("/b.rs".into()), "succeeded", None);
+        ws.record_action("Read", Some("/c.rs".into()), "succeeded", None);
         assert_eq!(ws.infer_strategy().unwrap(), "code-review");
     }
 
     #[test]
     fn infer_strategy_delegated_research() {
         let mut ws = make_ws();
-        ws.record_action("Read", None);
-        ws.record_action("Read", None);
-        ws.record_action("Agent", None);
+        ws.record_action("Read", None, "succeeded", None);
+        ws.record_action("Read", None, "succeeded", None);
+        ws.record_action("Agent", None, "succeeded", None);
         assert_eq!(ws.infer_strategy().unwrap(), "delegated-research");
     }
 
     #[test]
     fn infer_strategy_multi_file_refactor() {
         let mut ws = make_ws();
-        ws.record_action("Edit", Some("/a.rs".into()));
-        ws.record_action("Edit", Some("/b.rs".into()));
-        ws.record_action("Edit", Some("/c.rs".into()));
+        ws.record_action("Edit", Some("/a.rs".into()), "succeeded", None);
+        ws.record_action("Edit", Some("/b.rs".into()), "succeeded", None);
+        ws.record_action("Edit", Some("/c.rs".into()), "succeeded", None);
         // bashes >= 2 check fires first if we add Bash, so keep it pure edits
         assert_eq!(ws.infer_strategy().unwrap(), "multi-file-refactor");
     }
@@ -798,10 +1511,10 @@ mod tests {
         let now = chrono::Utc::now().timestamp_millis();
         // Simulate editing /a.rs and /b.rs together
         ws.recent_actions.push_front(RecentAction {
-            tool: "Edit".into(), file_path: Some("/a.rs".into()), timestamp_ms: now,
+            tool: "Edit".into(), file_path: Some("/a.rs".into()), session_id: None, outcome: "succeeded".into(), timestamp_ms: now,
         });
         ws.recent_actions.push_front(RecentAction {
-            tool: "Edit".into(), file_path: Some("/b.rs".into()), timestamp_ms: now + 1000,
+            tool: "Edit".into(), file_path: Some("/b.rs".into()), session_id: None, outcome: "succeeded".into(), timestamp_ms: now + 1000,
         });
         let hints = ws.decision_hints("Edit", Some("/a.rs"));
         assert!(hints.is_some());
@@ -814,10 +1527,10 @@ mod tests {
         let now = chrono::Utc::now().timestamp_millis();
         // Simulate: Read /b.rs → Edit /a.rs (actions are newest-first)
         ws.recent_actions.push_back(RecentAction {
-            tool: "Read".into(), file_path: Some("/b.rs".into()), timestamp_ms: now,
+            tool: "Read".into(), file_path: Some("/b.rs".into()), session_id: None, outcome: "succeeded".into(), timestamp_ms: now,
         });
         ws.recent_actions.push_front(RecentAction {
-            tool: "Edit".into(), file_path: Some("/a.rs".into()), timestamp_ms: now + 2000,
+            tool: "Edit".into(), file_path: Some("/a.rs".into()), session_id: None, outcome: "succeeded".into(), timestamp_ms: now + 2000,
         });
         let hints = ws.decision_hints("Edit", Some("/a.rs"));
         assert!(hints.is_some());
@@ -861,6 +1574,54 @@ mod tests {
         });
         let hints = ws.feedback_hints(Some("/a.rs")).unwrap();
         assert!(hints.contains("a.rs: 1/1 edits committed"));
+    }
+
+    #[test]
+    fn retention_warning_requires_repeated_local_failures() {
+        let mut ws = make_ws();
+        ws.pending_feedback.push_front(PendingFeedback {
+            file_path: "/a.rs".into(),
+            action: "Edit".into(),
+            timestamp_ms: 0,
+            resolved: true,
+            outcome: Some("reverted".into()),
+        });
+
+        assert!(ws.retention_warning(Some("/a.rs")).is_none());
+    }
+
+    #[test]
+    fn retention_warning_is_scoped_to_current_file() {
+        let mut ws = make_ws();
+        for i in 0..3 {
+            ws.pending_feedback.push_front(PendingFeedback {
+                file_path: format!("/other{i}.rs"),
+                action: "Edit".into(),
+                timestamp_ms: 0,
+                resolved: true,
+                outcome: Some("reverted".into()),
+            });
+        }
+
+        assert!(ws.retention_warning(Some("/a.rs")).is_none());
+    }
+
+    #[test]
+    fn retention_warning_emits_localized_danger() {
+        let mut ws = make_ws();
+        for outcome in ["reverted", "reverted", "committed"] {
+            ws.pending_feedback.push_front(PendingFeedback {
+                file_path: "/a.rs".into(),
+                action: "Edit".into(),
+                timestamp_ms: 0,
+                resolved: true,
+                outcome: Some(outcome.into()),
+            });
+        }
+
+        let hint = ws.retention_warning(Some("/a.rs")).unwrap();
+        assert_eq!(hint.score, 340);
+        assert!(hint.body.contains("low retention for a.rs: 1/3 edits committed"));
     }
 
     // ── add_pending_feedback ──
@@ -943,7 +1704,7 @@ mod tests {
         ws.record_file("/a.rs".into(), "Edit", "test".into(), "succeeded");
         ws.record_error("Bash", "ctx".into(), "err".into());
         ws.track_session("s1", "cap", false);
-        ws.record_action("Read", Some("/b.rs".into()));
+        ws.record_action("Read", Some("/b.rs".into()), "succeeded", None);
         ws.add_pending_feedback("/a.rs".into(), "Edit");
         ws.save(&dir);
 

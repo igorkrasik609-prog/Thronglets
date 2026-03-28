@@ -1,11 +1,19 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use thronglets::anchor::AnchorClient;
+use thronglets::contracts::{
+    GIT_HISTORY_MAX_ENTRIES,
+    PREHOOK_HEADER,
+    PREHOOK_MATCHER,
+    PREHOOK_MAX_COLLECTIVE_QUERIES,
+    PREHOOK_MAX_HINTS,
+};
 use thronglets::context::simhash;
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
+use thronglets::signals::{select as select_signals, Signal, SignalKind, StepCandidate};
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
 use thronglets::workspace::{self, WorkspaceState};
@@ -540,7 +548,7 @@ async fn main() {
             }
 
             // Track tool call sequence (for decision context)
-            ws.record_action(tool_name, file_path.clone());
+            ws.record_action(tool_name, file_path.clone(), outcome_str, session_id.as_deref());
 
             // Track pending feedback for Edit/Write
             if matches!(tool_name, "Edit" | "Write") {
@@ -595,75 +603,158 @@ async fn main() {
             // For AI: git history = spatial context (always useful for Edit/Write).
             // Everything else = pheromone (only emitted on anomaly).
 
-            let mut hints: Vec<String> = Vec::new();
+            let mut signals: Vec<Signal> = Vec::new();
             let ws = WorkspaceState::load(&dir);
             let current_file = workspace::extract_file_path(tool_name, &payload["tool_input"]);
+            let supports_file_guidance = matches!(tool_name, "Edit" | "Write") && current_file.is_some();
 
-            // ── Git history: the one signal that's always decision-relevant ──
-            // Like a bee's waggle dance: direction + distance, always useful.
-            if matches!(tool_name, "Edit" | "Write") {
-                if let Some(ref fp) = current_file {
-                    if let Some(git_hints) = git_file_history(fp, 5) {
-                        hints.push(git_hints);
-                    }
-                }
-            }
+            let mut collective_store: Option<TraceStore> = None;
+            let mut collective_queries_remaining = PREHOOK_MAX_COLLECTIVE_QUERIES;
+
+            let mut has_recent_danger = false;
 
             // ── Danger pheromone: low edit retention ──
             // If recent edits are mostly reverted, this is a strong warning.
             // Only signal when retention < 50% (anomaly).
-            if let Some(fb_hints) = ws.feedback_hints(current_file.as_deref()) {
-                // Parse retention rate from the hint
-                let is_warning = fb_hints.contains("retention:")
-                    && fb_hints.split("retention:").nth(1)
-                        .and_then(|s| s.trim().split('%').next())
-                        .and_then(|s| s.trim().parse::<f64>().ok())
-                        .is_some_and(|rate| rate < 50.0);
-                if is_warning {
-                    hints.push(format!("  ⚠ {}", fb_hints.trim()));
+            if let Some(retention_warning) = ws.retention_warning(current_file.as_deref()) {
+                has_recent_danger = true;
+                signals.push(Signal::danger(retention_warning.body, retention_warning.score));
+            }
+
+            // ── Alarm pheromone: recent errors with this tool ──
+            // Only emitted when errors happened in the last hour.
+            if let Some(recent_error) = ws.recent_errors.iter().find(|e| {
+                e.tool == tool_name
+                    && (chrono::Utc::now().timestamp_millis() - e.timestamp_ms) < 3_600_000
+            }) {
+                let signal = {
+                    let e = recent_error;
+                    let snippet = if e.error_snippet.len() > 80 {
+                        format!("{}...", &e.error_snippet[..80])
+                    } else {
+                        e.error_snippet.clone()
+                    };
+                    Signal::danger(format!("  ⚠ recent error: {snippet}"), 360)
+                };
+                has_recent_danger = true;
+                signals.push(signal);
+            }
+
+            if let Some(repair_hint) = ws.repair_trajectory_hint(tool_name)
+                .or_else(|| ws.repair_hints(tool_name))
+            {
+                if has_recent_danger {
+                    let mut repair_hint = repair_hint;
+                    if claim_collective_query(&repair_hint.candidate, &mut collective_queries_remaining) {
+                        if let Some(store) = cached_collective_store(&mut collective_store, &dir) {
+                            if let Ok(collective_sources) = store.count_repair_sources(
+                                tool_name,
+                                &repair_hint.candidate.steps,
+                                168,
+                            ) {
+                                apply_collective_sources(
+                                    &mut repair_hint.candidate,
+                                    &mut repair_hint.score,
+                                    collective_sources,
+                                );
+                            }
+                        }
+                    }
+
+                    signals.push(Signal::repair_candidate(
+                        repair_hint.body,
+                        repair_hint.score,
+                        repair_hint.candidate,
+                    ));
+                }
+            }
+
+            let has_do_next_signal = signals.iter().any(|s| matches!(
+                s.kind,
+                SignalKind::Repair | SignalKind::Preparation
+            ));
+            if supports_file_guidance && !has_do_next_signal {
+                if let Some(mut preparation_hint) = ws.preparation_hint(tool_name, current_file.as_deref()) {
+                    if let (Some(current_file), Some(target)) = (
+                        current_file.as_deref(),
+                        preparation_hint.candidate.primary_target(),
+                    ) {
+                        if claim_collective_query(&preparation_hint.candidate, &mut collective_queries_remaining) {
+                            let edit_target = file_target(current_file);
+                            if let Some(store) = cached_collective_store(&mut collective_store, &dir) {
+                                if let Ok(collective_sources) = store.count_preparation_sources(edit_target, target, 168) {
+                                    apply_collective_sources(
+                                        &mut preparation_hint.candidate,
+                                        &mut preparation_hint.score,
+                                        collective_sources,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    signals.push(Signal::preparation_candidate(
+                        preparation_hint.body,
+                        preparation_hint.score,
+                        preparation_hint.candidate,
+                    ));
                 }
             }
 
             // ── Trail pheromone: co-edit patterns ──
             // "Editing A usually means you also need to edit B."
             // Only emitted when patterns exist.
-            if let Some(decision_hints) = ws.decision_hints(tool_name, current_file.as_deref()) {
-                // Only keep co-edit lines (prep reads are low-value)
-                let co_edits: String = decision_hints.lines()
-                    .filter(|l| l.contains("co-edited with"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !co_edits.is_empty() {
-                    hints.push(co_edits);
+            if supports_file_guidance {
+                if let Some(mut adjacency_hint) = ws.adjacency_hint(tool_name, current_file.as_deref()) {
+                    if let (Some(current_file), Some(target)) = (
+                        current_file.as_deref(),
+                        adjacency_hint.candidate.primary_target(),
+                    ) {
+                        if claim_collective_query(&adjacency_hint.candidate, &mut collective_queries_remaining) {
+                            let current_target = file_target(current_file);
+                            if let Some(store) = cached_collective_store(&mut collective_store, &dir) {
+                                if let Ok(collective_sources) = store.count_adjacency_sources(current_target, target, 168) {
+                                    apply_collective_sources(
+                                        &mut adjacency_hint.candidate,
+                                        &mut adjacency_hint.score,
+                                        collective_sources,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    signals.push(Signal::adjacency_candidate(
+                        adjacency_hint.body,
+                        adjacency_hint.score,
+                        adjacency_hint.candidate,
+                    ));
                 }
             }
 
-            // ── Alarm pheromone: recent errors with this tool ──
-            // Only emitted when errors happened in the last hour.
-            let recent_errors: Vec<String> = ws.recent_errors.iter()
-                .filter(|e| {
-                    e.tool == tool_name
-                    && (chrono::Utc::now().timestamp_millis() - e.timestamp_ms) < 3_600_000
-                })
-                .take(1)
-                .map(|e| {
-                    let snippet = if e.error_snippet.len() > 80 {
-                        format!("{}...", &e.error_snippet[..80])
-                    } else {
-                        e.error_snippet.clone()
-                    };
-                    format!("  ⚠ recent error: {snippet}")
-                })
-                .collect();
-            for e in recent_errors {
-                hints.push(e);
+            // History is a fallback when we don't already know a likely next move.
+            let has_action_signal = signals.iter().any(|s| matches!(
+                s.kind,
+                SignalKind::Repair | SignalKind::Preparation | SignalKind::Adjacency
+            ));
+            if !has_action_signal {
+                if supports_file_guidance {
+                    if let Some(git_hints) = current_file.as_ref()
+                        .and_then(|fp| git_file_history(fp, GIT_HISTORY_MAX_ENTRIES))
+                    {
+                        signals.push(Signal::history(git_hints));
+                    }
+                }
             }
 
+            // Guardrail: prehook stays short and category-stable.
+            let recommendations = select_signals(signals, PREHOOK_MAX_HINTS);
+
             // Output: only when there's something worth saying
-            if !hints.is_empty() {
-                println!("[thronglets]");
-                for h in &hints {
-                    println!("{h}");
+            if !recommendations.is_empty() {
+                println!("{PREHOOK_HEADER}");
+                for recommendation in &recommendations {
+                    println!("{}", recommendation.render());
                 }
             }
             // Normal state → complete silence. Zero tokens.
@@ -719,7 +810,7 @@ async fn main() {
             // Add PreToolUse hook — only decision-point tools (Edit/Write/Bash/Agent)
             // Read/Grep/Glob are information-gathering, injecting context has zero value
             let pre_hook = serde_json::json!({
-                "matcher": "Edit|Write|Bash|Agent",
+                "matcher": PREHOOK_MATCHER,
                 "hooks": [{"type": "command", "command": format!("{bin_str} prehook")}]
             });
             let pre_hooks = settings["hooks"]["PreToolUse"]
@@ -916,6 +1007,39 @@ fn build_hook_context(tool_name: &str, tool_input: &serde_json::Value) -> String
             format!("{tool_name}: {short}")
         }
     }
+}
+
+fn apply_collective_sources(candidate: &mut StepCandidate, score: &mut i32, collective_sources: u32) {
+    *score += candidate.upgrade_collective_sources(collective_sources);
+}
+
+fn claim_collective_query(candidate: &StepCandidate, remaining_queries: &mut usize) -> bool {
+    if *remaining_queries == 0 || candidate.source_count >= 2 {
+        return false;
+    }
+
+    *remaining_queries -= 1;
+    true
+}
+
+fn cached_collective_store<'a>(cache: &'a mut Option<TraceStore>, dir: &Path) -> Option<&'a TraceStore> {
+    let db_path = dir.join("traces.db");
+    if !db_path.exists() {
+        return None;
+    }
+
+    if cache.is_none() {
+        *cache = TraceStore::open(&db_path).ok();
+    }
+
+    cache.as_ref()
+}
+
+fn file_target(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

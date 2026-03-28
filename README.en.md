@@ -6,42 +6,33 @@ P2P shared memory substrate for AI agents.
 
 ## What Your AI Sees (real output)
 
-Before your AI edits a file, Thronglets silently injects this:
+Before your AI acts, Thronglets silently injects sparse decision signals like this:
 
 ```
-[thronglets] substrate context:
-claude-code/Edit: 100% success across 498 traces (p50: 0ms)
-  workflow: after Edit, agents usually → Edit (310x), Bash (91x), Read (54x)
-  git history for main.rs:
-    40 minutes ago   fix: cold start — workspace/git/decision layers work
-    42 minutes ago   feat: P2P sync bridge — hooks write locally, node publishes
-    2 hours ago      feat: strategy-level traces — infer intent from tool sequences
-    2 hours ago      feat: result feedback loop — track if edits are committed
-    2 hours ago      feat: decision history — co-edit patterns + preparation context
-  co-edited with mod.rs: lib.rs (4x), Cargo.toml (2x)
-  prep reads before editing: mod.rs (3x), lib.rs (2x)
-  edit retention: 87% (13/15 committed)
-  current pattern: analyze-modify
+[thronglets]
+  avoid: recent error: linker failed on reqwest
+  do next: Read Cargo.toml, then Bash (medium, 2x, 2 sources)
+  maybe also: Edit mod.rs (medium, 2x)
 ```
 
 Your AI never calls Thronglets. It doesn't know it's there. It just makes better decisions.
 
-## The 8 Layers
+## 4 Signal Classes, Not 8 Reports
 
-Every tool call gets up to 8 layers of context injected via PreToolUse hook:
+PreToolUse no longer tries to dump every possible layer of context. It emits at most 3 top-level signals:
 
-| # | Layer | What the AI gets |
-|---|-------|------------------|
-| 1 | Capability stats | Success rate + latency from 3000+ collective traces |
-| 2 | Workflow patterns | "after Bash, agents usually do Read (214x), then Edit (132x)" |
-| 3 | Similar context | Other tools used for similar tasks, with success rates |
-| 4 | Workspace memory | Recent files, errors, previous session summary |
-| 5 | Git context | Last 5 commits on the file being touched |
-| 6 | Co-edit patterns | Files typically modified together |
-| 7 | Preparation reads | Files read before previous edits of this file |
-| 8 | Edit retention | % of AI edits that were committed vs reverted |
+| Class | Meaning | Example |
+|---|---|---|
+| `avoid` | Recent danger worth not repeating | `recent error`, `low retention` |
+| `do next` | The most credible next step | `Read Cargo.toml, then Bash` |
+| `maybe also` | Common companion action | `Edit mod.rs` |
+| `context` | Fallback only when the first 3 classes are absent | `git history for main.rs` |
 
-Layers 1-3 need trace data (collective intelligence). Layers 4-8 work from day one.
+Design constraints:
+- Silence is normal. No strong signal, no output.
+- Max 3 top-level lines to keep token burn bounded.
+- At most 1 collective corroboration lookup on the hot path.
+- Git history is lazy fallback, not a fixed layer on every call.
 
 ## Setup (one command)
 
@@ -52,7 +43,7 @@ thronglets setup
 
 That's it. Two hooks are installed:
 - **PostToolUse** records every tool call as a signed trace + updates workspace state
-- **PreToolUse** injects the 8 layers before every tool call
+- **PreToolUse** injects sparse decision signals at critical decision points
 
 ## Why This Matters
 
@@ -62,7 +53,7 @@ Without Thronglets, your AI approaches every file blind. It doesn't know:
 - That `cargo build` fails 30% of the time in this project
 - That the last session left off mid-refactor on this exact file
 
-With Thronglets, the AI has context at the moment of decision. Not memory (which is static), not documentation (which is stale) — live execution intelligence from its own history and the collective network.
+With Thronglets, the AI gets the most trustworthy next step at the moment of decision. Not memory (which is static), not documentation (which is stale) — live execution signals from its own history and the collective network.
 
 ## How It Works
 
@@ -71,12 +62,11 @@ AI calls Edit(main.rs)
         │
         ├── PreToolUse hook fires
         │   └── thronglets prehook
-        │       ├── [1-3] Query local SQLite for traces
-        │       ├── [4] Load workspace.json (files, errors, sessions)
-        │       ├── [5] git log --oneline -5 -- main.rs
-        │       ├── [6-7] Analyze action sequence for co-edit/prep patterns
-        │       └── [8] Check pending feedback (committed/reverted)
-        │       → stdout: context injected into AI's prompt
+        │       ├── Load workspace.json (errors, action sequence, feedback)
+        │       ├── If needed, do at most 1 collective corroboration lookup
+        │       ├── Select `avoid / do next / maybe also`
+        │       └── Fall back to git history only when no action signal exists
+        │       → stdout: at most 3 sparse signals
         │
         ├── AI makes the edit (with context)
         │

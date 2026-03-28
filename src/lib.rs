@@ -1,7 +1,9 @@
 pub mod anchor;
+pub mod contracts;
 pub mod context;
 pub mod http;
 pub mod identity;
+pub mod signals;
 pub mod trace;
 pub mod storage;
 pub mod network;

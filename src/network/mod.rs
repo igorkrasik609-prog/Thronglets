@@ -11,7 +11,7 @@ use libp2p::{
     tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
 };
 use libp2p::futures::StreamExt;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -168,6 +168,7 @@ pub async fn start(
         kad::QueryId,
         (String, tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>),
     > = std::collections::HashMap::new();
+    let mut connected_peers: HashSet<PeerId> = HashSet::new();
 
     // Spawn the network event loop
     tokio::spawn(async move {
@@ -200,7 +201,6 @@ pub async fn start(
                                 info!(%peer_id, %addr, "mDNS: discovered peer");
                                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                                 swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
-                                let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
                             }
                         }
                         SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Mdns(
@@ -209,6 +209,17 @@ pub async fn start(
                             for (peer_id, _) in peers {
                                 debug!(%peer_id, "mDNS: peer expired");
                                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                            }
+                        }
+                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            if connected_peers.insert(peer_id) {
+                                debug!(%peer_id, "Connection established");
+                                let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+                            }
+                        }
+                        SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
+                            if num_established == 0 && connected_peers.remove(&peer_id) {
+                                debug!(%peer_id, "Connection closed");
                                 let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
                             }
                         }

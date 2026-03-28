@@ -6,42 +6,33 @@ AI agent 的 P2P 共享记忆基底。
 
 ## 你的 AI 看到了什么（真实输出）
 
-当你的 AI 准备编辑一个文件时，Thronglets 在它不知情的情况下注入了这些：
+当你的 AI 准备行动时，Thronglets 在它不知情的情况下注入的是这种稀疏信号：
 
 ```
-[thronglets] substrate context:
-claude-code/Edit: 100% success across 498 traces (p50: 0ms)
-  workflow: after Edit, agents usually → Edit (310x), Bash (91x), Read (54x)
-  git history for main.rs:
-    40 minutes ago   fix: cold start — workspace/git/decision layers work
-    42 minutes ago   feat: P2P sync bridge — hooks write locally, node publishes
-    2 hours ago      feat: strategy-level traces — infer intent from tool sequences
-    2 hours ago      feat: result feedback loop — track if edits are committed
-    2 hours ago      feat: decision history — co-edit patterns + preparation context
-  co-edited with mod.rs: lib.rs (4x), Cargo.toml (2x)
-  prep reads before editing: mod.rs (3x), lib.rs (2x)
-  edit retention: 87% (13/15 committed)
-  current pattern: analyze-modify
+[thronglets]
+  avoid: recent error: linker failed on reqwest
+  do next: Read Cargo.toml, then Bash (medium, 2x, 2 sources)
+  maybe also: Edit mod.rs (medium, 2x)
 ```
 
 AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出了更好的决策。
 
-## 8 层上下文
+## 4 类信号，不是 8 层报告
 
-每次工具调用前，PreToolUse Hook 注入最多 8 层决策上下文：
+PreToolUse 不再追求“把所有上下文都塞进去”。现在它只输出最多 3 条顶层信号：
 
-| # | 层 | AI 获得什么 |
-|---|---|------------|
-| 1 | 能力统计 | 来自 3000+ 集体痕迹的成功率和延迟分布 |
-| 2 | 工作流模式 | "Bash 之后，agent 通常做 Read (214x)，然后 Edit (132x)" |
-| 3 | 相似上下文 | 类似任务用过的其他工具及其成功率 |
-| 4 | 工作区记忆 | 最近文件、错误、上一次会话摘要 |
-| 5 | Git 上下文 | 正在操作的文件的最近 5 次提交 |
-| 6 | 共编模式 | 通常一起修改的文件 |
-| 7 | 准备阅读 | 之前编辑此文件前预先阅读的文件 |
-| 8 | 编辑保留率 | AI 编辑中有多少被提交 vs 被回滚 |
+| 类别 | 含义 | 例子 |
+|---|---|---|
+| `avoid` | 最近哪里危险，不要重踩 | `recent error`, `low retention` |
+| `do next` | 当前最可信的下一步 | `Read Cargo.toml, then Bash` |
+| `maybe also` | 常见伴随动作 | `Edit mod.rs` |
+| `context` | 只有在前 3 类都缺席时才出现的 fallback | `git history for main.rs` |
 
-第 1-3 层需要痕迹数据（集体智慧）。第 4-8 层从第一天就能用。
+设计原则：
+- 默认沉默。没有强信号时，什么都不说。
+- 最多 3 条顶层输出，避免烧 token。
+- 群体证据最多只查 1 次，优先最可能改变下一步的那条。
+- Git history 是 fallback，不再是每次都跑的固定层。
 
 ## 安装（一条命令）
 
@@ -52,7 +43,7 @@ thronglets setup
 
 完成。两个 Hook 自动安装：
 - **PostToolUse** 将每次工具调用记录为签名痕迹 + 更新工作区状态
-- **PreToolUse** 在每次工具调用前注入 8 层上下文
+- **PreToolUse** 在关键决策点注入稀疏决策信号
 
 ## 为什么这很重要
 
@@ -62,7 +53,7 @@ thronglets setup
 - `cargo build` 在这个项目里有 30% 的失败率
 - 上一个会话在这个文件的重构中途中断了
 
-有了 Thronglets，AI 在决策瞬间拥有上下文。不是记忆（静态的），不是文档（过时的）——来自自身历史和集体网络的实时执行智慧。
+有了 Thronglets，AI 在决策瞬间拿到最值得相信的下一步。不是记忆（静态的），不是文档（过时的）——而是来自自身历史和集体网络的实时执行信号。
 
 ## 工作原理
 
@@ -71,12 +62,11 @@ AI 调用 Edit(main.rs)
         │
         ├── PreToolUse Hook 触发
         │   └── thronglets prehook
-        │       ├── [1-3] 查询本地 SQLite 痕迹库
-        │       ├── [4] 加载 workspace.json（文件、错误、会话）
-        │       ├── [5] git log --oneline -5 -- main.rs
-        │       ├── [6-7] 分析动作序列，提取共编/准备模式
-        │       └── [8] 检查待反馈队列（已提交/已回滚）
-        │       → stdout: 上下文注入 AI 的提示词
+        │       ├── 加载 workspace.json（错误、动作序列、反馈）
+        │       ├── 如有必要，最多查 1 次 collective corroboration
+        │       ├── 选出 `avoid / do next / maybe also`
+        │       └── 只有没有动作信号时才回退到 git history
+        │       → stdout: 最多 3 条稀疏信号
         │
         ├── AI 执行编辑（带上下文）
         │

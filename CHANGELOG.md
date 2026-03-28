@@ -1,8 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Hot Path
+
+- **Danger-first selector** — Prehook now emits sparse `avoid / do next / maybe also / context` signals instead of a long fixed report
+- **Silence-by-default contract** — Output stays capped at 3 top-level lines and remains quiet when no strong signal exists
+- **Collective corroboration budget** — The hot path spends at most 1 collective lookup, prioritized toward the strongest action candidate
+- **Lazy git fallback** — `git log` now runs only when no action signal is available
+
+### Collective Learning
+
+- **Session-aware repair trajectories** — Learns short repair paths like `Read Cargo.toml, then Bash`
+- **Preparation / adjacency candidates** — Learns `read before edit` and companion edit patterns as structured step candidates
+- **Independent source counting** — Distinguishes repeated behavior from one session vs corroboration from multiple sessions or nodes
+
+### Tests
+
+- Added perf guardrails for collective-source upgrades, single-query budget behavior, lazy local-only paths, and git-history fallback
+
 ## v0.3.0 — 2026-03-28
 
-8-layer decision context engine. Thronglets now injects rich context before every AI tool call.
+Historical v0.3.0 baseline: 8-layer decision context engine. This was later tightened into the sparse signal hot path described above.
 
 ### New Features
 
@@ -19,7 +38,7 @@
 
 ### Performance
 
-- Prehook: 50-70ms (8 layers including git subprocess) — 99% headroom on 5s timeout
+- Historical prehook baseline: 50-70ms (8 layers including git subprocess) — later reduced by sparse-signal prioritization, single-query budgets, and lazy git fallback
 - PostToolUse hook: <10ms
 
 ## v0.2.1 — 2026-03-27

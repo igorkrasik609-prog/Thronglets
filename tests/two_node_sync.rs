@@ -1,6 +1,6 @@
-//! Integration test: two Thronglets nodes discover each other via mDNS,
+//! Integration test: two Thronglets nodes connect over loopback bootstrap,
 //! one emits a trace, the other receives it via gossipsub.
-//! This proves the core P2P loop works.
+//! This proves the core P2P loop works without relying on flaky mDNS timing.
 
 use std::time::Duration;
 use thronglets::context::simhash;
@@ -9,33 +9,51 @@ use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
 
+fn free_loopback_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    listener.local_addr().expect("local addr").port()
+}
+
 #[tokio::test]
-async fn two_nodes_sync_trace_via_mdns() {
+async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     // Initialize tracing for test output
     let _ = tracing_subscriber::fmt()
         .with_env_filter("thronglets=debug")
         .with_test_writer()
         .try_init();
 
+    let port_a = free_loopback_port();
+    let port_b = free_loopback_port();
+
     // --- Node A ---
     let id_a = NodeIdentity::generate();
-    let keypair_a = libp2p::identity::Keypair::ed25519_from_bytes(&mut id_a.secret_key_bytes())
+    let mut secret_a = id_a.secret_key_bytes();
+    let keypair_a = libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_a)
         .expect("keypair A");
-    let config_a = NetworkConfig { listen_port: 0, ..Default::default() };
+    let peer_id_a = libp2p::PeerId::from(keypair_a.public());
+    let config_a = NetworkConfig { listen_port: port_a, ..Default::default() };
     let (cmd_tx_a, mut event_rx_a) = thronglets::network::start(keypair_a, config_a)
         .await
         .expect("start node A");
 
     // --- Node B ---
     let id_b = NodeIdentity::generate();
-    let keypair_b = libp2p::identity::Keypair::ed25519_from_bytes(&mut id_b.secret_key_bytes())
+    let mut secret_b = id_b.secret_key_bytes();
+    let keypair_b = libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_b)
         .expect("keypair B");
-    let config_b = NetworkConfig { listen_port: 0, ..Default::default() };
+    let bootstrap_a: libp2p::Multiaddr =
+        format!("/ip4/127.0.0.1/tcp/{port_a}/p2p/{peer_id_a}")
+            .parse()
+            .expect("bootstrap addr");
+    let config_b = NetworkConfig {
+        listen_port: port_b,
+        bootstrap_peers: vec![bootstrap_a],
+    };
     let (cmd_tx_b, mut event_rx_b) = thronglets::network::start(keypair_b, config_b)
         .await
         .expect("start node B");
 
-    // Wait for mDNS peer discovery (may take a few seconds)
+    // Wait for the loopback bootstrap dial to establish on both sides.
     let discovery_timeout = Duration::from_secs(10);
     let mut a_found_b = false;
     let mut b_found_a = false;
@@ -57,8 +75,8 @@ async fn two_nodes_sync_trace_via_mdns() {
         }
     }
 
-    assert!(a_found_b, "Node A should discover Node B via mDNS");
-    assert!(b_found_a, "Node B should discover Node A via mDNS");
+    assert!(a_found_b, "Node A should observe the bootstrap connection from Node B");
+    assert!(b_found_a, "Node B should connect to Node A via bootstrap");
 
     // Give gossipsub mesh time to form
     tokio::time::sleep(Duration::from_secs(2)).await;

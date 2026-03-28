@@ -335,17 +335,17 @@ Thronglets is infrastructure. It is the ground AI agents walk on, where footprin
 ### Phase 3: Agent Interface (Complete)
 - MCP server (trace_record, substrate_query, trace_anchor)
 - `thronglets setup` — one-command Claude Code integration
-- PreToolUse hook: 8-layer decision context injection
+- PreToolUse hook: sparse decision signal injection
 - PostToolUse hook: automatic signed trace recording
 - HTTP REST API for Python/LangChain/any framework
 
-### Phase 4: 8-Layer Context Engine (Complete — v0.3.0)
-- Capability stats + workflow patterns + similar context (layers 1-3, from collective traces)
-- Workspace persistence: recent files, errors, session history (layer 4)
-- Git context: last 5 commits on file being touched (layer 5)
-- Decision history: co-edit patterns + preparation reads (layers 6-7)
-- Result feedback loop: edit retention rate (layer 8)
-- Strategy detection: analyze-modify, build-fix-cycle, multi-file-refactor, etc.
+### Phase 4: Sparse Signal Engine (Complete — v0.3.x)
+- Danger-first selector: `avoid / do next / maybe also / context`
+- Workspace persistence: recent errors, action sequences, pending feedback
+- Local pattern learning: repair trajectories, preparation reads, companion edits
+- Collective corroboration: independent-source upgrades with a single hot-path query budget
+- Lazy git fallback: recent commits only when no action signal is available
+- Result feedback loop: file-scoped edit retention and danger signaling
 
 ### Phase 5: Oasyce Bridge (Optional)
 - On-chain trace anchoring via Proof of Useful Work

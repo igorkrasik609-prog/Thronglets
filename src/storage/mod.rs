@@ -3,6 +3,7 @@
 //! Each node stores traces locally. No global consensus needed.
 //! Traces have TTL — like pheromone evaporation, old signals fade.
 
+use crate::signals::StepAction;
 use crate::trace::{Outcome, Trace};
 use ed25519_dalek::Signature;
 use rusqlite::{params, Connection};
@@ -232,6 +233,172 @@ impl TraceStore {
         rows.collect()
     }
 
+    /// Count distinct session sources that support a concrete Read -> Edit path.
+    /// Uses exact or suffix path matching so corroboration can come from other nodes
+    /// with different absolute workspace roots.
+    pub fn count_preparation_sources(
+        &self,
+        edit_target: &str,
+        read_target: &str,
+        hours: u64,
+    ) -> rusqlite::Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let edit_exact = format!("edit file: {edit_target}");
+        let edit_suffix = format!("edit file: %/{edit_target}");
+        let read_exact = format!("read file: {read_target}");
+        let read_suffix = format!("read file: %/{read_target}");
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT (hex(t_edit.node_pubkey) || ':' || t_edit.session_id))
+             FROM traces t_edit
+             JOIN traces t_read ON t_read.session_id = t_edit.session_id
+                               AND t_read.node_pubkey = t_edit.node_pubkey
+             WHERE t_edit.session_id IS NOT NULL
+               AND t_edit.capability IN ('claude-code/Edit', 'claude-code/Write')
+               AND t_read.capability = 'claude-code/Read'
+               AND t_read.timestamp < t_edit.timestamp
+               AND (t_edit.timestamp - t_read.timestamp) <= 300000
+               AND t_edit.timestamp >= ?1
+               AND (t_edit.context_text = ?2 OR t_edit.context_text LIKE ?3)
+               AND (t_read.context_text = ?4 OR t_read.context_text LIKE ?5)",
+            params![cutoff_ms, edit_exact, edit_suffix, read_exact, read_suffix],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u32)
+    }
+
+    /// Count distinct corroborating sources for a failed tool followed by a
+    /// concrete repair sequence (up to 2 steps).
+    pub fn count_repair_sources(
+        &self,
+        failed_tool: &str,
+        steps: &[StepAction],
+        hours: u64,
+    ) -> rusqlite::Result<u32> {
+        if steps.is_empty() || steps.len() > 2 {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let failed_cap = format!("claude-code/{failed_tool}");
+
+        let count = if steps.len() == 1 {
+            let (step1_cap, step1_exact, step1_suffix) = step_match(&steps[0]);
+            conn.query_row(
+                "SELECT COUNT(DISTINCT (hex(t0.node_pubkey) || ':' || t0.session_id))
+                 FROM traces t0
+                 JOIN traces t1 ON t1.session_id = t0.session_id
+                               AND t1.node_pubkey = t0.node_pubkey
+                 WHERE t0.session_id IS NOT NULL
+                   AND t0.capability = ?1
+                   AND t0.outcome = 1
+                   AND t1.timestamp > t0.timestamp
+                   AND (t1.timestamp - t0.timestamp) <= 600000
+                   AND t0.timestamp >= ?2
+                   AND t1.capability = ?3
+                   AND (?4 IS NULL OR t1.context_text = ?4 OR t1.context_text LIKE ?5)",
+                params![
+                    failed_cap,
+                    cutoff_ms,
+                    step1_cap,
+                    step1_exact,
+                    step1_suffix,
+                ],
+                |row| row.get::<_, i64>(0),
+            )?
+        } else {
+            let (step1_cap, step1_exact, step1_suffix) = step_match(&steps[0]);
+            let (step2_cap, step2_exact, step2_suffix) = step_match(&steps[1]);
+            conn.query_row(
+                "SELECT COUNT(DISTINCT (hex(t0.node_pubkey) || ':' || t0.session_id))
+                 FROM traces t0
+                 JOIN traces t1 ON t1.session_id = t0.session_id
+                               AND t1.node_pubkey = t0.node_pubkey
+                 JOIN traces t2 ON t2.session_id = t0.session_id
+                               AND t2.node_pubkey = t0.node_pubkey
+                 WHERE t0.session_id IS NOT NULL
+                   AND t0.capability = ?1
+                   AND t0.outcome = 1
+                   AND t1.timestamp > t0.timestamp
+                   AND t2.timestamp > t1.timestamp
+                   AND (t1.timestamp - t0.timestamp) <= 600000
+                   AND (t2.timestamp - t1.timestamp) <= 600000
+                   AND t0.timestamp >= ?2
+                   AND t1.capability = ?3
+                   AND (?4 IS NULL OR t1.context_text = ?4 OR t1.context_text LIKE ?5)
+                   AND t2.capability = ?6
+                   AND (?7 IS NULL OR t2.context_text = ?7 OR t2.context_text LIKE ?8)",
+                params![
+                    failed_cap,
+                    cutoff_ms,
+                    step1_cap,
+                    step1_exact,
+                    step1_suffix,
+                    step2_cap,
+                    step2_exact,
+                    step2_suffix,
+                ],
+                |row| row.get::<_, i64>(0),
+            )?
+        };
+
+        Ok(count.max(0) as u32)
+    }
+
+    /// Count distinct corroborating sources for a companion edit pattern.
+    pub fn count_adjacency_sources(
+        &self,
+        current_target: &str,
+        companion_target: &str,
+        hours: u64,
+    ) -> rusqlite::Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let current_exact_edit = format!("edit file: {current_target}");
+        let current_suffix_edit = format!("edit file: %/{current_target}");
+        let current_exact_write = format!("write file: {current_target}");
+        let current_suffix_write = format!("write file: %/{current_target}");
+        let companion_exact_edit = format!("edit file: {companion_target}");
+        let companion_suffix_edit = format!("edit file: %/{companion_target}");
+        let companion_exact_write = format!("write file: {companion_target}");
+        let companion_suffix_write = format!("write file: %/{companion_target}");
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT (hex(t1.node_pubkey) || ':' || t1.session_id))
+             FROM traces t1
+             JOIN traces t2 ON t2.session_id = t1.session_id
+                           AND t2.node_pubkey = t1.node_pubkey
+             WHERE t1.session_id IS NOT NULL
+               AND t1.capability IN ('claude-code/Edit', 'claude-code/Write')
+               AND t2.capability IN ('claude-code/Edit', 'claude-code/Write')
+               AND t1.timestamp >= ?1
+               AND ABS(t2.timestamp - t1.timestamp) <= 300000
+               AND (
+                    t1.context_text = ?2 OR t1.context_text LIKE ?3
+                 OR t1.context_text = ?4 OR t1.context_text LIKE ?5
+               )
+               AND (
+                    t2.context_text = ?6 OR t2.context_text LIKE ?7
+                 OR t2.context_text = ?8 OR t2.context_text LIKE ?9
+               )",
+            params![
+                cutoff_ms,
+                current_exact_edit,
+                current_suffix_edit,
+                current_exact_write,
+                current_suffix_write,
+                companion_exact_edit,
+                companion_suffix_edit,
+                companion_exact_write,
+                companion_suffix_write,
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u32)
+    }
+
     /// Evaporate old traces (pheromone decay).
     pub fn evaporate(&self, max_age_days: Option<i64>) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
@@ -388,6 +555,25 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     } else {
         let frac = idx - lower as f64;
         sorted[lower] * (1.0 - frac) + sorted[upper] * frac
+    }
+}
+
+fn step_match(step: &StepAction) -> (String, Option<String>, Option<String>) {
+    let capability = format!("claude-code/{}", step.tool);
+    let prefix = match step.tool.as_str() {
+        "Read" => Some("read file"),
+        "Edit" => Some("edit file"),
+        "Write" => Some("write file"),
+        _ => None,
+    };
+
+    match (&prefix, &step.target) {
+        (Some(prefix), Some(target)) => (
+            capability,
+            Some(format!("{prefix}: {target}")),
+            Some(format!("{prefix}: %/{target}")),
+        ),
+        _ => (capability, None, None),
     }
 }
 
@@ -663,5 +849,317 @@ mod tests {
 
         let unanchored = store.unanchored_traces(24, 3).unwrap();
         assert_eq!(unanchored.len(), 3);
+    }
+
+    #[test]
+    fn count_preparation_sources_counts_distinct_sessions() {
+        use crate::context::simhash;
+
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        let read_s1 = Trace::new(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("read file: helper.rs"),
+            Some("read file: helper.rs".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let edit_s1 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("edit file: main.rs"),
+            Some("edit file: main.rs".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let read_s2 = Trace::new(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("read file: /tmp/other/helper.rs"),
+            Some("read file: /tmp/other/helper.rs".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let edit_s2 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("edit file: /tmp/other/main.rs"),
+            Some("edit file: /tmp/other/main.rs".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+
+        store.insert(&read_s1).unwrap();
+        store.insert(&edit_s1).unwrap();
+        store.insert(&read_s2).unwrap();
+        store.insert(&edit_s2).unwrap();
+
+        let count = store.count_preparation_sources("main.rs", "helper.rs", 24).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn count_repair_sources_counts_distinct_sessions() {
+        use crate::context::simhash;
+
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        let bash_fail_s1 = Trace::new(
+            "claude-code/Bash".into(),
+            Outcome::Failed,
+            10,
+            10,
+            simhash("bash: cargo test"),
+            Some("bash: cargo test".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let read_s1 = Trace::new(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("read file: Cargo.toml"),
+            Some("read file: Cargo.toml".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let bash_ok_s1 = Trace::new(
+            "claude-code/Bash".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("bash: cargo test"),
+            Some("bash: cargo test".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let bash_fail_s2 = Trace::new(
+            "claude-code/Bash".into(),
+            Outcome::Failed,
+            10,
+            10,
+            simhash("bash: cargo test"),
+            Some("bash: cargo test".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let read_s2 = Trace::new(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("read file: /tmp/other/Cargo.toml"),
+            Some("read file: /tmp/other/Cargo.toml".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let bash_ok_s2 = Trace::new(
+            "claude-code/Bash".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("bash: cargo test"),
+            Some("bash: cargo test".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+
+        for trace in [
+            bash_fail_s1,
+            read_s1,
+            bash_ok_s1,
+            bash_fail_s2,
+            read_s2,
+            bash_ok_s2,
+        ] {
+            store.insert(&trace).unwrap();
+        }
+
+        let count = store.count_repair_sources(
+            "Bash",
+            &[
+                StepAction::new("Read", Some("Cargo.toml".into())),
+                StepAction::new("Bash", None),
+            ],
+            24,
+        ).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn count_adjacency_sources_counts_distinct_sessions() {
+        use crate::context::simhash;
+
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        let main_edit_s1 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("edit file: main.rs"),
+            Some("edit file: main.rs".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let helper_edit_s1 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("edit file: helper.rs"),
+            Some("edit file: helper.rs".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let main_edit_s2 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("edit file: /tmp/other/main.rs"),
+            Some("edit file: /tmp/other/main.rs".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let helper_write_s2 = Trace::new(
+            "claude-code/Write".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("write file: /tmp/other/helper.rs"),
+            Some("write file: /tmp/other/helper.rs".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+
+        for trace in [main_edit_s1, helper_edit_s1, main_edit_s2, helper_write_s2] {
+            store.insert(&trace).unwrap();
+        }
+
+        let count = store.count_adjacency_sources("main.rs", "helper.rs", 24).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn count_preparation_sources_distinguishes_nodes_with_same_session_id() {
+        use crate::context::simhash;
+
+        let store = TraceStore::in_memory().unwrap();
+        let id_a = NodeIdentity::generate();
+        let id_b = NodeIdentity::generate();
+
+        let read_a = Trace::new(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("read file: helper.rs"),
+            Some("read file: helper.rs".into()),
+            Some("shared".into()),
+            "test-model".into(),
+            id_a.public_key_bytes(),
+            |m| id_a.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let edit_a = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("edit file: main.rs"),
+            Some("edit file: main.rs".into()),
+            Some("shared".into()),
+            "test-model".into(),
+            id_a.public_key_bytes(),
+            |m| id_a.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let read_b = Trace::new(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("read file: /tmp/b/helper.rs"),
+            Some("read file: /tmp/b/helper.rs".into()),
+            Some("shared".into()),
+            "test-model".into(),
+            id_b.public_key_bytes(),
+            |m| id_b.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let edit_b = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("edit file: /tmp/b/main.rs"),
+            Some("edit file: /tmp/b/main.rs".into()),
+            Some("shared".into()),
+            "test-model".into(),
+            id_b.public_key_bytes(),
+            |m| id_b.sign(m),
+        );
+
+        for trace in [read_a, edit_a, read_b, edit_b] {
+            store.insert(&trace).unwrap();
+        }
+
+        let count = store.count_preparation_sources("main.rs", "helper.rs", 24).unwrap();
+        assert_eq!(count, 2);
     }
 }
