@@ -8,13 +8,13 @@ use thronglets::contracts::{
     GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MATCHER, PREHOOK_MAX_COLLECTIVE_QUERIES,
     PREHOOK_MAX_HINTS,
 };
-use thronglets::eval::{EvalConfig, EvalFocus, evaluate_signal_quality};
+use thronglets::eval::{evaluate_signal_quality, EvalConfig, EvalFocus};
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
-use thronglets::profile::{ProfileCheckThresholds, summarize_prehook_profiles};
+use thronglets::profile::{summarize_prehook_profiles, ProfileCheckThresholds};
 use thronglets::signals::{
-    Recommendation, Signal, SignalKind, StepCandidate, select as select_signals,
+    select as select_signals, Recommendation, Signal, SignalKind, StepCandidate,
 };
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
@@ -1109,17 +1109,15 @@ async fn main() {
             let project_scope = if global {
                 None
             } else {
-                Some(
-                    project_root.unwrap_or_else(|| {
-                        std::env::current_dir()
-                            .expect("failed to determine current working directory")
-                    }),
-                )
+                Some(project_root.unwrap_or_else(|| {
+                    std::env::current_dir().expect("failed to determine current working directory")
+                }))
             };
             let eval_config = EvalConfig {
                 local_history_gate_min,
                 pattern_support_min,
             };
+            let default_config = EvalConfig::default();
             match evaluate_signal_quality(
                 &store,
                 hours,
@@ -1127,9 +1125,25 @@ async fn main() {
                 project_scope.as_deref(),
                 eval_config,
             )
-                .expect("failed to evaluate signal quality")
+            .expect("failed to evaluate signal quality")
             {
                 Some(summary) => {
+                    let summary = if eval_config != default_config {
+                        match evaluate_signal_quality(
+                            &store,
+                            hours,
+                            max_sessions,
+                            project_scope.as_deref(),
+                            default_config,
+                        )
+                        .expect("failed to evaluate default signal quality")
+                        {
+                            Some(baseline) => summary.with_comparison_to_default(&baseline),
+                            None => summary,
+                        }
+                    } else {
+                        summary
+                    };
                     let summary = summary.focused(focus.into(), top_breakdowns);
                     if json {
                         println!(

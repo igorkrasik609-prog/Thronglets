@@ -251,7 +251,11 @@ fn eval_signals_can_trial_relaxed_thresholds() {
     let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
     for session in ["s1", "s2"] {
         for (capability, outcome, context) in [
-            ("claude-code/Read", Outcome::Succeeded, "read file: helper.rs"),
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: helper.rs",
+            ),
             ("claude-code/Edit", Outcome::Succeeded, "edit file: main.rs"),
         ] {
             let trace = make_trace(&identity, capability, outcome, context, session, timestamp);
@@ -286,9 +290,24 @@ fn eval_signals_can_trial_relaxed_thresholds() {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let parsed: Value = serde_json::from_slice(&output.stdout).expect("parse relaxed eval-signals json");
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("parse relaxed eval-signals json");
     assert_eq!(parsed["eval_config"]["local_history_gate_min"], 1);
     assert_eq!(parsed["eval_config"]["pattern_support_min"], 1);
+    assert_eq!(
+        parsed["comparison_to_default"]["baseline_config"]["local_history_gate_min"],
+        2
+    );
+    assert_eq!(
+        parsed["comparison_to_default"]["baseline_config"]["pattern_support_min"],
+        2
+    );
+    assert!(
+        parsed["comparison_to_default"]["preparation_prediction_delta"]
+            .as_i64()
+            .unwrap_or(0)
+            >= 1
+    );
     assert!(parsed["preparation_predictions"].as_u64().unwrap_or(0) >= 1);
 }
 
@@ -301,7 +320,11 @@ fn eval_signals_defaults_to_project_scope() {
     let identity = NodeIdentity::generate();
 
     let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
-    for (session, root) in [("p1", project.path()), ("p2", project.path()), ("o1", other.path())] {
+    for (session, root) in [
+        ("p1", project.path()),
+        ("p2", project.path()),
+        ("o1", other.path()),
+    ] {
         let helper = root.join("helper.rs");
         let main = root.join("main.rs");
         for (capability, outcome, context) in [
@@ -361,7 +384,10 @@ fn eval_signals_defaults_to_project_scope() {
     } else {
         expected.clone()
     };
-    assert!(scope == expected || scope == alternate, "unexpected project scope: {scope}");
+    assert!(
+        scope == expected || scope == alternate,
+        "unexpected project scope: {scope}"
+    );
     assert_eq!(parsed["sessions_considered"], 2);
     assert_eq!(parsed["sessions_scored"], 1);
 }

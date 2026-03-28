@@ -107,7 +107,7 @@ thronglets eval-signals --hours 168 --max-sessions 200 --focus repair --top-brea
 thronglets eval-signals --focus preparation --local-history-gate-min 1 --pattern-support-min 1
 ```
 
-这只会改变离线评估，不会修改在线 prehook 的真实阈值。
+这只会改变离线评估，不会修改在线 prehook 的真实阈值。只要阈值不是默认值，输出还会自动附带一段 `vs default (2/2)` 的差值摘要，直接告诉你 coverage 涨了多少、precision 掉了多少，不用手动跑两次再比较。
 
 ## 为什么这很重要
 

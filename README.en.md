@@ -107,7 +107,7 @@ If you suspect the current thresholds are too conservative, you can trial relaxe
 thronglets eval-signals --focus preparation --local-history-gate-min 1 --pattern-support-min 1
 ```
 
-This only changes the offline evaluation, not the live prehook thresholds.
+This only changes the offline evaluation, not the live prehook thresholds. Whenever the trial thresholds differ from default, the output now also includes a `vs default (2/2)` delta summary so you can see coverage gains and precision loss without running the command twice.
 
 ## Why This Matters
 

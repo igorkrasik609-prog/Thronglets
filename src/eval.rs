@@ -38,6 +38,7 @@ impl Default for EvalConfig {
 pub struct SignalEvalSummary {
     pub project_scope: Option<String>,
     pub eval_config: EvalConfig,
+    pub comparison_to_default: Option<EvalComparison>,
     pub sessions_considered: usize,
     pub sessions_scored: usize,
     pub edit_points: usize,
@@ -55,6 +56,22 @@ pub struct SignalEvalSummary {
     pub repair_breakdown: BTreeMap<String, RepairEvalBreakdown>,
     pub preparation_breakdown: BTreeMap<String, FileGuidanceEvalBreakdown>,
     pub adjacency_breakdown: BTreeMap<String, FileGuidanceEvalBreakdown>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvalComparison {
+    pub baseline_config: EvalConfig,
+    pub edit_silence_rate_delta_tenths_pp: i32,
+    pub repair_coverage_delta_tenths_pp: i32,
+    pub repair_first_step_precision_delta_tenths_pp: i32,
+    pub repair_exact_precision_delta_tenths_pp: i32,
+    pub preparation_gate_block_rate_delta_tenths_pp: i32,
+    pub preparation_precision_delta_tenths_pp: i32,
+    pub adjacency_gate_block_rate_delta_tenths_pp: i32,
+    pub adjacency_precision_delta_tenths_pp: i32,
+    pub repair_prediction_delta: i32,
+    pub preparation_prediction_delta: i32,
+    pub adjacency_prediction_delta: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
@@ -203,6 +220,11 @@ impl SignalEvalSummary {
             format!("diagnosis: {}", self.diagnosis()),
         ];
 
+        if let Some(comparison) = self.comparison_to_default.as_ref() {
+            lines.push(comparison.render_summary_line());
+            lines.push(comparison.render_prediction_line());
+        }
+
         if !self.repair_breakdown.is_empty() {
             lines.push(format!(
                 "repair breakdown: {}",
@@ -225,6 +247,13 @@ impl SignalEvalSummary {
         lines.join("\n")
     }
 
+    pub fn with_comparison_to_default(mut self, baseline: &SignalEvalSummary) -> Self {
+        if self.eval_config != baseline.eval_config {
+            self.comparison_to_default = Some(EvalComparison::between(baseline, &self));
+        }
+        self
+    }
+
     pub fn diagnosis(&self) -> &'static str {
         if self.repair_opportunities > 0 && self.repair_predictions == 0 {
             return "repair has too little repeated support; collect more failed->fixed sequences before widening hints";
@@ -239,6 +268,96 @@ impl SignalEvalSummary {
             return "sparse-signal policy is staying mostly silent; keep it that way unless precision improves";
         }
         "signal mix looks reasonable; keep tuning by measured precision rather than adding new hint types"
+    }
+}
+
+impl EvalComparison {
+    fn between(baseline: &SignalEvalSummary, candidate: &SignalEvalSummary) -> Self {
+        Self {
+            baseline_config: baseline.eval_config,
+            edit_silence_rate_delta_tenths_pp: delta_tenths_pp(
+                candidate
+                    .edit_points
+                    .saturating_sub(candidate.edit_points_with_signal),
+                candidate.edit_points,
+                baseline
+                    .edit_points
+                    .saturating_sub(baseline.edit_points_with_signal),
+                baseline.edit_points,
+            ),
+            repair_coverage_delta_tenths_pp: delta_tenths_pp(
+                candidate.repair_predictions,
+                candidate.repair_opportunities,
+                baseline.repair_predictions,
+                baseline.repair_opportunities,
+            ),
+            repair_first_step_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.repair_first_step_hits,
+                candidate.repair_predictions,
+                baseline.repair_first_step_hits,
+                baseline.repair_predictions,
+            ),
+            repair_exact_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.repair_exact_hits,
+                candidate.repair_predictions,
+                baseline.repair_exact_hits,
+                baseline.repair_predictions,
+            ),
+            preparation_gate_block_rate_delta_tenths_pp: delta_tenths_pp(
+                candidate.preparation_gated_edit_points,
+                candidate.edit_points,
+                baseline.preparation_gated_edit_points,
+                baseline.edit_points,
+            ),
+            preparation_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.preparation_hits,
+                candidate.preparation_predictions,
+                baseline.preparation_hits,
+                baseline.preparation_predictions,
+            ),
+            adjacency_gate_block_rate_delta_tenths_pp: delta_tenths_pp(
+                candidate.adjacency_gated_edit_points,
+                candidate.edit_points,
+                baseline.adjacency_gated_edit_points,
+                baseline.edit_points,
+            ),
+            adjacency_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.adjacency_hits,
+                candidate.adjacency_predictions,
+                baseline.adjacency_hits,
+                baseline.adjacency_predictions,
+            ),
+            repair_prediction_delta: candidate.repair_predictions as i32
+                - baseline.repair_predictions as i32,
+            preparation_prediction_delta: candidate.preparation_predictions as i32
+                - baseline.preparation_predictions as i32,
+            adjacency_prediction_delta: candidate.adjacency_predictions as i32
+                - baseline.adjacency_predictions as i32,
+        }
+    }
+
+    fn render_summary_line(&self) -> String {
+        format!(
+            "vs default ({}/{}): silence {}, repair cov {}, repair step {}, prep prec {}, adj prec {}",
+            self.baseline_config.local_history_gate_min,
+            self.baseline_config.pattern_support_min,
+            format_delta_tenths_pp(self.edit_silence_rate_delta_tenths_pp),
+            format_delta_tenths_pp(self.repair_coverage_delta_tenths_pp),
+            format_delta_tenths_pp(self.repair_first_step_precision_delta_tenths_pp),
+            format_delta_tenths_pp(self.preparation_precision_delta_tenths_pp),
+            format_delta_tenths_pp(self.adjacency_precision_delta_tenths_pp),
+        )
+    }
+
+    fn render_prediction_line(&self) -> String {
+        format!(
+            "vs default counts: repair pred {:+}, prep pred {:+}, adj pred {:+}, prep gate {}, adj gate {}",
+            self.repair_prediction_delta,
+            self.preparation_prediction_delta,
+            self.adjacency_prediction_delta,
+            format_delta_tenths_pp(self.preparation_gate_block_rate_delta_tenths_pp),
+            format_delta_tenths_pp(self.adjacency_gate_block_rate_delta_tenths_pp),
+        )
     }
 }
 
@@ -408,6 +527,7 @@ pub fn evaluate_signal_quality(
     let mut summary = SignalEvalSummary {
         project_scope: project_root.map(|path| path.display().to_string()),
         eval_config: config,
+        comparison_to_default: None,
         sessions_considered: sessions.len(),
         sessions_scored: 0,
         edit_points: 0,
@@ -540,7 +660,8 @@ fn trace_to_event(trace: &Trace) -> Option<SessionEvent> {
 fn session_matches_project_root(traces: &[Trace], project_root: &Path) -> bool {
     let roots = project_root_variants(project_root);
     traces.iter().any(|trace| {
-        trace.context_text
+        trace
+            .context_text
             .as_deref()
             .and_then(extract_context_path)
             .is_some_and(|path| roots.iter().any(|root| path.starts_with(root)))
@@ -555,7 +676,10 @@ fn extract_context_path(context_text: &str) -> Option<&str> {
 
 fn project_root_variants(project_root: &Path) -> Vec<String> {
     let mut variants = Vec::new();
-    let root = project_root.to_string_lossy().trim_end_matches('/').to_string();
+    let root = project_root
+        .to_string_lossy()
+        .trim_end_matches('/')
+        .to_string();
     variants.push(root.clone());
 
     if let Some(stripped) = root.strip_prefix("/private") {
@@ -673,6 +797,22 @@ fn percent(numerator: usize, denominator: usize) -> f64 {
     } else {
         numerator as f64 / denominator as f64 * 100.0
     }
+}
+
+fn delta_tenths_pp(
+    candidate_numerator: usize,
+    candidate_denominator: usize,
+    baseline_numerator: usize,
+    baseline_denominator: usize,
+) -> i32 {
+    ((percent(candidate_numerator, candidate_denominator)
+        - percent(baseline_numerator, baseline_denominator))
+        * 10.0)
+        .round() as i32
+}
+
+fn format_delta_tenths_pp(delta_tenths_pp: i32) -> String {
+    format!("{:+.1}pp", delta_tenths_pp as f64 / 10.0)
 }
 
 fn render_repair_breakdown(breakdown: &BTreeMap<String, RepairEvalBreakdown>) -> String {
@@ -868,9 +1008,11 @@ mod tests {
         );
         store.insert(&trace).unwrap();
 
-        assert!(evaluate_signal_quality(&store, 168, 10, None, EvalConfig::default())
-            .unwrap()
-            .is_none());
+        assert!(
+            evaluate_signal_quality(&store, 168, 10, None, EvalConfig::default())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -907,6 +1049,7 @@ mod tests {
         let summary = SignalEvalSummary {
             project_scope: None,
             eval_config: EvalConfig::default(),
+            comparison_to_default: None,
             sessions_considered: 3,
             sessions_scored: 2,
             edit_points: 10,
@@ -1023,7 +1166,8 @@ mod tests {
                     format!("edit file: {}", helper.display()),
                 ),
             ] {
-                let trace = make_trace(&identity, capability, outcome, &context, session, timestamp);
+                let trace =
+                    make_trace(&identity, capability, outcome, &context, session, timestamp);
                 store.insert(&trace).unwrap();
                 timestamp += 1_000;
             }
@@ -1050,7 +1194,11 @@ mod tests {
 
         for session in ["s1", "s2"] {
             for (capability, outcome, context) in [
-                ("claude-code/Read", Outcome::Succeeded, "read file: helper.rs"),
+                (
+                    "claude-code/Read",
+                    Outcome::Succeeded,
+                    "read file: helper.rs",
+                ),
                 ("claude-code/Edit", Outcome::Succeeded, "edit file: main.rs"),
             ] {
                 let trace = make_trace(&identity, capability, outcome, context, session, timestamp);
@@ -1081,5 +1229,68 @@ mod tests {
         assert_eq!(strict.adjacency_predictions, 0);
         assert_eq!(relaxed.eval_config.local_history_gate_min, 1);
         assert_eq!(relaxed.eval_config.pattern_support_min, 1);
+    }
+
+    #[test]
+    fn comparison_to_default_highlights_relaxed_threshold_tradeoff() {
+        let baseline = SignalEvalSummary {
+            project_scope: None,
+            eval_config: EvalConfig::default(),
+            comparison_to_default: None,
+            sessions_considered: 3,
+            sessions_scored: 2,
+            edit_points: 10,
+            edit_points_with_signal: 1,
+            repair_opportunities: 2,
+            repair_predictions: 0,
+            repair_first_step_hits: 0,
+            repair_exact_hits: 0,
+            preparation_gated_edit_points: 8,
+            preparation_predictions: 0,
+            preparation_hits: 0,
+            adjacency_gated_edit_points: 8,
+            adjacency_predictions: 1,
+            adjacency_hits: 0,
+            repair_breakdown: BTreeMap::new(),
+            preparation_breakdown: BTreeMap::new(),
+            adjacency_breakdown: BTreeMap::new(),
+        };
+        let candidate = SignalEvalSummary {
+            project_scope: None,
+            eval_config: EvalConfig {
+                local_history_gate_min: 1,
+                pattern_support_min: 1,
+            },
+            comparison_to_default: None,
+            sessions_considered: 3,
+            sessions_scored: 2,
+            edit_points: 10,
+            edit_points_with_signal: 3,
+            repair_opportunities: 2,
+            repair_predictions: 0,
+            repair_first_step_hits: 0,
+            repair_exact_hits: 0,
+            preparation_gated_edit_points: 5,
+            preparation_predictions: 2,
+            preparation_hits: 0,
+            adjacency_gated_edit_points: 5,
+            adjacency_predictions: 3,
+            adjacency_hits: 1,
+            repair_breakdown: BTreeMap::new(),
+            preparation_breakdown: BTreeMap::new(),
+            adjacency_breakdown: BTreeMap::new(),
+        }
+        .with_comparison_to_default(&baseline);
+
+        let comparison = candidate
+            .comparison_to_default
+            .as_ref()
+            .expect("comparison to default");
+        assert_eq!(comparison.baseline_config, EvalConfig::default());
+        assert_eq!(comparison.preparation_prediction_delta, 2);
+        assert_eq!(comparison.adjacency_prediction_delta, 2);
+        assert_eq!(comparison.preparation_gate_block_rate_delta_tenths_pp, -300);
+        assert!(candidate.render().contains("vs default (2/2):"));
+        assert!(candidate.render().contains("prep pred +2"));
     }
 }

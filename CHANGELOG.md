@@ -7,6 +7,7 @@
 - **Focused evaluation views** — `thronglets eval-signals` now supports `--focus` and `--top-breakdowns` so operators can inspect one signal family without dumping the entire repo history
 - **Project-scoped evaluation** — `thronglets eval-signals` now defaults to the current project directory and uses `--global` only when you explicitly want cross-project traces mixed in
 - **Offline threshold trials** — `thronglets eval-signals` now accepts `--local-history-gate-min` and `--pattern-support-min` so operators can test stricter or looser signal thresholds without touching live hooks
+- **Threshold deltas** — non-default `eval-signals` trials now auto-compare against the default `2/2` baseline so operators can see coverage and precision tradeoffs in one run
 
 ## v0.4.0 — 2026-03-28
 
