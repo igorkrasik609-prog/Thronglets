@@ -51,6 +51,14 @@ struct BootstrapReport {
     next_steps: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct DoctorReport {
+    status: &'static str,
+    healthy: bool,
+    next_steps: Vec<String>,
+    reports: Vec<AdapterDoctor>,
+}
+
 #[derive(Parser)]
 #[command(
     name = "thronglets",
@@ -520,6 +528,23 @@ fn render_bootstrap_report(report: &BootstrapReport) {
     }
 }
 
+fn summarize_doctor_reports(target: AdapterArg, reports: Vec<AdapterDoctor>) -> DoctorReport {
+    let healthy = !doctor_should_fail(target, &reports);
+    let mut next_steps: Vec<_> = reports
+        .iter()
+        .filter_map(|report| report.fix_command.clone())
+        .collect();
+    next_steps.sort();
+    next_steps.dedup();
+
+    DoctorReport {
+        status: if healthy { "healthy" } else { "needs-fix" },
+        healthy,
+        next_steps,
+        reports,
+    }
+}
+
 fn apply_selected_adapters(
     target: AdapterArg,
     home_dir: &Path,
@@ -647,16 +672,14 @@ fn bootstrap_selected_adapters(
         .map(|adapter| install_plan(home_dir, data_dir, bin_path, adapter))
         .collect();
     let applied = apply_selected_adapters(target, home_dir, data_dir, bin_path)?;
-    let doctor: Vec<_> = selected_adapters(target)
+    let doctor_reports: Vec<_> = selected_adapters(target)
         .into_iter()
         .map(|adapter| doctor_adapter(home_dir, data_dir, adapter))
         .collect();
-    let healthy = !doctor_should_fail(target, &doctor);
+    let doctor_summary = summarize_doctor_reports(target, doctor_reports);
+    let healthy = doctor_summary.healthy;
     let restart_required = applied.iter().any(|result| result.requires_restart);
-    let mut next_steps: Vec<_> = doctor
-        .iter()
-        .filter_map(|report| report.fix_command.clone())
-        .collect();
+    let mut next_steps = doctor_summary.next_steps.clone();
     if restart_required {
         next_steps.push("Restart the targeted agent so the new integration is loaded.".into());
     }
@@ -668,7 +691,7 @@ fn bootstrap_selected_adapters(
         detections,
         plans,
         applied,
-        doctor,
+        doctor: doctor_summary.reports,
         healthy,
         restart_required,
         next_steps,
@@ -1411,12 +1434,13 @@ async fn main() {
                 .into_iter()
                 .map(|adapter| doctor_adapter(&home_dir, &dir, adapter))
                 .collect();
+            let summary = summarize_doctor_reports(agent, reports);
             if json {
-                print_machine_json("doctor", &reports);
+                print_machine_json("doctor", &summary);
             } else {
-                render_doctor_reports(&reports);
+                render_doctor_reports(&summary.reports);
             }
-            if doctor_should_fail(agent, &reports) {
+            if !summary.healthy {
                 std::process::exit(1);
             }
         }

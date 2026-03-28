@@ -23,6 +23,16 @@ fn parse_envelope(output: &Output, command: &str) -> Vec<Value> {
     envelope["data"].as_array().unwrap().clone()
 }
 
+fn parse_doctor_envelope(output: &Output) -> Value {
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        envelope["schema_version"],
+        Value::String(SCHEMA_VERSION.into())
+    );
+    assert_eq!(envelope["command"], Value::String("doctor".into()));
+    envelope["data"].clone()
+}
+
 #[test]
 fn detect_json_reports_present_adapters_and_generic_contract() {
     let temp = tempfile::tempdir().unwrap();
@@ -110,7 +120,11 @@ fn apply_plan_codex_then_doctor_reports_healthy() {
         "doctor failed: {}",
         String::from_utf8_lossy(&doctor_output.stderr)
     );
-    let reports = parse_envelope(&doctor_output, "doctor");
+    let summary = parse_doctor_envelope(&doctor_output);
+    assert_eq!(summary["status"], Value::String("healthy".into()));
+    assert_eq!(summary["healthy"], Value::Bool(true));
+    assert!(summary["next_steps"].as_array().unwrap().is_empty());
+    let reports = summary["reports"].as_array().unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["healthy"], Value::Bool(true));
     assert_eq!(reports[0]["status"], Value::String("healthy".into()));
@@ -131,7 +145,14 @@ fn doctor_fails_for_unconfigured_specific_adapter() {
         String::from_utf8_lossy(&output.stdout)
     );
 
-    let reports = parse_envelope(&output, "doctor");
+    let summary = parse_doctor_envelope(&output);
+    assert_eq!(summary["status"], Value::String("needs-fix".into()));
+    assert_eq!(summary["healthy"], Value::Bool(false));
+    assert_eq!(
+        summary["next_steps"].as_array().unwrap()[0],
+        Value::String("thronglets apply-plan --agent codex".into())
+    );
+    let reports = summary["reports"].as_array().unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["healthy"], Value::Bool(false));
     assert_eq!(reports[0]["status"], Value::String("needs-fix".into()));
