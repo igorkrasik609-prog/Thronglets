@@ -1336,6 +1336,7 @@ mod tests {
         assert_eq!(signals[0]["kind"], "recommend");
         assert_eq!(signals[0]["message"], "run release-check before push");
         assert_eq!(signals[0]["model_count"], 1);
+        assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
@@ -1392,6 +1393,7 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "recommend");
         assert_eq!(signals[0]["model_count"], 1);
+        assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["evidence_scope"], "local");
     }
 

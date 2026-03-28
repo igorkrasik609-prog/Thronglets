@@ -100,6 +100,7 @@ pub struct SignalQueryResult {
     pub total_posts: u64,
     pub source_count: u32,
     pub model_count: u32,
+    pub corroboration_tier: String,
     pub local_source_count: u32,
     pub collective_source_count: u32,
     pub evidence_scope: String,
@@ -115,6 +116,7 @@ pub struct SignalFeedResult {
     pub total_posts: u64,
     pub source_count: u32,
     pub model_count: u32,
+    pub corroboration_tier: String,
     pub local_source_count: u32,
     pub collective_source_count: u32,
     pub evidence_scope: String,
@@ -262,6 +264,11 @@ pub fn summarize_signal_traces(
                 total_posts: group.total_posts,
                 source_count: group.sources.len() as u32,
                 model_count: group.models.len() as u32,
+                corroboration_tier: signal_corroboration_tier(
+                    group.sources.len() as u32,
+                    group.models.len() as u32,
+                )
+                .to_string(),
                 local_source_count,
                 collective_source_count,
                 evidence_scope,
@@ -345,6 +352,11 @@ pub fn summarize_recent_signal_feed(
                 total_posts: group.total_posts,
                 source_count: group.sources.len() as u32,
                 model_count: group.models.len() as u32,
+                corroboration_tier: signal_corroboration_tier(
+                    group.sources.len() as u32,
+                    group.models.len() as u32,
+                )
+                .to_string(),
                 local_source_count,
                 collective_source_count,
                 evidence_scope,
@@ -420,6 +432,14 @@ fn signal_evidence_scope(local_sources: u32, collective_sources: u32) -> &'stati
     }
 }
 
+fn signal_corroboration_tier(source_count: u32, model_count: u32) -> &'static str {
+    match (source_count > 1, model_count > 1) {
+        (_, true) => "multi_model",
+        (true, false) => "repeated_source",
+        (false, false) => "single_source",
+    }
+}
+
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -471,6 +491,7 @@ mod tests {
         assert_eq!(results[0].total_posts, 2);
         assert_eq!(results[0].source_count, 2);
         assert_eq!(results[0].model_count, 2);
+        assert_eq!(results[0].corroboration_tier, "multi_model");
         assert_eq!(results[0].local_source_count, 2);
         assert_eq!(results[0].collective_source_count, 0);
         assert_eq!(results[0].evidence_scope, "local");
@@ -559,6 +580,7 @@ mod tests {
         assert_eq!(results[0].local_source_count, 1);
         assert_eq!(results[0].collective_source_count, 1);
         assert_eq!(results[0].model_count, 2);
+        assert_eq!(results[0].corroboration_tier, "multi_model");
         assert_eq!(results[0].evidence_scope, "mixed");
     }
 
@@ -614,6 +636,7 @@ mod tests {
         assert_eq!(results[0].message, "run release-check before push");
         assert_eq!(results[0].collective_source_count, 2);
         assert_eq!(results[0].model_count, 2);
+        assert_eq!(results[0].corroboration_tier, "multi_model");
         assert_eq!(results[0].evidence_scope, "collective");
     }
 
@@ -688,9 +711,11 @@ mod tests {
         assert_eq!(results[0].message, "run release-check before push");
         assert_eq!(results[0].source_count, 2);
         assert_eq!(results[0].model_count, 2);
+        assert_eq!(results[0].corroboration_tier, "multi_model");
         assert_eq!(results[1].message, "rerun the targeted test first");
         assert_eq!(results[1].source_count, 2);
         assert_eq!(results[1].model_count, 1);
+        assert_eq!(results[1].corroboration_tier, "repeated_source");
     }
 
     #[test]
@@ -702,6 +727,7 @@ mod tests {
                 total_posts: 1,
                 source_count: 1,
                 model_count: 1,
+                corroboration_tier: "single_source".into(),
                 local_source_count: 1,
                 collective_source_count: 0,
                 evidence_scope: "local".into(),
@@ -715,6 +741,7 @@ mod tests {
                 total_posts: 2,
                 source_count: 2,
                 model_count: 2,
+                corroboration_tier: "multi_model".into(),
                 local_source_count: 0,
                 collective_source_count: 2,
                 evidence_scope: "collective".into(),
@@ -727,5 +754,13 @@ mod tests {
         let filtered = filter_signal_feed_results(results, SignalScopeFilter::Collective);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].message, "collective");
+    }
+
+    #[test]
+    fn signal_corroboration_tier_distinguishes_single_repeated_and_multi_model() {
+        assert_eq!(signal_corroboration_tier(1, 1), "single_source");
+        assert_eq!(signal_corroboration_tier(2, 1), "repeated_source");
+        assert_eq!(signal_corroboration_tier(1, 2), "multi_model");
+        assert_eq!(signal_corroboration_tier(3, 2), "multi_model");
     }
 }
