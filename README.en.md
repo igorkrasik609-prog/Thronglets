@@ -96,6 +96,8 @@ When a restart is needed, the summary also carries explicit `restart_commands`.
 `doctor` now returns top-level `status`, `healthy`, `restart_pending`, `next_steps`, plus per-adapter `fix_command`.  
 `bootstrap` also returns top-level `restart_required` and `next_steps`, so an AI does not have to infer what to do next from free-form notes.
 
+If the target runtime is not one of the native adapters, `install-plan --agent generic --json` now also includes minimal `Python / Node.js / shell` `prehook / hook` snippets, so the runtime does not have to invent its own wrapper contract.
+
 The minimum JSON contract is fixed. `prehook` reads input like:
 
 ```json

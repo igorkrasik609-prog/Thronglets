@@ -48,12 +48,7 @@ fn normalize_json(value: &mut Value, home: &Path, data_dir: &Path, bin: &Path) {
     }
 }
 
-fn assert_fixture(
-    fixture: &str,
-    output: &std::process::Output,
-    home: &Path,
-    data_dir: &Path,
-) {
+fn assert_fixture(fixture: &str, output: &std::process::Output, home: &Path, data_dir: &Path) {
     let mut actual: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         actual["schema_version"],
@@ -65,8 +60,8 @@ fn assert_fixture(
         data_dir,
         Path::new(env!("CARGO_BIN_EXE_thronglets")),
     );
-    let expected: Value = serde_json::from_str(&fs::read_to_string(fixture_path(fixture)).unwrap())
-        .unwrap();
+    let expected: Value =
+        serde_json::from_str(&fs::read_to_string(fixture_path(fixture)).unwrap()).unwrap();
     assert_eq!(actual, expected);
 }
 
@@ -106,6 +101,25 @@ fn install_plan_codex_matches_golden_fixture() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_fixture("install_plan_codex.json", &output, &home, &data_dir);
+}
+
+#[test]
+fn install_plan_generic_matches_golden_fixture() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+
+    let output = run_bin(
+        &["install-plan", "--agent", "generic", "--json"],
+        &home,
+        &data_dir,
+    );
+    assert!(
+        output.status.success(),
+        "install-plan failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_fixture("install_plan_generic.json", &output, &home, &data_dir);
 }
 
 #[test]
@@ -168,7 +182,12 @@ fn doctor_codex_restart_pending_matches_golden_fixture() {
         "doctor failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_fixture("doctor_codex_restart_pending.json", &output, &home, &data_dir);
+    assert_fixture(
+        "doctor_codex_restart_pending.json",
+        &output,
+        &home,
+        &data_dir,
+    );
 }
 
 #[test]

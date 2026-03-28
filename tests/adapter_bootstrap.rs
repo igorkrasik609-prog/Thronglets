@@ -93,15 +93,44 @@ fn install_plan_generic_json_includes_contract_examples() {
     );
 
     let summary = parse_command_data(&output, "install-plan");
-    assert_eq!(summary["summary"]["status"], Value::String("planned".into()));
+    assert_eq!(
+        summary["summary"]["status"],
+        Value::String("planned".into())
+    );
     assert_eq!(summary["summary"]["restart_required"], Value::Bool(false));
-    assert!(summary["summary"]["restart_commands"].as_array().unwrap().is_empty());
+    assert!(
+        summary["summary"]["restart_commands"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let plans = summary["plans"].as_array().unwrap();
     assert_eq!(plans.len(), 1);
     let plan = &plans[0];
     assert_eq!(plan["agent"], Value::String("generic".into()));
     assert_eq!(plan["contract"]["prehook_stdin"]["tool_name"], "Edit");
     assert!(plan["contract"]["hook_stdin"]["tool_response"].is_object());
+    assert_eq!(
+        plan["contract"]["runtimes"]["node"]["prehook"]
+            .as_str()
+            .unwrap()
+            .contains("execFileSync"),
+        true
+    );
+    assert_eq!(
+        plan["contract"]["runtimes"]["python"]["prehook"]
+            .as_str()
+            .unwrap()
+            .contains("subprocess.run"),
+        true
+    );
+    assert_eq!(
+        plan["contract"]["runtimes"]["shell"]["hook"]
+            .as_str()
+            .unwrap()
+            .contains("thronglets hook"),
+        true
+    );
 }
 
 #[test]
@@ -122,7 +151,10 @@ fn apply_plan_codex_then_doctor_reports_restart_pending() {
         String::from_utf8_lossy(&apply_output.stderr)
     );
     let summary = parse_command_data(&apply_output, "apply-plan");
-    assert_eq!(summary["summary"]["status"], Value::String("applied".into()));
+    assert_eq!(
+        summary["summary"]["status"],
+        Value::String("applied".into())
+    );
     assert_eq!(summary["summary"]["restart_required"], Value::Bool(true));
     assert_eq!(
         summary["summary"]["restart_commands"].as_array().unwrap()[0],
@@ -197,7 +229,10 @@ fn doctor_fails_for_unconfigured_specific_adapter() {
     );
 
     let summary = parse_doctor_envelope(&output);
-    assert_eq!(summary["summary"]["status"], Value::String("needs-fix".into()));
+    assert_eq!(
+        summary["summary"]["status"],
+        Value::String("needs-fix".into())
+    );
     assert_eq!(summary["summary"]["healthy"], Value::Bool(false));
     assert_eq!(summary["summary"]["restart_pending"], Value::Bool(false));
     assert_eq!(
@@ -256,9 +291,14 @@ fn bootstrap_codex_json_applies_and_reports_restart_pending() {
         envelope["data"]["summary"]["restart_pending"],
         Value::Bool(true)
     );
-    assert_eq!(envelope["data"]["summary"]["restart_required"], Value::Bool(true));
     assert_eq!(
-        envelope["data"]["summary"]["restart_commands"].as_array().unwrap()[0],
+        envelope["data"]["summary"]["restart_required"],
+        Value::Bool(true)
+    );
+    assert_eq!(
+        envelope["data"]["summary"]["restart_commands"]
+            .as_array()
+            .unwrap()[0],
         Value::String("Restart Codex".into())
     );
     assert!(
@@ -308,7 +348,10 @@ fn clear_restart_codex_restores_healthy() {
         String::from_utf8_lossy(&clear_output.stderr)
     );
     let summary = parse_clear_restart_envelope(&clear_output);
-    assert_eq!(summary["summary"]["status"], Value::String("cleared".into()));
+    assert_eq!(
+        summary["summary"]["status"],
+        Value::String("cleared".into())
+    );
     assert_eq!(
         summary["summary"]["cleared_agents"].as_array().unwrap()[0],
         Value::String("codex".into())
@@ -321,7 +364,10 @@ fn clear_restart_codex_restores_healthy() {
         String::from_utf8_lossy(&doctor_output.stderr)
     );
     let summary = parse_doctor_envelope(&doctor_output);
-    assert_eq!(summary["summary"]["status"], Value::String("healthy".into()));
+    assert_eq!(
+        summary["summary"]["status"],
+        Value::String("healthy".into())
+    );
     assert_eq!(summary["summary"]["healthy"], Value::Bool(true));
     assert_eq!(summary["summary"]["restart_pending"], Value::Bool(false));
 }

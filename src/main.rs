@@ -570,7 +570,10 @@ fn render_detect_report(data: &DetectData) {
         }
     );
     if !data.summary.recommended_agents.is_empty() {
-        println!("Recommended: {}", data.summary.recommended_agents.join(", "));
+        println!(
+            "Recommended: {}",
+            data.summary.recommended_agents.join(", ")
+        );
     }
     let attention: Vec<_> = data
         .detections
@@ -621,7 +624,7 @@ fn render_install_plan_report(data: &InstallPlanData) {
         println!("Next: {step}");
     }
     if data.plans.iter().any(|plan| plan.contract.is_some()) {
-        println!("Next: rerun with --json to inspect contract examples.");
+        println!("Next: rerun with --json to inspect contract examples and runtime snippets.");
         println!();
         render_install_plans(&data.plans);
     }
@@ -813,7 +816,11 @@ fn render_clear_restart_results(results: &[ClearRestartResult]) {
         println!(
             "  {}: {}",
             result.agent,
-            if result.cleared { "cleared" } else { "already-clear" }
+            if result.cleared {
+                "cleared"
+            } else {
+                "already-clear"
+            }
         );
         if let Some(note) = &result.note {
             println!("    note: {note}");
@@ -944,7 +951,8 @@ fn summarize_clear_restart_results(results: Vec<ClearRestartResult>) -> ClearRes
         .collect();
     let mut next_steps = Vec::new();
     if cleared_agents.is_empty() {
-        next_steps.push("Run `thronglets doctor --agent <adapter>` to confirm current status.".into());
+        next_steps
+            .push("Run `thronglets doctor --agent <adapter>` to confirm current status.".into());
     }
 
     ClearRestartData {
@@ -1166,7 +1174,10 @@ fn doctor_should_fail(target: AdapterArg, reports: &[AdapterDoctor]) -> bool {
 fn doctor_report_requires_action(target: AdapterArg, report: &AdapterDoctor) -> bool {
     match target {
         AdapterArg::All => report.present && (!report.healthy || report.restart_pending),
-        _ => report.agent != AdapterKind::Generic.key() && (!report.healthy || report.restart_pending),
+        _ => {
+            report.agent != AdapterKind::Generic.key()
+                && (!report.healthy || report.restart_pending)
+        }
     }
 }
 
@@ -2155,8 +2166,9 @@ async fn main() {
                 ],
             };
 
-            let overall_failed =
-                profile_section.1 || doctor_section.1 || eval_sections.iter().any(|(_, section)| section.1);
+            let overall_failed = profile_section.1
+                || doctor_section.1
+                || eval_sections.iter().any(|(_, section)| section.1);
             if json {
                 println!(
                     "{}",
@@ -2638,16 +2650,18 @@ fn run_release_eval_section(
                     ));
                 } else if !baseline_check.notes.is_empty() {
                     body.push('\n');
-                    body.push_str(&format!("baseline notes: {}", baseline_check.notes.join("; ")));
+                    body.push_str(&format!(
+                        "baseline notes: {}",
+                        baseline_check.notes.join("; ")
+                    ));
                 }
             }
-            let effective_status = if matches!(status, EvalCheckStatus::Fail)
-                || baseline_check.status == "FAIL"
-            {
-                "FAIL"
-            } else {
-                status.label()
-            };
+            let effective_status =
+                if matches!(status, EvalCheckStatus::Fail) || baseline_check.status == "FAIL" {
+                    "FAIL"
+                } else {
+                    status.label()
+                };
             (
                 effective_status,
                 effective_status == "FAIL",
@@ -2700,7 +2714,9 @@ fn release_baseline_check(
         return ReleaseBaselineCheck {
             status: "SKIP",
             violations: Vec::new(),
-            notes: vec!["baseline comparison inactive because offline eval is still in SKIP".into()],
+            notes: vec![
+                "baseline comparison inactive because offline eval is still in SKIP".into(),
+            ],
         };
     }
 
@@ -2713,7 +2729,8 @@ fn release_baseline_check(
             format_release_option_tenths_pp(Some(delta))
         ));
     }
-    if comparison.failed_command_rate_delta_tenths_pp > RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP
+    if comparison.failed_command_rate_delta_tenths_pp
+        > RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP
     {
         violations.push(format!(
             "failed command rate regressed by {}",
@@ -2738,7 +2755,11 @@ fn release_baseline_check(
     }
 
     ReleaseBaselineCheck {
-        status: if violations.is_empty() { "PASS" } else { "FAIL" },
+        status: if violations.is_empty() {
+            "PASS"
+        } else {
+            "FAIL"
+        },
         violations,
         notes: Vec::new(),
     }
@@ -2772,7 +2793,8 @@ fn format_release_tenths_pp(delta: i32) -> String {
 }
 
 fn format_release_option_tenths_pp(delta: Option<i32>) -> String {
-    delta.map(format_release_tenths_pp)
+    delta
+        .map(format_release_tenths_pp)
         .unwrap_or_else(|| "n/a".into())
 }
 
@@ -2895,16 +2917,30 @@ mod tests {
 
         assert_eq!(check.status, "FAIL");
         assert_eq!(check.violations.len(), 4);
-        assert!(check.violations.iter().any(|v| v.contains("local edit retention")));
-        assert!(check.violations.iter().any(|v| v.contains("failed command rate")));
-        assert!(check
-            .violations
-            .iter()
-            .any(|v| v.contains("first successful change latency avg")));
-        assert!(check
-            .violations
-            .iter()
-            .any(|v| v.contains("first successful change latency p50")));
+        assert!(
+            check
+                .violations
+                .iter()
+                .any(|v| v.contains("local edit retention"))
+        );
+        assert!(
+            check
+                .violations
+                .iter()
+                .any(|v| v.contains("failed command rate"))
+        );
+        assert!(
+            check
+                .violations
+                .iter()
+                .any(|v| v.contains("first successful change latency avg"))
+        );
+        assert!(
+            check
+                .violations
+                .iter()
+                .any(|v| v.contains("first successful change latency p50"))
+        );
     }
 
     #[test]

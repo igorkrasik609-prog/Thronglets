@@ -100,9 +100,16 @@ pub struct AdapterDetection {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct HookRuntimeExample {
+    pub prehook: String,
+    pub hook: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct HookContractExamples {
     pub prehook_stdin: Value,
     pub hook_stdin: Value,
+    pub runtimes: BTreeMap<String, HookRuntimeExample>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -177,8 +184,8 @@ fn save_restart_state(data_dir: &Path, state: &RestartState) -> io::Result<()> {
     }
 
     fs::create_dir_all(data_dir)?;
-    let formatted = serde_json::to_string_pretty(state)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let formatted =
+        serde_json::to_string_pretty(state).map_err(|error| io::Error::other(error.to_string()))?;
     fs::write(path, formatted)
 }
 
@@ -199,9 +206,12 @@ pub fn set_restart_pending(data_dir: &Path, agent: AdapterKind, pending: bool) -
 
     let mut state = load_restart_state(data_dir);
     if pending {
-        state
-            .agents
-            .insert(agent.key().into(), RestartStateEntry { restart_pending: true });
+        state.agents.insert(
+            agent.key().into(),
+            RestartStateEntry {
+                restart_pending: true,
+            },
+        );
     } else {
         state.agents.remove(agent.key());
     }
@@ -611,9 +621,32 @@ fn hook_contract_examples() -> HookContractExamples {
     if let Some(obj) = hook_stdin.as_object_mut() {
         obj.insert("tool_response".into(), json!({"success": true}));
     }
+    let mut runtimes = BTreeMap::new();
+    runtimes.insert(
+        "node".into(),
+        HookRuntimeExample {
+            prehook: "const payload = {...};\nconst stdout = execFileSync(\"thronglets\", [\"prehook\"], { input: JSON.stringify(payload) });".into(),
+            hook: "const payload = {..., tool_response: {...}};\nexecFileSync(\"thronglets\", [\"hook\"], { input: JSON.stringify(payload) });".into(),
+        },
+    );
+    runtimes.insert(
+        "python".into(),
+        HookRuntimeExample {
+            prehook: "payload = {...}\nstdout = subprocess.run([\"thronglets\", \"prehook\"], input=json.dumps(payload), text=True, capture_output=True, check=True).stdout".into(),
+            hook: "payload = {**payload, \"tool_response\": {...}}\nsubprocess.run([\"thronglets\", \"hook\"], input=json.dumps(payload), text=True, check=True)".into(),
+        },
+    );
+    runtimes.insert(
+        "shell".into(),
+        HookRuntimeExample {
+            prehook: "printf '%s\\n' '{\"tool_name\":\"Edit\",...}' | thronglets prehook".into(),
+            hook: "printf '%s\\n' '{\"tool_name\":\"Edit\",...,\"tool_response\":{\"success\":true}}' | thronglets hook".into(),
+        },
+    );
     HookContractExamples {
         prehook_stdin,
         hook_stdin,
+        runtimes,
     }
 }
 
@@ -828,7 +861,10 @@ fn doctor_openclaw(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
         remediation,
         checks,
         note: if restart_pending {
-            Some("OpenClaw plugin config is correct, but the gateway restart is still pending.".into())
+            Some(
+                "OpenClaw plugin config is correct, but the gateway restart is still pending."
+                    .into(),
+            )
         } else if healthy {
             Some("OpenClaw gateway restart may be required after future plugin changes.".into())
         } else {

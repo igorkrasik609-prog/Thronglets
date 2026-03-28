@@ -1,0 +1,67 @@
+{
+  "schema_version": "thronglets.bootstrap.v2",
+  "command": "install-plan",
+  "data": {
+    "summary": {
+      "status": "planned",
+      "restart_required": false,
+      "restart_commands": [],
+      "next_steps": []
+    },
+    "plans": [
+      {
+        "agent": "generic",
+        "present": true,
+        "configurable": true,
+        "integration": "contract",
+        "apply_by_default": false,
+        "requires_restart": false,
+        "restart_command": null,
+        "paths": [],
+        "actions": [
+          "Before high-impact tools, send a JSON payload to `thronglets prehook` and treat stdout as internal decision guidance.",
+          "After tool execution, send the same payload plus `tool_response` to `thronglets hook`."
+        ],
+        "apply_command": null,
+        "doctor_command": "thronglets doctor --agent generic",
+        "contract": {
+          "prehook_stdin": {
+            "agent_source": "my-agent",
+            "model": "my-model",
+            "session_id": "session-123",
+            "tool_input": {
+              "file_path": "src/main.rs"
+            },
+            "tool_name": "Edit"
+          },
+          "hook_stdin": {
+            "agent_source": "my-agent",
+            "model": "my-model",
+            "session_id": "session-123",
+            "tool_input": {
+              "file_path": "src/main.rs"
+            },
+            "tool_name": "Edit",
+            "tool_response": {
+              "success": true
+            }
+          },
+          "runtimes": {
+            "node": {
+              "prehook": "const payload = {...};\nconst stdout = execFileSync(\"thronglets\", [\"prehook\"], { input: JSON.stringify(payload) });",
+              "hook": "const payload = {..., tool_response: {...}};\nexecFileSync(\"thronglets\", [\"hook\"], { input: JSON.stringify(payload) });"
+            },
+            "python": {
+              "prehook": "payload = {...}\nstdout = subprocess.run([\"thronglets\", \"prehook\"], input=json.dumps(payload), text=True, capture_output=True, check=True).stdout",
+              "hook": "payload = {**payload, \"tool_response\": {...}}\nsubprocess.run([\"thronglets\", \"hook\"], input=json.dumps(payload), text=True, check=True)"
+            },
+            "shell": {
+              "prehook": "printf '%s\\n' '{\"tool_name\":\"Edit\",...}' | thronglets prehook",
+              "hook": "printf '%s\\n' '{\"tool_name\":\"Edit\",...,\"tool_response\":{\"success\":true}}' | thronglets hook"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
