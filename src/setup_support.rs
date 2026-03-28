@@ -101,6 +101,7 @@ pub struct AdapterPlan {
     pub integration: String,
     pub apply_by_default: bool,
     pub requires_restart: bool,
+    pub restart_command: Option<String>,
     pub paths: Vec<String>,
     pub actions: Vec<String>,
     pub apply_command: Option<String>,
@@ -122,6 +123,7 @@ pub struct AdapterDoctor {
     pub status: String,
     pub healthy: bool,
     pub fix_command: Option<String>,
+    pub restart_command: Option<String>,
     pub checks: Vec<AdapterCheck>,
     pub remediation: Vec<String>,
     pub note: Option<String>,
@@ -133,6 +135,7 @@ pub struct AdapterApplyResult {
     pub applied: bool,
     pub changed: Vec<String>,
     pub requires_restart: bool,
+    pub restart_command: Option<String>,
     pub paths: Vec<String>,
     pub note: Option<String>,
 }
@@ -358,6 +361,7 @@ pub fn install_plan(
             integration: detection.integration,
             apply_by_default: detection.apply_by_default,
             requires_restart: false,
+            restart_command: restart_command(agent),
             paths: detection.paths,
             actions: vec![
                 format!(
@@ -381,6 +385,7 @@ pub fn install_plan(
             integration: detection.integration,
             apply_by_default: detection.apply_by_default,
             requires_restart: true,
+            restart_command: restart_command(agent),
             paths: detection.paths,
             actions: vec![
                 format!(
@@ -405,6 +410,7 @@ pub fn install_plan(
             integration: detection.integration,
             apply_by_default: detection.apply_by_default,
             requires_restart: true,
+            restart_command: restart_command(agent),
             paths: detection.paths,
             actions: vec![
                 format!(
@@ -429,6 +435,7 @@ pub fn install_plan(
             integration: detection.integration,
             apply_by_default: detection.apply_by_default,
             requires_restart: false,
+            restart_command: restart_command(agent),
             paths: detection.paths,
             actions: vec![
                 "Before high-impact tools, send a JSON payload to `thronglets prehook` and treat stdout as internal decision guidance.".into(),
@@ -452,6 +459,7 @@ pub fn doctor_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> A
             status: "healthy".into(),
             healthy: true,
             fix_command: None,
+            restart_command: restart_command(agent),
             checks: vec![AdapterCheck {
                 name: "contract".into(),
                 ok: true,
@@ -482,6 +490,14 @@ fn codex_config_path(home_dir: &Path) -> PathBuf {
 
 fn codex_agents_path(home_dir: &Path) -> PathBuf {
     home_dir.join(".codex").join("AGENTS.md")
+}
+
+fn restart_command(agent: AdapterKind) -> Option<String> {
+    match agent {
+        AdapterKind::Codex => Some("Restart Codex".into()),
+        AdapterKind::OpenClaw => Some("openclaw gateway restart".into()),
+        AdapterKind::Claude | AdapterKind::Generic => None,
+    }
 }
 
 fn openclaw_root_dir(home_dir: &Path) -> PathBuf {
@@ -571,6 +587,7 @@ fn doctor_claude(home_dir: &Path) -> AdapterDoctor {
         status: if healthy { "healthy" } else { "needs-fix" }.into(),
         healthy,
         fix_command: fix_command.clone(),
+        restart_command: restart_command(AdapterKind::Claude),
         remediation: fix_command.into_iter().collect(),
         checks,
         note: None,
@@ -624,6 +641,7 @@ fn doctor_codex(home_dir: &Path) -> AdapterDoctor {
         status: if healthy { "healthy" } else { "needs-fix" }.into(),
         healthy,
         fix_command: fix_command.clone(),
+        restart_command: restart_command(AdapterKind::Codex),
         remediation: fix_command.into_iter().collect(),
         checks,
         note: healthy
@@ -678,6 +696,7 @@ fn doctor_openclaw(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
         status: if healthy { "healthy" } else { "needs-fix" }.into(),
         healthy,
         fix_command: fix_command.clone(),
+        restart_command: restart_command(AdapterKind::OpenClaw),
         remediation: fix_command.into_iter().collect(),
         checks,
         note: healthy

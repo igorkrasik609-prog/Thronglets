@@ -87,6 +87,7 @@ thronglets bootstrap --agent codex --json
 ```
 
 `detect / install-plan / apply-plan / doctor / bootstrap` 现在都会先给顶层 summary，再给详细列表。  
+如果需要重启，summary 里还会直接带 `restart_commands`。  
 `doctor` 现在会显式返回顶层 `status`、`healthy`、`next_steps`，以及每个 adapter 的 `fix_command`。  
 `bootstrap` 顶层还会返回 `restart_required` 和 `next_steps`，这样 AI 不需要自己从注释里猜下一步。
 

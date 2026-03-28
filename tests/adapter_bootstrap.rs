@@ -91,6 +91,7 @@ fn install_plan_generic_json_includes_contract_examples() {
     let summary = parse_command_data(&output, "install-plan");
     assert_eq!(summary["summary"]["status"], Value::String("planned".into()));
     assert_eq!(summary["summary"]["restart_required"], Value::Bool(false));
+    assert!(summary["summary"]["restart_commands"].as_array().unwrap().is_empty());
     let plans = summary["plans"].as_array().unwrap();
     assert_eq!(plans.len(), 1);
     let plan = &plans[0];
@@ -119,6 +120,10 @@ fn apply_plan_codex_then_doctor_reports_healthy() {
     let summary = parse_command_data(&apply_output, "apply-plan");
     assert_eq!(summary["summary"]["status"], Value::String("applied".into()));
     assert_eq!(summary["summary"]["restart_required"], Value::Bool(true));
+    assert_eq!(
+        summary["summary"]["restart_commands"].as_array().unwrap()[0],
+        Value::String("Restart Codex".into())
+    );
     assert!(
         summary["summary"]["next_steps"]
             .as_array()
@@ -129,6 +134,10 @@ fn apply_plan_codex_then_doctor_reports_healthy() {
     let apply_results = summary["results"].as_array().unwrap();
     assert_eq!(apply_results.len(), 1);
     assert_eq!(apply_results[0]["applied"], Value::Bool(true));
+    assert_eq!(
+        apply_results[0]["restart_command"],
+        Value::String("Restart Codex".into())
+    );
 
     let doctor_output = run_bin(&["doctor", "--agent", "codex", "--json"], &home, &data_dir);
     assert!(
@@ -139,12 +148,20 @@ fn apply_plan_codex_then_doctor_reports_healthy() {
     let summary = parse_doctor_envelope(&doctor_output);
     assert_eq!(summary["summary"]["status"], Value::String("healthy".into()));
     assert_eq!(summary["summary"]["healthy"], Value::Bool(true));
+    assert_eq!(
+        summary["summary"]["restart_commands"].as_array().unwrap()[0],
+        Value::String("Restart Codex".into())
+    );
     assert!(summary["summary"]["next_steps"].as_array().unwrap().is_empty());
     let reports = summary["reports"].as_array().unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["healthy"], Value::Bool(true));
     assert_eq!(reports[0]["status"], Value::String("healthy".into()));
     assert!(reports[0]["fix_command"].is_null());
+    assert_eq!(
+        reports[0]["restart_command"],
+        Value::String("Restart Codex".into())
+    );
 }
 
 #[test]
@@ -165,6 +182,10 @@ fn doctor_fails_for_unconfigured_specific_adapter() {
     assert_eq!(summary["summary"]["status"], Value::String("needs-fix".into()));
     assert_eq!(summary["summary"]["healthy"], Value::Bool(false));
     assert_eq!(
+        summary["summary"]["restart_commands"].as_array().unwrap()[0],
+        Value::String("Restart Codex".into())
+    );
+    assert_eq!(
         summary["summary"]["next_steps"].as_array().unwrap()[0],
         Value::String("thronglets apply-plan --agent codex".into())
     );
@@ -175,6 +196,10 @@ fn doctor_fails_for_unconfigured_specific_adapter() {
     assert_eq!(
         reports[0]["fix_command"],
         Value::String("thronglets apply-plan --agent codex".into())
+    );
+    assert_eq!(
+        reports[0]["restart_command"],
+        Value::String("Restart Codex".into())
     );
 }
 
@@ -205,6 +230,10 @@ fn bootstrap_codex_json_applies_and_reports_healthy() {
     assert_eq!(envelope["data"]["summary"]["status"], Value::String("healthy".into()));
     assert_eq!(envelope["data"]["summary"]["healthy"], Value::Bool(true));
     assert_eq!(envelope["data"]["summary"]["restart_required"], Value::Bool(true));
+    assert_eq!(
+        envelope["data"]["summary"]["restart_commands"].as_array().unwrap()[0],
+        Value::String("Restart Codex".into())
+    );
     assert!(
         envelope["data"]["summary"]["next_steps"]
             .as_array()

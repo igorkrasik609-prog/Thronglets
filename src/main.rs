@@ -44,6 +44,7 @@ struct BootstrapSummary {
     status: &'static str,
     healthy: bool,
     restart_required: bool,
+    restart_commands: Vec<String>,
     next_steps: Vec<String>,
 }
 
@@ -60,6 +61,7 @@ struct BootstrapData {
 struct DoctorSummary {
     status: &'static str,
     healthy: bool,
+    restart_commands: Vec<String>,
     next_steps: Vec<String>,
 }
 
@@ -86,6 +88,7 @@ struct DetectData {
 struct PlanSummary {
     status: &'static str,
     restart_required: bool,
+    restart_commands: Vec<String>,
     next_steps: Vec<String>,
 }
 
@@ -99,6 +102,7 @@ struct InstallPlanData {
 struct ApplySummary {
     status: &'static str,
     restart_required: bool,
+    restart_commands: Vec<String>,
     next_steps: Vec<String>,
 }
 
@@ -474,6 +478,13 @@ fn print_machine_json<T: serde::Serialize>(command: &'static str, value: &T) {
     });
 }
 
+fn collect_restart_commands(commands: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
+    let mut values: Vec<_> = commands.into_iter().flatten().collect();
+    values.sort();
+    values.dedup();
+    values
+}
+
 fn render_detections(detections: &[AdapterDetection]) {
     println!("Detected adapters:");
     for detection in detections {
@@ -548,6 +559,9 @@ fn render_install_plan_report(data: &InstallPlanData) {
     if data.summary.restart_required {
         println!("Restart required: yes");
     }
+    for command in &data.summary.restart_commands {
+        println!("Restart: {command}");
+    }
     for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
@@ -589,6 +603,9 @@ fn render_doctor_report(data: &DoctorData) {
         .collect();
     if !healthy_agents.is_empty() {
         println!("Healthy: {}", healthy_agents.join(", "));
+    }
+    for command in &data.summary.restart_commands {
+        println!("Restart: {command}");
     }
     for step in &data.summary.next_steps {
         println!("Next: {step}");
@@ -642,6 +659,9 @@ fn render_apply_plan_report(data: &ApplyPlanData) {
     if data.summary.restart_required {
         println!("Restart required: yes");
     }
+    for command in &data.summary.restart_commands {
+        println!("Restart: {command}");
+    }
     for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
@@ -670,6 +690,9 @@ fn render_bootstrap_report(data: &BootstrapData) {
     }
     if data.summary.restart_required {
         println!("Restart required: yes");
+    }
+    for command in &data.summary.restart_commands {
+        println!("Restart: {command}");
     }
     for step in &data.summary.next_steps {
         println!("Next: {step}");
@@ -702,6 +725,9 @@ fn render_setup_report(data: &BootstrapData) {
     if data.summary.restart_required {
         println!("Restart required: yes");
     }
+    for command in &data.summary.restart_commands {
+        println!("Restart: {command}");
+    }
     for step in &data.summary.next_steps {
         println!("Next: {step}");
     }
@@ -710,6 +736,8 @@ fn render_setup_report(data: &BootstrapData) {
 
 fn summarize_doctor_reports(target: AdapterArg, reports: Vec<AdapterDoctor>) -> DoctorData {
     let healthy = !doctor_should_fail(target, &reports);
+    let restart_commands =
+        collect_restart_commands(reports.iter().map(|report| report.restart_command.clone()));
     let mut next_steps: Vec<_> = reports
         .iter()
         .filter_map(|report| report.fix_command.clone())
@@ -721,6 +749,7 @@ fn summarize_doctor_reports(target: AdapterArg, reports: Vec<AdapterDoctor>) -> 
         summary: DoctorSummary {
             status: if healthy { "healthy" } else { "needs-fix" },
             healthy,
+            restart_commands,
             next_steps,
         },
         reports,
@@ -751,6 +780,8 @@ fn summarize_detections(detections: Vec<AdapterDetection>) -> DetectData {
 
 fn summarize_install_plans(plans: Vec<AdapterPlan>) -> InstallPlanData {
     let restart_required = plans.iter().any(|plan| plan.requires_restart);
+    let restart_commands =
+        collect_restart_commands(plans.iter().map(|plan| plan.restart_command.clone()));
     let mut next_steps: Vec<_> = plans
         .iter()
         .filter_map(|plan| plan.apply_command.clone())
@@ -762,6 +793,7 @@ fn summarize_install_plans(plans: Vec<AdapterPlan>) -> InstallPlanData {
         summary: PlanSummary {
             status: "planned",
             restart_required,
+            restart_commands,
             next_steps,
         },
         plans,
@@ -770,6 +802,8 @@ fn summarize_install_plans(plans: Vec<AdapterPlan>) -> InstallPlanData {
 
 fn summarize_apply_results(results: Vec<AdapterApplyResult>) -> ApplyPlanData {
     let restart_required = results.iter().any(|result| result.requires_restart);
+    let restart_commands =
+        collect_restart_commands(results.iter().map(|result| result.restart_command.clone()));
     let mut next_steps = Vec::new();
     if restart_required {
         next_steps.push("Restart the targeted agent so the new integration is loaded.".into());
@@ -779,6 +813,7 @@ fn summarize_apply_results(results: Vec<AdapterApplyResult>) -> ApplyPlanData {
         summary: ApplySummary {
             status: "applied",
             restart_required,
+            restart_commands,
             next_steps,
         },
         results,
@@ -812,6 +847,7 @@ fn apply_selected_adapters(
                     applied: true,
                     changed,
                     requires_restart: false,
+                    restart_command: None,
                     paths: vec![result.settings_path.display().to_string()],
                     note: None,
                 });
@@ -837,6 +873,7 @@ fn apply_selected_adapters(
                         applied: true,
                         changed,
                         requires_restart: true,
+                        restart_command: Some("Restart Codex".into()),
                         paths: vec![
                             result.config_path.display().to_string(),
                             result.agents_path.display().to_string(),
@@ -849,6 +886,7 @@ fn apply_selected_adapters(
                         applied: false,
                         changed: vec![],
                         requires_restart: false,
+                        restart_command: None,
                         paths: vec![],
                         note: Some("Codex not detected; skipped in all-adapters mode.".into()),
                     });
@@ -869,6 +907,7 @@ fn apply_selected_adapters(
                         applied: true,
                         changed,
                         requires_restart: true,
+                        restart_command: Some("openclaw gateway restart".into()),
                         paths: vec![
                             result.config_path.display().to_string(),
                             result.plugin_dir.display().to_string(),
@@ -885,6 +924,7 @@ fn apply_selected_adapters(
                         applied: false,
                         changed: vec![],
                         requires_restart: false,
+                        restart_command: None,
                         paths: vec![],
                         note: Some("OpenClaw not detected; skipped in all-adapters mode.".into()),
                     });
@@ -920,6 +960,8 @@ fn bootstrap_selected_adapters(
     let healthy = doctor_summary.summary.healthy;
     let restart_required = applied.iter().any(|result| result.requires_restart);
     let mut next_steps = doctor_summary.summary.next_steps.clone();
+    let restart_commands =
+        collect_restart_commands(applied.iter().map(|result| result.restart_command.clone()));
     if restart_required {
         next_steps.push("Restart the targeted agent so the new integration is loaded.".into());
     }
@@ -931,6 +973,7 @@ fn bootstrap_selected_adapters(
             status: if healthy { "healthy" } else { "needs-fix" },
             healthy,
             restart_required,
+            restart_commands,
             next_steps,
         },
         detections,
