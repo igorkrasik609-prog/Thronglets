@@ -99,6 +99,7 @@ pub struct SignalQueryResult {
     pub context_similarity: f64,
     pub total_posts: u64,
     pub source_count: u32,
+    pub model_count: u32,
     pub local_source_count: u32,
     pub collective_source_count: u32,
     pub evidence_scope: String,
@@ -113,6 +114,7 @@ pub struct SignalFeedResult {
     pub message: String,
     pub total_posts: u64,
     pub source_count: u32,
+    pub model_count: u32,
     pub local_source_count: u32,
     pub collective_source_count: u32,
     pub evidence_scope: String,
@@ -139,6 +141,7 @@ struct SignalGroup {
     expires_at: u64,
     contexts: BTreeSet<String>,
     sources: BTreeSet<String>,
+    models: BTreeSet<String>,
     local_sources: BTreeSet<String>,
     collective_sources: BTreeSet<String>,
 }
@@ -224,6 +227,7 @@ pub fn summarize_signal_traces(
             expires_at: decoded.expires_at,
             contexts: BTreeSet::new(),
             sources: BTreeSet::new(),
+            models: BTreeSet::new(),
             local_sources: BTreeSet::new(),
             collective_sources: BTreeSet::new(),
         });
@@ -236,6 +240,7 @@ pub fn summarize_signal_traces(
         }
         let source = source_key(trace);
         entry.sources.insert(source.clone());
+        entry.models.insert(trace.model_id.clone());
         if trace.node_pubkey == local_node_pubkey {
             entry.local_sources.insert(source);
         } else {
@@ -256,6 +261,7 @@ pub fn summarize_signal_traces(
                 context_similarity: round2(group.best_similarity),
                 total_posts: group.total_posts,
                 source_count: group.sources.len() as u32,
+                model_count: group.models.len() as u32,
                 local_source_count,
                 collective_source_count,
                 evidence_scope,
@@ -272,6 +278,7 @@ pub fn summarize_signal_traces(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.collective_source_count.cmp(&a.collective_source_count))
             .then_with(|| b.source_count.cmp(&a.source_count))
+            .then_with(|| b.model_count.cmp(&a.model_count))
             .then_with(|| b.total_posts.cmp(&a.total_posts))
             .then_with(|| b.latest_timestamp.cmp(&a.latest_timestamp))
     });
@@ -305,6 +312,7 @@ pub fn summarize_recent_signal_feed(
             expires_at: decoded.expires_at,
             contexts: BTreeSet::new(),
             sources: BTreeSet::new(),
+            models: BTreeSet::new(),
             local_sources: BTreeSet::new(),
             collective_sources: BTreeSet::new(),
         });
@@ -316,6 +324,7 @@ pub fn summarize_recent_signal_feed(
         }
         let source = source_key(trace);
         entry.sources.insert(source.clone());
+        entry.models.insert(trace.model_id.clone());
         if trace.node_pubkey == local_node_pubkey {
             entry.local_sources.insert(source);
         } else {
@@ -335,6 +344,7 @@ pub fn summarize_recent_signal_feed(
                 message: group.message,
                 total_posts: group.total_posts,
                 source_count: group.sources.len() as u32,
+                model_count: group.models.len() as u32,
                 local_source_count,
                 collective_source_count,
                 evidence_scope,
@@ -349,6 +359,7 @@ pub fn summarize_recent_signal_feed(
         b.collective_source_count
             .cmp(&a.collective_source_count)
             .then_with(|| b.source_count.cmp(&a.source_count))
+            .then_with(|| b.model_count.cmp(&a.model_count))
             .then_with(|| b.latest_timestamp.cmp(&a.latest_timestamp))
             .then_with(|| b.total_posts.cmp(&a.total_posts))
     });
@@ -459,6 +470,7 @@ mod tests {
         assert_eq!(results[0].message, "skip the generated lockfile");
         assert_eq!(results[0].total_posts, 2);
         assert_eq!(results[0].source_count, 2);
+        assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].local_source_count, 2);
         assert_eq!(results[0].collective_source_count, 0);
         assert_eq!(results[0].evidence_scope, "local");
@@ -546,6 +558,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].local_source_count, 1);
         assert_eq!(results[0].collective_source_count, 1);
+        assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].evidence_scope, "mixed");
     }
 
@@ -600,7 +613,84 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].message, "run release-check before push");
         assert_eq!(results[0].collective_source_count, 2);
+        assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].evidence_scope, "collective");
+    }
+
+    #[test]
+    fn summarize_recent_signal_feed_prefers_multi_model_support_when_counts_tie() {
+        let local_identity = NodeIdentity::generate();
+        let remote_a = NodeIdentity::generate();
+        let remote_b = NodeIdentity::generate();
+        let remote_c = NodeIdentity::generate();
+        let remote_d = NodeIdentity::generate();
+        let base_now = now_ms();
+
+        let multi_model_a = create_signal_trace_at(
+            SignalPostKind::Recommend,
+            "repair release flow",
+            "run release-check before push",
+            SignalTraceConfig {
+                model_id: "codex".into(),
+                session_id: Some("remote-a".into()),
+                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+            },
+            base_now,
+            remote_a.public_key_bytes(),
+            |msg| remote_a.sign(msg),
+        );
+        let multi_model_b = create_signal_trace_at(
+            SignalPostKind::Recommend,
+            "repair release flow",
+            "run release-check before push",
+            SignalTraceConfig {
+                model_id: "openclaw".into(),
+                session_id: Some("remote-b".into()),
+                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+            },
+            base_now,
+            remote_b.public_key_bytes(),
+            |msg| remote_b.sign(msg),
+        );
+        let single_model_a = create_signal_trace_at(
+            SignalPostKind::Watch,
+            "repair release flow",
+            "rerun the targeted test first",
+            SignalTraceConfig {
+                model_id: "codex".into(),
+                session_id: Some("remote-c".into()),
+                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+            },
+            base_now,
+            remote_c.public_key_bytes(),
+            |msg| remote_c.sign(msg),
+        );
+        let single_model_b = create_signal_trace_at(
+            SignalPostKind::Watch,
+            "repair release flow",
+            "rerun the targeted test first",
+            SignalTraceConfig {
+                model_id: "codex".into(),
+                session_id: Some("remote-d".into()),
+                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+            },
+            base_now,
+            remote_d.public_key_bytes(),
+            |msg| remote_d.sign(msg),
+        );
+
+        let results = summarize_recent_signal_feed(
+            &[single_model_a, single_model_b, multi_model_a, multi_model_b],
+            local_identity.public_key_bytes(),
+            10,
+        );
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].message, "run release-check before push");
+        assert_eq!(results[0].source_count, 2);
+        assert_eq!(results[0].model_count, 2);
+        assert_eq!(results[1].message, "rerun the targeted test first");
+        assert_eq!(results[1].source_count, 2);
+        assert_eq!(results[1].model_count, 1);
     }
 
     #[test]
@@ -611,6 +701,7 @@ mod tests {
                 message: "local".into(),
                 total_posts: 1,
                 source_count: 1,
+                model_count: 1,
                 local_source_count: 1,
                 collective_source_count: 0,
                 evidence_scope: "local".into(),
@@ -623,6 +714,7 @@ mod tests {
                 message: "collective".into(),
                 total_posts: 2,
                 source_count: 2,
+                model_count: 2,
                 local_source_count: 0,
                 collective_source_count: 2,
                 evidence_scope: "collective".into(),

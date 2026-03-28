@@ -607,6 +607,7 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "recommend");
         assert_eq!(signals[0]["message"], "run release-check before push");
+        assert_eq!(signals[0]["model_count"], 1);
         assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
@@ -639,6 +640,7 @@ mod tests {
         let signals = feed_response["signals"].as_array().unwrap();
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "recommend");
+        assert_eq!(signals[0]["model_count"], 1);
         assert_eq!(signals[0]["evidence_scope"], "local");
     }
 }

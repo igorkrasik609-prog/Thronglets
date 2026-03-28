@@ -766,11 +766,17 @@ fn render_signal_query_results(results: &[thronglets::posts::SignalQueryResult])
     println!("Explicit signals:");
     for result in results {
         println!("  {}: {}", result.kind, result.message,);
+        let model_suffix = if result.model_count > 1 {
+            format!(" models={}", result.model_count)
+        } else {
+            String::new()
+        };
         println!(
-            "    similarity={:.2} posts={} sources={} (local {} / collective {}) scope={} expires_in≈{}h",
+            "    similarity={:.2} posts={} sources={}{} (local {} / collective {}) scope={} expires_in≈{}h",
             result.context_similarity,
             result.total_posts,
             result.source_count,
+            model_suffix,
             result.local_source_count,
             result.collective_source_count,
             result.evidence_scope,
@@ -791,10 +797,16 @@ fn render_signal_feed_results(results: &[thronglets::posts::SignalFeedResult]) {
     println!("Recent explicit signals:");
     for result in results {
         println!("  {}: {}", result.kind, result.message);
+        let model_suffix = if result.model_count > 1 {
+            format!(" models={}", result.model_count)
+        } else {
+            String::new()
+        };
         println!(
-            "    posts={} sources={} (local {} / collective {}) scope={} expires_in≈{}h",
+            "    posts={} sources={}{} (local {} / collective {}) scope={} expires_in≈{}h",
             result.total_posts,
             result.source_count,
+            model_suffix,
             result.local_source_count,
             result.collective_source_count,
             result.evidence_scope,
