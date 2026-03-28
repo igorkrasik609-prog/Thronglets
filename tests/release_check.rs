@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
@@ -41,10 +42,12 @@ fn sparse_profile_input() -> String {
     format!("{}\n", lines.join("\n"))
 }
 
-fn run_release_check(data_dir: &str, args: &[&str], input: &str) -> Output {
+fn run_release_check_with_home(data_dir: &str, home: &Path, args: &[&str], input: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_thronglets"))
         .args(["--data-dir", data_dir, "release-check"])
         .args(args)
+        .env("HOME", home)
+        .env("PATH", "")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -57,6 +60,12 @@ fn run_release_check(data_dir: &str, args: &[&str], input: &str) -> Output {
     }
 
     child.wait_with_output().expect("wait for thronglets")
+}
+
+fn run_release_check(data_dir: &str, args: &[&str], input: &str) -> Output {
+    let home = Path::new(data_dir).join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    run_release_check_with_home(data_dir, &home, args, input)
 }
 
 #[test]
@@ -73,6 +82,7 @@ fn release_check_passes_with_good_profile_and_skips_thin_eval() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("PASS"));
     assert!(stdout.contains("profile: PASS"));
+    assert!(stdout.contains("doctor: PASS"));
     assert!(stdout.contains("eval (project): SKIP"));
     assert!(stdout.contains("not enough recent session history"));
 }
@@ -169,6 +179,7 @@ fn release_check_can_emit_json() {
     assert_eq!(parsed["status"], "PASS");
     assert_eq!(parsed["eval_scope"], "project");
     assert_eq!(parsed["profile"]["status"], "PASS");
+    assert_eq!(parsed["doctor"]["status"], "PASS");
     assert_eq!(parsed["eval"]["status"], "SKIP");
 }
 
@@ -301,6 +312,50 @@ fn release_check_can_evaluate_both_scopes() {
         serde_json::from_slice(&output.stdout).expect("parse release-check both json");
     assert_eq!(parsed["status"], "FAIL");
     assert_eq!(parsed["eval_scope"], "both");
+    assert_eq!(parsed["doctor"]["status"], "PASS");
     assert_eq!(parsed["eval"]["project"]["status"], "SKIP");
     assert_eq!(parsed["eval"]["global"]["status"], "FAIL");
+}
+
+#[test]
+fn release_check_fails_when_local_doctor_is_restart_pending() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let apply = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args([
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "apply-plan",
+            "--agent",
+            "codex",
+        ])
+        .env("HOME", &home)
+        .env("PATH", "")
+        .output()
+        .expect("run apply-plan");
+    assert!(
+        apply.status.success(),
+        "apply-plan failed: {}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    let output = run_release_check_with_home(
+        dir.path().to_str().unwrap(),
+        &home,
+        &[],
+        &sparse_profile_input(),
+    );
+
+    assert!(
+        !output.status.success(),
+        "release-check unexpectedly passed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("FAIL"));
+    assert!(stdout.contains("doctor: FAIL"));
+    assert!(stdout.contains("status: restart-pending"));
+    assert!(stdout.contains("thronglets clear-restart --agent codex"));
 }

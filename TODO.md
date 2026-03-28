@@ -44,20 +44,17 @@ Thronglets 现在的主线已经明确：
 剩余完成标准：
 - 如果后面某个 native runtime 在不同平台或不同安装方式下出现分叉，再补对应 matrix case
 
-### 4. Close the release loop
+### 4. Make the release recipe the default CI path
 
-目标：发布前同时回答三件事：
-- 热路径是否还够轻
-- 机器接入是否还稳定
-- 离线效果是否没有明显退化
+当前状态：
+- `release-check` 已经接上 `profile`
+- `doctor`
+- `eval`
+- 文档里已经给出最短发布命令
 
-完成标准：
-- 把 `release-check`
-- `profile-check`
-- `eval-signals`
-- `doctor --json`
-接成一条 release recipe
-- 文档里给出最短发布命令
+剩余完成标准：
+- 在 CI 里固定一条 canonical release recipe
+- 避免本地和 CI 各跑一套不同的 gate
 
 ### 5. Prove outcome value
 

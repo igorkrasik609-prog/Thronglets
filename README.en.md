@@ -190,7 +190,7 @@ If you want one release-oriented gate that combines hot-path and cold-path check
 cat prehook.log | thronglets release-check --global
 ```
 
-It prints an overall `PASS / FAIL` plus separate `profile` and `eval` sections. The `eval` section now also carries current-project `local edit retention`, holdout `failed command rate`, and `first successful change latency` alongside signal precision. When there is not enough offline history yet, `eval` returns `SKIP` instead of blocking release just because the repo is cold. If you want missing prehook samples to fail the gate as well, add:
+It prints an overall `PASS / FAIL` plus separate `profile`, `doctor`, and `eval` sections. `doctor` folds local adapter state such as `healthy / restart-pending / needs-fix` into the release gate, while `eval` carries current-project `local edit retention`, holdout `failed command rate`, and `first successful change latency` alongside signal precision. When there is not enough offline history yet, `eval` returns `SKIP` instead of blocking release just because the repo is cold. If you want missing prehook samples to fail the gate as well, add:
 
 ```bash
 cat prehook.log | thronglets release-check --global --require-profile-samples

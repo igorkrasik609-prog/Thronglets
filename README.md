@@ -190,7 +190,7 @@ thronglets eval-signals --hours 168 --max-sessions 200 --compare-baseline baseli
 cat prehook.log | thronglets release-check --global
 ```
 
-它会输出一个总的 `PASS / FAIL`，并分别给出 `profile` 和 `eval` 两段。`eval` 里除了 signal precision，也会带上当前项目的 `local edit retention`、holdout `failed command rate` 和 `first successful change latency`。没有足够离线历史时，`eval` 会是 `SKIP`，而不是因为冷启动直接挡住发布；如果你想把缺失的 prehook 样本也当成失败，可以再加：
+它会输出一个总的 `PASS / FAIL`，并分别给出 `profile`、`doctor` 和 `eval` 三段。`doctor` 会把本机 adapter 的 `healthy / restart-pending / needs-fix` 也并进发布门槛里；`eval` 里除了 signal precision，也会带上当前项目的 `local edit retention`、holdout `failed command rate` 和 `first successful change latency`。没有足够离线历史时，`eval` 会是 `SKIP`，而不是因为冷启动直接挡住发布；如果你想把缺失的 prehook 样本也当成失败，可以再加：
 
 ```bash
 cat prehook.log | thronglets release-check --global --require-profile-samples

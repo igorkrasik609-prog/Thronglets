@@ -2065,6 +2065,9 @@ async fn main() {
                 }
             };
 
+            let home_dir = home_dir();
+            let doctor_section = run_release_doctor_section(&home_dir, &dir);
+
             let eval_thresholds = EvalCheckThresholds::default();
             let store = open_store(&dir);
             let local_feedback = LocalFeedbackSummary::from_workspace(&WorkspaceState::load(&dir));
@@ -2121,7 +2124,7 @@ async fn main() {
             };
 
             let overall_failed =
-                profile_section.1 || eval_sections.iter().any(|(_, section)| section.1);
+                profile_section.1 || doctor_section.1 || eval_sections.iter().any(|(_, section)| section.1);
             if json {
                 println!(
                     "{}",
@@ -2133,6 +2136,7 @@ async fn main() {
                             ReleaseEvalScopeArg::Both => "both",
                         },
                         "profile": profile_section.3,
+                        "doctor": doctor_section.3,
                         "eval": if eval_sections.len() == 1 {
                             eval_sections[0].1.3.clone()
                         } else {
@@ -2147,6 +2151,7 @@ async fn main() {
             } else {
                 println!("{}", if overall_failed { "FAIL" } else { "PASS" });
                 print_release_section("profile", profile_section.0, &profile_section.2);
+                print_release_section("doctor", doctor_section.0, &doctor_section.2);
                 if eval_sections.len() == 1 {
                     let (label, section) = &eval_sections[0];
                     print_release_section(&format!("eval ({label})"), section.0, &section.2);
@@ -2611,6 +2616,40 @@ fn run_release_eval_section(
             )
         }
     }
+}
+
+fn run_release_doctor_section(
+    home_dir: &Path,
+    data_dir: &Path,
+) -> (&'static str, bool, String, serde_json::Value) {
+    let reports: Vec<_> = selected_adapters(AdapterArg::All)
+        .into_iter()
+        .map(|adapter| doctor_adapter(home_dir, data_dir, adapter))
+        .collect();
+    let summary = summarize_doctor_reports(AdapterArg::All, reports);
+    let status = if summary.summary.status == "healthy" {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    let mut lines = vec![format!("status: {}", summary.summary.status)];
+    if summary.summary.restart_pending {
+        lines.push("restart pending: yes".into());
+    }
+    for step in &summary.summary.next_steps {
+        lines.push(format!("next: {step}"));
+    }
+
+    (
+        status,
+        status == "FAIL",
+        lines.join("\n"),
+        serde_json::json!({
+            "status": status,
+            "summary": summary.summary,
+            "reports": summary.reports,
+        }),
+    )
 }
 
 fn load_eval_baseline(path: &Path) -> Result<thronglets::eval::SignalEvalSummary, String> {
