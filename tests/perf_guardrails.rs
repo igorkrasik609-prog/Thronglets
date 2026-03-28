@@ -726,6 +726,88 @@ fn prehook_skips_collective_lookup_when_local_sources_are_already_independent() 
 }
 
 #[test]
+fn prehook_keeps_collective_budget_zero_when_local_file_history_is_too_weak() {
+    let repo = tempfile::tempdir().unwrap();
+    init_git_repo(repo.path());
+
+    let main_rs = repo.path().join("main.rs");
+    let helper_rs = repo.path().join("helper.rs");
+    std::fs::write(&main_rs, "fn main() {}\n").unwrap();
+    std::fs::write(&helper_rs, "pub fn helper() {}\n").unwrap();
+    git_commit_all(repo.path(), "init");
+
+    std::fs::write(&main_rs, "fn main() { println!(\"v2\"); }\n").unwrap();
+    git_commit_all(repo.path(), "edit main");
+
+    let data_dir = repo.path().join(".thronglets-data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut ws = WorkspaceState::default();
+    ws.updated_ms = now;
+    ws.recent_actions.push_back(RecentAction {
+        tool: "Read".into(),
+        file_path: Some(helper_rs.to_string_lossy().into_owned()),
+        session_id: Some("local-only".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now,
+    });
+    ws.recent_actions.push_front(RecentAction {
+        tool: "Edit".into(),
+        file_path: Some(main_rs.to_string_lossy().into_owned()),
+        session_id: Some("local-only".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now + 1_000,
+    });
+    ws.save(&data_dir);
+
+    let store = TraceStore::open(&data_dir.join("traces.db")).unwrap();
+    let node_a = NodeIdentity::generate();
+    let node_b = NodeIdentity::generate();
+    for (identity, session_id, main_context, helper_context) in [
+        (&node_a, "agent-a", "edit file: main.rs", "read file: helper.rs"),
+        (&node_b, "agent-b", "edit file: /tmp/other/main.rs", "read file: /tmp/other/helper.rs"),
+    ] {
+        insert_trace(
+            &store,
+            identity,
+            "claude-code/Read",
+            Outcome::Succeeded,
+            helper_context,
+            session_id,
+        );
+        insert_trace(
+            &store,
+            identity,
+            "claude-code/Edit",
+            Outcome::Succeeded,
+            main_context,
+            session_id,
+        );
+    }
+
+    let payload = format!(
+        r#"{{"tool_name":"Edit","tool_input":{{"file_path":"{}"}}}}"#,
+        main_rs.display()
+    );
+    let output = run_bin_env(
+        &["--data-dir", data_dir.to_str().unwrap(), "prehook"],
+        Some(&payload),
+        None,
+        &[("THRONGLETS_PROFILE_PREHOOK", "1")],
+    );
+
+    assert!(output.status.success(), "prehook failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("context: git history for main.rs:"));
+    assert!(!stdout.contains("do next:"));
+    assert!(stderr.contains("output_mode=context-only"));
+    assert!(stderr.contains("decision_path=history"));
+    assert!(stderr.contains("collective_queries_used=0"));
+}
+
+#[test]
 fn prehook_spends_collective_budget_on_highest_priority_action_signal() {
     let repo = tempfile::tempdir().unwrap();
     init_git_repo(repo.path());

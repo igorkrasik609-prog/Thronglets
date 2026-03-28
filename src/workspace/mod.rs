@@ -241,6 +241,21 @@ impl WorkspaceState {
         source_count.saturating_sub(1).min(2) as i32 * 10
     }
 
+    pub fn has_repeated_recent_file_actions(&self, current_file: Option<&str>) -> bool {
+        let Some(file) = current_file else { return false; };
+        let now = chrono::Utc::now().timestamp_millis();
+
+        self.recent_actions
+            .iter()
+            .filter(|action| {
+                matches!(action.tool.as_str(), "Edit" | "Write")
+                    && action.file_path.as_deref() == Some(file)
+                    && Self::repair_recency_weight(now - action.timestamp_ms) > 0.0
+            })
+            .take(2)
+            .count() >= 2
+    }
+
     fn record_repair_pattern(
         &mut self,
         error_tool: &str,
@@ -1312,6 +1327,31 @@ mod tests {
         });
 
         assert!(ws.preparation_hint("Edit", Some("/main.rs")).is_none());
+    }
+
+    #[test]
+    fn repeated_recent_file_actions_requires_two_local_edits() {
+        let mut ws = make_ws();
+        let now = chrono::Utc::now().timestamp_millis();
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Edit".into(),
+            file_path: Some("/main.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now,
+        });
+
+        assert!(!ws.has_repeated_recent_file_actions(Some("/main.rs")));
+
+        ws.recent_actions.push_front(RecentAction {
+            tool: "Write".into(),
+            file_path: Some("/main.rs".into()),
+            session_id: None,
+            outcome: "succeeded".into(),
+            timestamp_ms: now + 1_000,
+        });
+
+        assert!(ws.has_repeated_recent_file_actions(Some("/main.rs")));
     }
 
     #[test]

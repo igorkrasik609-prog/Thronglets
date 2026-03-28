@@ -53,6 +53,7 @@ THRONGLETS_PROFILE_PREHOOK=1 thronglets prehook
 
 This writes stage timings to `stderr` and keeps AI-facing `stdout` unchanged.
 It also reports `stdout_bytes`, `output_mode`, `decision_path`, and `evidence_scope` so you can see how much the hook said and which path it took.
+File-level `do next / maybe also` hints now pass a local repetition gate first: if the current file has fewer than two recent local `Edit/Write` actions, Thronglets skips `preparation / adjacency` mining entirely instead of burning query budget on weak evidence.
 
 To summarize those profiling lines:
 

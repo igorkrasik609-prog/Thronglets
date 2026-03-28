@@ -615,6 +615,8 @@ async fn main() {
             let ws = WorkspaceState::load(&dir);
             let current_file = workspace::extract_file_path(tool_name, &payload["tool_input"]);
             let supports_file_guidance = matches!(tool_name, "Edit" | "Write") && current_file.is_some();
+            let has_repeated_local_file_actions =
+                supports_file_guidance && ws.has_repeated_recent_file_actions(current_file.as_deref());
             profiler.stage("workspace");
 
             let mut collective_store: Option<TraceStore> = None;
@@ -683,7 +685,7 @@ async fn main() {
                 s.kind,
                 SignalKind::Repair | SignalKind::Preparation
             ));
-            if supports_file_guidance && !has_do_next_signal {
+            if has_repeated_local_file_actions && !has_do_next_signal {
                 if let Some(mut preparation_hint) = ws.preparation_hint(tool_name, current_file.as_deref()) {
                     if let (Some(current_file), Some(target)) = (
                         current_file.as_deref(),
@@ -715,7 +717,7 @@ async fn main() {
             // ── Trail pheromone: co-edit patterns ──
             // "Editing A usually means you also need to edit B."
             // Only emitted when patterns exist.
-            if supports_file_guidance {
+            if has_repeated_local_file_actions {
                 if let Some(mut adjacency_hint) = ws.adjacency_hint(tool_name, current_file.as_deref()) {
                     if let (Some(current_file), Some(target)) = (
                         current_file.as_deref(),
