@@ -19,6 +19,7 @@
 - **CI release recipe** — CI now runs adapter/operator integration suites plus a real `release-check` smoke pass, so the documented release gate is also the automated one
 - **Baseline-aware release gate** — `thronglets release-check --compare-baseline <file>` now reuses `eval-signals --json` baselines and fails on clear regressions in retention, failed command rate, or first successful change latency
 - **Distribution surface alignment** — npm/python wrapper metadata, installer docs, and AI-facing `llms.txt` now match the sparse-signal `v0.4.0` product shape, while CI guards against drifting back to stale `0.2.0` / `8 layers` packaging text
+- **Release installer scaffolding** — added a tagged GitHub release workflow that packages the existing native assets plus a shell installer at `scripts/install.sh`, so the next public release can support a real one-line install path without changing the hot path
 
 ## v0.4.0 — 2026-03-28
 

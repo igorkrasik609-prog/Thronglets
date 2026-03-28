@@ -119,3 +119,16 @@ fn package_installers_read_version_from_a_single_source() {
     assert!(python_installer.contains("THRONGLETS_INSTALL_VERSION"));
     assert!(python_installer.contains("THRONGLETS_INSTALL_REPO"));
 }
+
+#[test]
+fn shell_installer_and_release_workflow_exist_for_one_line_distribution() {
+    let install_script = read("scripts/install.sh");
+    assert!(install_script.contains("releases/latest/download"));
+    assert!(install_script.contains("THRONGLETS_VERSION"));
+    assert!(install_script.contains("Next: thronglets setup"));
+
+    let release_workflow = read(".github/workflows/release.yml");
+    assert!(release_workflow.contains("softprops/action-gh-release"));
+    assert!(release_workflow.contains("thronglets-mcp-linux-amd64"));
+    assert!(release_workflow.contains("thronglets-mcp-darwin-arm64"));
+}

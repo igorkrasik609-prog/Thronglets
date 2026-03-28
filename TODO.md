@@ -100,10 +100,11 @@ Thronglets 现在的主线已经明确：
 当前状态：
 - npm / python wrapper metadata and package docs now track the current `v0.4.0` sparse-signal product shape
 - CI 已经会挡住 package-facing 文案和版本再漂回旧的 `0.2.0 / 8 layers`
+- repo 内已经有 tagged release workflow 和 `scripts/install.sh`
 
 完成标准：
-- 提供 shell installer
-- 不要求用户预先 `cargo install thronglets`
+- 切一次真实 tag release，产出 shell installer 依赖的 binary assets
+- 默认安装文档切到 shell installer
 - 安装后可以直接跑 `thronglets setup`
 
 ### 8. Generic contract examples by runtime
