@@ -620,13 +620,12 @@ async fn main() {
             let mut collective_store: Option<TraceStore> = None;
             let mut collective_queries_remaining = PREHOOK_MAX_COLLECTIVE_QUERIES;
 
-            let mut has_recent_danger = false;
+            let mut has_recent_tool_error = false;
 
             // ── Danger pheromone: low edit retention ──
             // If recent edits are mostly reverted, this is a strong warning.
             // Only signal when retention < 50% (anomaly).
             if let Some(retention_warning) = ws.retention_warning(current_file.as_deref()) {
-                has_recent_danger = true;
                 signals.push(Signal::danger(retention_warning.body, retention_warning.score));
             }
 
@@ -645,15 +644,15 @@ async fn main() {
                     };
                     Signal::danger(format!("  ⚠ recent error: {snippet}"), 360)
                 };
-                has_recent_danger = true;
+                has_recent_tool_error = true;
                 signals.push(signal);
             }
             profiler.stage("danger");
 
-            if let Some(repair_hint) = ws.repair_trajectory_hint(tool_name)
-                .or_else(|| ws.repair_hints(tool_name))
-            {
-                if has_recent_danger {
+            if has_recent_tool_error {
+                if let Some(repair_hint) = ws.repair_trajectory_hint(tool_name)
+                    .or_else(|| ws.repair_hints(tool_name))
+                {
                     let mut repair_hint = repair_hint;
                     if claim_collective_query(&repair_hint.candidate, &mut collective_queries_remaining) {
                         if let Some(store) = cached_collective_store(&mut collective_store, &dir) {

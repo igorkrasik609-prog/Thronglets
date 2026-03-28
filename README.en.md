@@ -60,6 +60,8 @@ To summarize those profiling lines:
 cat prehook.log | thronglets profile-summary
 ```
 
+The summary also highlights which `decision_path` values are still spending collective queries, so you can keep trimming the hot path.
+
 ## Why This Matters
 
 Without Thronglets, your AI approaches every file blind. It doesn't know:

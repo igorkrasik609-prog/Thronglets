@@ -60,6 +60,8 @@ THRONGLETS_PROFILE_PREHOOK=1 thronglets prehook
 cat prehook.log | thronglets profile-summary
 ```
 
+摘要里会额外标出哪些 `decision_path` 仍然在消耗 collective query，方便继续压热路径。
+
 ## 为什么这很重要
 
 没有 Thronglets，你的 AI 对每个文件都是盲的。它不知道：

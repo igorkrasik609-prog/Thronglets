@@ -36,6 +36,7 @@ fn profile_summary_aggregates_profile_lines() {
     assert!(stdout.contains("output modes: context-only=1, next-step=1, silent=1"));
     assert!(stdout.contains("decision paths: history=1, none=1, repair=1"));
     assert!(stdout.contains("evidence scopes: collective=1, none=2"));
+    assert!(stdout.contains("collective query paths: repair=1"));
 }
 
 #[test]

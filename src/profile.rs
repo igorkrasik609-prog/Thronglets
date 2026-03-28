@@ -26,6 +26,7 @@ pub struct PrehookProfileSummary {
     pub output_modes: BTreeMap<String, usize>,
     pub decision_paths: BTreeMap<String, usize>,
     pub evidence_scopes: BTreeMap<String, usize>,
+    pub collective_query_paths: BTreeMap<String, usize>,
 }
 
 pub fn parse_prehook_profile_line(line: &str) -> Option<PrehookProfileSample> {
@@ -96,12 +97,17 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
     let mut output_modes = BTreeMap::new();
     let mut decision_paths = BTreeMap::new();
     let mut evidence_scopes = BTreeMap::new();
+    let mut collective_query_paths = BTreeMap::new();
 
     for sample in samples {
+        let decision_path = sample.decision_path.clone();
         *tools.entry(sample.tool).or_insert(0) += 1;
         *output_modes.entry(sample.output_mode).or_insert(0) += 1;
-        *decision_paths.entry(sample.decision_path).or_insert(0) += 1;
+        *decision_paths.entry(decision_path.clone()).or_insert(0) += 1;
         *evidence_scopes.entry(sample.evidence_scope).or_insert(0) += 1;
+        if sample.collective_queries_used > 0 {
+            *collective_query_paths.entry(decision_path).or_insert(0) += sample.collective_queries_used;
+        }
     }
 
     Some(PrehookProfileSummary {
@@ -115,6 +121,7 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
         output_modes,
         decision_paths,
         evidence_scopes,
+        collective_query_paths,
     })
 }
 
@@ -134,6 +141,10 @@ impl PrehookProfileSummary {
             format!("output modes: {}", render_counts(&self.output_modes)),
             format!("decision paths: {}", render_counts(&self.decision_paths)),
             format!("evidence scopes: {}", render_counts(&self.evidence_scopes)),
+            format!(
+                "collective query paths: {}",
+                render_counts_or_none(&self.collective_query_paths)
+            ),
         ]
         .join("\n")
     }
@@ -145,6 +156,14 @@ fn render_counts(counts: &BTreeMap<String, usize>) -> String {
         .map(|(label, count)| format!("{label}={count}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn render_counts_or_none(counts: &BTreeMap<String, usize>) -> String {
+    if counts.is_empty() {
+        "none".to_string()
+    } else {
+        render_counts(counts)
+    }
 }
 
 fn percentile_95<T: Copy + Ord>(values: &[T]) -> T {
@@ -191,5 +210,6 @@ mod tests {
         assert_eq!(summary.output_modes["silent"], 1);
         assert_eq!(summary.decision_paths["repair"], 1);
         assert_eq!(summary.evidence_scopes["none"], 2);
+        assert_eq!(summary.collective_query_paths["repair"], 1);
     }
 }

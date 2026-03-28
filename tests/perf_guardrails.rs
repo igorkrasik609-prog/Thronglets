@@ -410,6 +410,50 @@ fn prehook_ignores_global_retention_without_local_evidence() {
 }
 
 #[test]
+fn prehook_does_not_emit_repair_for_retention_only_danger() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut ws = WorkspaceState::default();
+    ws.updated_ms = now;
+    for offset in [0_i64, 1_000] {
+        ws.pending_feedback.push_front(PendingFeedback {
+            file_path: "/current.rs".into(),
+            action: "Edit".into(),
+            timestamp_ms: now + offset,
+            resolved: true,
+            outcome: Some("reverted".into()),
+        });
+    }
+    ws.repair_patterns.push_front(RepairPattern {
+        error_tool: "Edit".into(),
+        repair_tool: "Read".into(),
+        repair_target: Some("helper.rs".into()),
+        source_ids: vec!["local-a".into(), "local-b".into()],
+        count: 2,
+        last_seen_ms: now,
+    });
+    ws.save(data_dir.path());
+
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"/current.rs"}}"#;
+    let output = run_bin_env(
+        &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
+        Some(payload),
+        None,
+        &[("THRONGLETS_PROFILE_PREHOOK", "1")],
+    );
+
+    assert!(output.status.success(), "prehook failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains(PREHOOK_HEADER));
+    assert!(stdout.contains("avoid: low retention for current.rs: 0/2 edits committed"));
+    assert!(!stdout.contains("do next:"), "repair should require a recent tool error");
+    assert!(stderr.contains("output_mode=caution"));
+    assert!(stderr.contains("decision_path=danger"));
+    assert!(stderr.contains("collective_queries_used=0"));
+}
+
+#[test]
 fn prehook_ranks_danger_and_repair_above_history() {
     let repo = tempfile::tempdir().unwrap();
     init_git_repo(repo.path());
