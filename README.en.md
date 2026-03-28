@@ -82,6 +82,12 @@ thronglets eval-signals --hours 168 --max-sessions 200
 ```
 
 This replays recent sessions offline, treats earlier history as training and later sessions as holdout, and reports `edit silence rate`, `repair coverage`, `repair first-step precision`, `repair exact precision`, `preparation precision`, and `adjacency precision`. It stays entirely on the cold path and does not touch prehook latency.
+The output now also includes `repair / preparation / adjacency breakdown` plus a short `diagnosis`, so you can tell apart “not enough data”, “blocked by the local repetition gate”, and “pattern is too noisy”.
+If you want machine-readable output for scripts or CI, add:
+
+```bash
+thronglets eval-signals --hours 168 --max-sessions 200 --json
+```
 
 ## Why This Matters
 

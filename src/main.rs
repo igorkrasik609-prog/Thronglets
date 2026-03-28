@@ -150,6 +150,10 @@ enum Commands {
         /// Evaluate at most this many recent sessions.
         #[arg(long, default_value_t = 200)]
         max_sessions: usize,
+
+        /// Emit machine-readable JSON instead of a text summary.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 }
 
@@ -976,13 +980,29 @@ async fn main() {
             }
         }
 
-        Commands::EvalSignals { hours, max_sessions } => {
+        Commands::EvalSignals { hours, max_sessions, json } => {
             let store = open_store(&dir);
             match evaluate_signal_quality(&store, hours, max_sessions)
                 .expect("failed to evaluate signal quality")
             {
-                Some(summary) => println!("{}", summary.render()),
-                None => println!("not enough recent session history to evaluate signals yet"),
+                Some(summary) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&summary)
+                                .expect("failed to serialize evaluation summary")
+                        );
+                    } else {
+                        println!("{}", summary.render());
+                    }
+                }
+                None => {
+                    if json {
+                        println!("null");
+                    } else {
+                        println!("not enough recent session history to evaluate signals yet");
+                    }
+                }
             }
         }
     }
