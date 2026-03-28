@@ -231,6 +231,10 @@ enum Commands {
         #[arg(long, default_value_t = 2)]
         pattern_support_min: u32,
 
+        /// Compare current results against a previous `eval-signals --json` baseline file.
+        #[arg(long)]
+        compare_baseline: Option<PathBuf>,
+
         /// Keep only the top N breakdown rows per category.
         #[arg(long, default_value_t = 5)]
         top_breakdowns: usize,
@@ -1287,6 +1291,7 @@ async fn main() {
             global,
             local_history_gate_min,
             pattern_support_min,
+            compare_baseline,
             top_breakdowns,
             focus,
             json,
@@ -1335,6 +1340,14 @@ async fn main() {
                     } else {
                         None
                     });
+                    let summary = if let Some(baseline_path) = compare_baseline.as_ref() {
+                        summary.with_comparison_to_baseline(
+                            &load_eval_baseline(baseline_path)
+                                .expect("failed to load eval baseline"),
+                        )
+                    } else {
+                        summary
+                    };
                     let summary = summary.focused(focus.into(), top_breakdowns);
                     if json {
                         println!(
@@ -1721,6 +1734,12 @@ fn run_release_eval_section(
             )
         }
     }
+}
+
+fn load_eval_baseline(path: &Path) -> Result<thronglets::eval::SignalEvalSummary, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|err| format!("read baseline {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("parse baseline {}: {err}", path.display()))
 }
 
 fn print_release_section(name: &str, status: &str, body: &str) {

@@ -93,6 +93,15 @@ thronglets eval-signals --hours 168 --max-sessions 200
 thronglets eval-signals --hours 168 --max-sessions 200 --json
 ```
 
+如果你想直接看“这版相对上一个基线是变好还是变坏”，可以把前一次 `eval-signals --json` 的输出存成文件，再比较：
+
+```bash
+thronglets eval-signals --hours 168 --max-sessions 200 --json > baseline.json
+thronglets eval-signals --hours 168 --max-sessions 200 --compare-baseline baseline.json
+```
+
+这会额外输出两行 `vs baseline`，覆盖 `local edit retention`、`holdout failed command rate`、`first successful change latency`，以及主要 signal precision 的增减。
+
 如果你想把热路径和冷路径检查串成一个发布门槛，可以直接跑：
 
 ```bash

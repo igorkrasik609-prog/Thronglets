@@ -93,6 +93,15 @@ If you want machine-readable output for scripts or CI, add:
 thronglets eval-signals --hours 168 --max-sessions 200 --json
 ```
 
+If you want to answer “did this version actually improve or regress versus the last baseline?”, save a previous `eval-signals --json` result and compare against it:
+
+```bash
+thronglets eval-signals --hours 168 --max-sessions 200 --json > baseline.json
+thronglets eval-signals --hours 168 --max-sessions 200 --compare-baseline baseline.json
+```
+
+That adds two `vs baseline` lines covering `local edit retention`, `holdout failed command rate`, `first successful change latency`, and the major signal-precision deltas.
+
 If you want one release-oriented gate that combines hot-path and cold-path checks, run:
 
 ```bash

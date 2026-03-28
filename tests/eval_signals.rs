@@ -475,3 +475,91 @@ fn eval_signals_includes_local_feedback_for_project_scope() {
     assert_eq!(parsed["local_feedback"]["resolved_edits"], 2);
     assert_eq!(parsed["local_feedback"]["retention_percent"], 50);
 }
+
+#[test]
+fn eval_signals_can_compare_against_legacy_baseline_json() {
+    let dir = TempDir::new().unwrap();
+    let baseline_path = dir.path().join("baseline.json");
+    let store = TraceStore::open(&dir.path().join("traces.db")).unwrap();
+    let identity = NodeIdentity::generate();
+
+    let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
+    for session in ["s1", "s2", "s3"] {
+        for (capability, outcome, context) in [
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: helper.rs",
+            ),
+            ("claude-code/Edit", Outcome::Succeeded, "edit file: main.rs"),
+            ("claude-code/Bash", Outcome::Failed, "bash: cargo test"),
+        ] {
+            let trace = make_trace(&identity, capability, outcome, context, session, timestamp);
+            store.insert(&trace).unwrap();
+            timestamp += 1_000;
+        }
+        timestamp += 60_000;
+    }
+
+    std::fs::write(
+        &baseline_path,
+        serde_json::json!({
+            "project_scope": serde_json::Value::Null,
+            "eval_config": {
+                "local_history_gate_min": 2,
+                "pattern_support_min": 2
+            },
+            "comparison_to_default": serde_json::Value::Null,
+            "sessions_considered": 3,
+            "sessions_scored": 2,
+            "edit_points": 10,
+            "edit_points_with_signal": 1,
+            "repair_opportunities": 2,
+            "repair_predictions": 1,
+            "repair_first_step_hits": 1,
+            "repair_exact_hits": 0,
+            "preparation_gated_edit_points": 4,
+            "preparation_predictions": 0,
+            "preparation_hits": 0,
+            "adjacency_gated_edit_points": 4,
+            "adjacency_predictions": 0,
+            "adjacency_hits": 0,
+            "repair_breakdown": {},
+            "preparation_breakdown": {},
+            "adjacency_breakdown": {}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args([
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "eval-signals",
+            "--global",
+            "--hours",
+            "168",
+            "--max-sessions",
+            "10",
+            "--json",
+            "--compare-baseline",
+            baseline_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn eval-signals with baseline");
+
+    assert!(
+        output.status.success(),
+        "eval-signals with baseline failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("parse baseline comparison json");
+    assert!(parsed["comparison_to_baseline"].is_object());
+    assert_eq!(
+        parsed["comparison_to_baseline"]["baseline_sessions_scored"],
+        2
+    );
+}

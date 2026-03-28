@@ -2,7 +2,7 @@ use crate::signals::StepAction;
 use crate::storage::TraceStore;
 use crate::trace::{Outcome, Trace};
 use crate::workspace::WorkspaceState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -28,14 +28,14 @@ pub enum EvalFocus {
     Adjacency,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvalCheckStatus {
     Pass,
     Fail,
     Skip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvalConfig {
     pub local_history_gate_min: u32,
     pub pattern_support_min: u32,
@@ -50,18 +50,25 @@ impl Default for EvalConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignalEvalSummary {
     pub project_scope: Option<String>,
     pub eval_config: EvalConfig,
     pub local_feedback: Option<LocalFeedbackSummary>,
     pub comparison_to_default: Option<EvalComparison>,
+    #[serde(default)]
+    pub comparison_to_baseline: Option<EvalBaselineComparison>,
     pub sessions_considered: usize,
     pub sessions_scored: usize,
+    #[serde(default)]
     pub holdout_command_calls: usize,
+    #[serde(default)]
     pub holdout_failed_command_calls: usize,
+    #[serde(default)]
     pub sessions_with_successful_change: usize,
+    #[serde(default)]
     pub first_successful_change_latency_avg_ms: Option<u64>,
+    #[serde(default)]
     pub first_successful_change_latency_p50_ms: Option<u64>,
     pub edit_points: usize,
     pub edit_points_with_signal: usize,
@@ -80,7 +87,7 @@ pub struct SignalEvalSummary {
     pub adjacency_breakdown: BTreeMap<String, FileGuidanceEvalBreakdown>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvalCheckThresholds {
     pub min_scored_sessions: usize,
     pub min_edit_points: usize,
@@ -108,14 +115,14 @@ impl Default for EvalCheckThresholds {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvalCheckResult {
     pub status: EvalCheckStatus,
     pub violations: Vec<String>,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvalComparison {
     pub baseline_config: EvalConfig,
     pub edit_silence_rate_delta_tenths_pp: i32,
@@ -131,7 +138,7 @@ pub struct EvalComparison {
     pub adjacency_prediction_delta: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RepairEvalBreakdown {
     pub opportunities: usize,
     pub predictions: usize,
@@ -139,7 +146,7 @@ pub struct RepairEvalBreakdown {
     pub exact_hits: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FileGuidanceEvalBreakdown {
     pub edit_points: usize,
     pub gated_points: usize,
@@ -147,12 +154,28 @@ pub struct FileGuidanceEvalBreakdown {
     pub hits: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalFeedbackSummary {
     pub resolved_edits: usize,
     pub committed_edits: usize,
     pub reverted_edits: usize,
     pub retention_percent: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalBaselineComparison {
+    pub baseline_project_scope: Option<String>,
+    pub baseline_sessions_scored: usize,
+    pub local_retention_delta_tenths_pp: Option<i32>,
+    pub failed_command_rate_delta_tenths_pp: i32,
+    pub first_successful_change_latency_avg_delta_ms: Option<i64>,
+    pub first_successful_change_latency_p50_delta_ms: Option<i64>,
+    pub edit_silence_rate_delta_tenths_pp: i32,
+    pub repair_coverage_delta_tenths_pp: i32,
+    pub repair_first_step_precision_delta_tenths_pp: i32,
+    pub repair_exact_precision_delta_tenths_pp: i32,
+    pub preparation_precision_delta_tenths_pp: i32,
+    pub adjacency_precision_delta_tenths_pp: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +326,10 @@ impl SignalEvalSummary {
             lines.push(comparison.render_summary_line());
             lines.push(comparison.render_prediction_line());
         }
+        if let Some(comparison) = self.comparison_to_baseline.as_ref() {
+            lines.push(comparison.render_outcome_line());
+            lines.push(comparison.render_signal_line());
+        }
 
         if !self.repair_breakdown.is_empty() {
             lines.push(format!(
@@ -330,6 +357,11 @@ impl SignalEvalSummary {
         if self.eval_config != baseline.eval_config {
             self.comparison_to_default = Some(EvalComparison::between(baseline, &self));
         }
+        self
+    }
+
+    pub fn with_comparison_to_baseline(mut self, baseline: &SignalEvalSummary) -> Self {
+        self.comparison_to_baseline = Some(EvalBaselineComparison::between(baseline, &self));
         self
     }
 
@@ -662,6 +694,102 @@ impl EvalComparison {
     }
 }
 
+impl EvalBaselineComparison {
+    fn between(baseline: &SignalEvalSummary, candidate: &SignalEvalSummary) -> Self {
+        Self {
+            baseline_project_scope: baseline.project_scope.clone(),
+            baseline_sessions_scored: baseline.sessions_scored,
+            local_retention_delta_tenths_pp: option_delta_tenths_pp(
+                candidate
+                    .local_feedback
+                    .as_ref()
+                    .map(|summary| summary.retention_percent),
+                baseline
+                    .local_feedback
+                    .as_ref()
+                    .map(|summary| summary.retention_percent),
+            ),
+            failed_command_rate_delta_tenths_pp: delta_tenths_pp(
+                candidate.holdout_failed_command_calls,
+                candidate.holdout_command_calls,
+                baseline.holdout_failed_command_calls,
+                baseline.holdout_command_calls,
+            ),
+            first_successful_change_latency_avg_delta_ms: option_delta_ms(
+                candidate.first_successful_change_latency_avg_ms,
+                baseline.first_successful_change_latency_avg_ms,
+            ),
+            first_successful_change_latency_p50_delta_ms: option_delta_ms(
+                candidate.first_successful_change_latency_p50_ms,
+                baseline.first_successful_change_latency_p50_ms,
+            ),
+            edit_silence_rate_delta_tenths_pp: delta_tenths_pp(
+                candidate
+                    .edit_points
+                    .saturating_sub(candidate.edit_points_with_signal),
+                candidate.edit_points,
+                baseline
+                    .edit_points
+                    .saturating_sub(baseline.edit_points_with_signal),
+                baseline.edit_points,
+            ),
+            repair_coverage_delta_tenths_pp: delta_tenths_pp(
+                candidate.repair_predictions,
+                candidate.repair_opportunities,
+                baseline.repair_predictions,
+                baseline.repair_opportunities,
+            ),
+            repair_first_step_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.repair_first_step_hits,
+                candidate.repair_predictions,
+                baseline.repair_first_step_hits,
+                baseline.repair_predictions,
+            ),
+            repair_exact_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.repair_exact_hits,
+                candidate.repair_predictions,
+                baseline.repair_exact_hits,
+                baseline.repair_predictions,
+            ),
+            preparation_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.preparation_hits,
+                candidate.preparation_predictions,
+                baseline.preparation_hits,
+                baseline.preparation_predictions,
+            ),
+            adjacency_precision_delta_tenths_pp: delta_tenths_pp(
+                candidate.adjacency_hits,
+                candidate.adjacency_predictions,
+                baseline.adjacency_hits,
+                baseline.adjacency_predictions,
+            ),
+        }
+    }
+
+    fn render_outcome_line(&self) -> String {
+        format!(
+            "vs baseline ({} scored): retention {}, failed cmds {}, first change avg {}, p50 {}",
+            self.baseline_sessions_scored,
+            format_option_delta_tenths_pp(self.local_retention_delta_tenths_pp),
+            format_delta_tenths_pp(self.failed_command_rate_delta_tenths_pp),
+            format_option_delta_ms(self.first_successful_change_latency_avg_delta_ms),
+            format_option_delta_ms(self.first_successful_change_latency_p50_delta_ms),
+        )
+    }
+
+    fn render_signal_line(&self) -> String {
+        format!(
+            "vs baseline signals: silence {}, repair cov {}, repair step {}, repair exact {}, prep {}, adj {}",
+            format_delta_tenths_pp(self.edit_silence_rate_delta_tenths_pp),
+            format_delta_tenths_pp(self.repair_coverage_delta_tenths_pp),
+            format_delta_tenths_pp(self.repair_first_step_precision_delta_tenths_pp),
+            format_delta_tenths_pp(self.repair_exact_precision_delta_tenths_pp),
+            format_delta_tenths_pp(self.preparation_precision_delta_tenths_pp),
+            format_delta_tenths_pp(self.adjacency_precision_delta_tenths_pp),
+        )
+    }
+}
+
 impl PatternStats {
     fn record(&mut self, source_id: &str) {
         self.count += 1;
@@ -857,6 +985,7 @@ pub fn evaluate_signal_quality(
         eval_config: config,
         local_feedback: None,
         comparison_to_default: None,
+        comparison_to_baseline: None,
         sessions_considered: sessions.len(),
         sessions_scored: 0,
         holdout_command_calls: 0,
@@ -1190,6 +1319,32 @@ fn format_delta_tenths_pp(delta_tenths_pp: i32) -> String {
     format!("{:+.1}pp", delta_tenths_pp as f64 / 10.0)
 }
 
+fn format_option_delta_tenths_pp(delta_tenths_pp: Option<i32>) -> String {
+    delta_tenths_pp
+        .map(format_delta_tenths_pp)
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn option_delta_tenths_pp(candidate: Option<u32>, baseline: Option<u32>) -> Option<i32> {
+    match (candidate, baseline) {
+        (Some(candidate), Some(baseline)) => Some((candidate as i32 - baseline as i32) * 10),
+        _ => None,
+    }
+}
+
+fn format_option_delta_ms(delta_ms: Option<i64>) -> String {
+    delta_ms
+        .map(|delta_ms| format!("{delta_ms:+}ms"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn option_delta_ms(candidate: Option<u64>, baseline: Option<u64>) -> Option<i64> {
+    match (candidate, baseline) {
+        (Some(candidate), Some(baseline)) => Some(candidate as i64 - baseline as i64),
+        _ => None,
+    }
+}
+
 fn render_gate_line(
     label: &str,
     predictions: usize,
@@ -1450,6 +1605,7 @@ mod tests {
             eval_config: EvalConfig::default(),
             local_feedback: None,
             comparison_to_default: None,
+            comparison_to_baseline: None,
             sessions_considered: 3,
             sessions_scored: 2,
             holdout_command_calls: 2,
@@ -1643,6 +1799,7 @@ mod tests {
             eval_config: EvalConfig::default(),
             local_feedback: None,
             comparison_to_default: None,
+            comparison_to_baseline: None,
             sessions_considered: 3,
             sessions_scored: 2,
             holdout_command_calls: 2,
@@ -1674,6 +1831,7 @@ mod tests {
             },
             local_feedback: None,
             comparison_to_default: None,
+            comparison_to_baseline: None,
             sessions_considered: 3,
             sessions_scored: 2,
             holdout_command_calls: 2,
@@ -1712,12 +1870,100 @@ mod tests {
     }
 
     #[test]
+    fn comparison_to_baseline_tracks_outcome_deltas() {
+        let baseline = SignalEvalSummary {
+            project_scope: Some("/repo".into()),
+            eval_config: EvalConfig::default(),
+            local_feedback: Some(LocalFeedbackSummary {
+                resolved_edits: 4,
+                committed_edits: 2,
+                reverted_edits: 2,
+                retention_percent: 50,
+            }),
+            comparison_to_default: None,
+            comparison_to_baseline: None,
+            sessions_considered: 4,
+            sessions_scored: 3,
+            holdout_command_calls: 10,
+            holdout_failed_command_calls: 3,
+            sessions_with_successful_change: 3,
+            first_successful_change_latency_avg_ms: Some(2_000),
+            first_successful_change_latency_p50_ms: Some(1_000),
+            edit_points: 10,
+            edit_points_with_signal: 2,
+            repair_opportunities: 2,
+            repair_predictions: 1,
+            repair_first_step_hits: 1,
+            repair_exact_hits: 0,
+            preparation_gated_edit_points: 4,
+            preparation_predictions: 2,
+            preparation_hits: 1,
+            adjacency_gated_edit_points: 4,
+            adjacency_predictions: 2,
+            adjacency_hits: 1,
+            repair_breakdown: BTreeMap::new(),
+            preparation_breakdown: BTreeMap::new(),
+            adjacency_breakdown: BTreeMap::new(),
+        };
+        let candidate = SignalEvalSummary {
+            project_scope: Some("/repo".into()),
+            eval_config: EvalConfig::default(),
+            local_feedback: Some(LocalFeedbackSummary {
+                resolved_edits: 4,
+                committed_edits: 3,
+                reverted_edits: 1,
+                retention_percent: 75,
+            }),
+            comparison_to_default: None,
+            comparison_to_baseline: None,
+            sessions_considered: 4,
+            sessions_scored: 3,
+            holdout_command_calls: 10,
+            holdout_failed_command_calls: 2,
+            sessions_with_successful_change: 3,
+            first_successful_change_latency_avg_ms: Some(1_500),
+            first_successful_change_latency_p50_ms: Some(900),
+            edit_points: 10,
+            edit_points_with_signal: 1,
+            repair_opportunities: 2,
+            repair_predictions: 1,
+            repair_first_step_hits: 1,
+            repair_exact_hits: 1,
+            preparation_gated_edit_points: 4,
+            preparation_predictions: 2,
+            preparation_hits: 2,
+            adjacency_gated_edit_points: 4,
+            adjacency_predictions: 2,
+            adjacency_hits: 1,
+            repair_breakdown: BTreeMap::new(),
+            preparation_breakdown: BTreeMap::new(),
+            adjacency_breakdown: BTreeMap::new(),
+        }
+        .with_comparison_to_baseline(&baseline);
+
+        let comparison = candidate
+            .comparison_to_baseline
+            .as_ref()
+            .expect("comparison to baseline");
+        assert_eq!(comparison.local_retention_delta_tenths_pp, Some(250));
+        assert_eq!(comparison.failed_command_rate_delta_tenths_pp, -100);
+        assert_eq!(
+            comparison.first_successful_change_latency_avg_delta_ms,
+            Some(-500)
+        );
+        assert_eq!(comparison.repair_exact_precision_delta_tenths_pp, 1000);
+        assert!(candidate.render().contains("vs baseline (3 scored):"));
+        assert!(candidate.render().contains("retention +25.0pp"));
+    }
+
+    #[test]
     fn eval_check_skips_when_history_is_too_thin() {
         let summary = SignalEvalSummary {
             project_scope: None,
             eval_config: EvalConfig::default(),
             local_feedback: None,
             comparison_to_default: None,
+            comparison_to_baseline: None,
             sessions_considered: 2,
             sessions_scored: 1,
             holdout_command_calls: 0,
@@ -1755,6 +2001,7 @@ mod tests {
             eval_config: EvalConfig::default(),
             local_feedback: None,
             comparison_to_default: None,
+            comparison_to_baseline: None,
             sessions_considered: 7,
             sessions_scored: 6,
             holdout_command_calls: 6,
