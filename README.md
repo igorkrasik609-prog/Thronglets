@@ -146,6 +146,8 @@ thronglets signal-query --context "fix flaky ci workflow" --kind avoid
 thronglets signal-post --kind watch --context "ship the current branch" --message "run release-check before push" --ttl-hours 168
 ```
 
+查询显式信号时，Thronglets 现在还会告诉你这句话只是本地重复、已经被集体 corroboration 支持，还是两者混合。
+
 同一套能力也直接暴露在 HTTP 上：
 
 ```bash

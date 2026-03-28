@@ -146,6 +146,8 @@ Explicit signals decay on their own after `72h` by default. If one should live l
 thronglets signal-post --kind watch --context "ship the current branch" --message "run release-check before push" --ttl-hours 168
 ```
 
+When you query signals, Thronglets now also tells you whether that message is only local, already collectively corroborated, or mixed across both.
+
 The same plane is available over HTTP:
 
 ```bash

@@ -335,7 +335,12 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
     };
 
     json!({
-        "signals": summarize_signal_traces(&traces, context_str, limit),
+        "signals": summarize_signal_traces(
+            &traces,
+            context_str,
+            ctx.identity.public_key_bytes(),
+            limit,
+        ),
     })
     .to_string()
 }
@@ -477,6 +482,9 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "avoid");
         assert_eq!(signals[0]["message"], "skip the generated lockfile");
+        assert_eq!(signals[0]["local_source_count"], 1);
+        assert_eq!(signals[0]["collective_source_count"], 0);
+        assert_eq!(signals[0]["evidence_scope"], "local");
 
         let query_response = parse_body(&handle_http_request(
             &ctx,
@@ -485,6 +493,7 @@ mod tests {
         let signals = query_response["signals"].as_array().unwrap();
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "avoid");
+        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[test]

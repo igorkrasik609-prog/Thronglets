@@ -69,6 +69,9 @@ pub struct SignalQueryResult {
     pub context_similarity: f64,
     pub total_posts: u64,
     pub source_count: u32,
+    pub local_source_count: u32,
+    pub collective_source_count: u32,
+    pub evidence_scope: String,
     pub latest_timestamp: u64,
     pub expires_at: u64,
     pub contexts: Vec<String>,
@@ -92,6 +95,8 @@ struct SignalGroup {
     expires_at: u64,
     contexts: BTreeSet<String>,
     sources: BTreeSet<String>,
+    local_sources: BTreeSet<String>,
+    collective_sources: BTreeSet<String>,
 }
 
 pub fn is_signal_capability(capability: &str) -> bool {
@@ -149,6 +154,7 @@ fn create_signal_trace_at(
 pub fn summarize_signal_traces(
     traces: &[Trace],
     query_context: &str,
+    local_node_pubkey: [u8; 32],
     limit: usize,
 ) -> Vec<SignalQueryResult> {
     let query_hash = simhash(query_context);
@@ -174,6 +180,8 @@ pub fn summarize_signal_traces(
             expires_at: decoded.expires_at,
             contexts: BTreeSet::new(),
             sources: BTreeSet::new(),
+            local_sources: BTreeSet::new(),
+            collective_sources: BTreeSet::new(),
         });
         entry.best_similarity = entry.best_similarity.max(similarity_score);
         entry.total_posts += 1;
@@ -182,20 +190,35 @@ pub fn summarize_signal_traces(
         if !decoded.context.is_empty() {
             entry.contexts.insert(decoded.context);
         }
-        entry.sources.insert(source_key(trace));
+        let source = source_key(trace);
+        entry.sources.insert(source.clone());
+        if trace.node_pubkey == local_node_pubkey {
+            entry.local_sources.insert(source);
+        } else {
+            entry.collective_sources.insert(source);
+        }
     }
 
     let mut results: Vec<_> = groups
         .into_values()
-        .map(|group| SignalQueryResult {
-            kind: group.kind.as_str().to_string(),
-            message: group.message,
-            context_similarity: round2(group.best_similarity),
-            total_posts: group.total_posts,
-            source_count: group.sources.len() as u32,
-            latest_timestamp: group.latest_timestamp,
-            expires_at: group.expires_at,
-            contexts: group.contexts.into_iter().take(3).collect(),
+        .map(|group| {
+            let local_source_count = group.local_sources.len() as u32;
+            let collective_source_count = group.collective_sources.len() as u32;
+            let evidence_scope =
+                signal_evidence_scope(local_source_count, collective_source_count).to_string();
+            SignalQueryResult {
+                kind: group.kind.as_str().to_string(),
+                message: group.message,
+                context_similarity: round2(group.best_similarity),
+                total_posts: group.total_posts,
+                source_count: group.sources.len() as u32,
+                local_source_count,
+                collective_source_count,
+                evidence_scope,
+                latest_timestamp: group.latest_timestamp,
+                expires_at: group.expires_at,
+                contexts: group.contexts.into_iter().take(3).collect(),
+            }
         })
         .collect();
 
@@ -203,6 +226,7 @@ pub fn summarize_signal_traces(
         b.context_similarity
             .partial_cmp(&a.context_similarity)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.collective_source_count.cmp(&a.collective_source_count))
             .then_with(|| b.source_count.cmp(&a.source_count))
             .then_with(|| b.total_posts.cmp(&a.total_posts))
             .then_with(|| b.latest_timestamp.cmp(&a.latest_timestamp))
@@ -245,6 +269,15 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn signal_evidence_scope(local_sources: u32, collective_sources: u32) -> &'static str {
+    match (local_sources > 0, collective_sources > 0) {
+        (true, true) => "mixed",
+        (true, false) => "local",
+        (false, true) => "collective",
+        (false, false) => "unknown",
+    }
+}
+
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -284,12 +317,20 @@ mod tests {
         );
         let trace_b_timestamp = trace_b.timestamp;
 
-        let results = summarize_signal_traces(&[trace_a, trace_b], "fix flaky ci workflow", 10);
+        let results = summarize_signal_traces(
+            &[trace_a, trace_b],
+            "fix flaky ci workflow",
+            identity.public_key_bytes(),
+            10,
+        );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, "avoid");
         assert_eq!(results[0].message, "skip the generated lockfile");
         assert_eq!(results[0].total_posts, 2);
         assert_eq!(results[0].source_count, 2);
+        assert_eq!(results[0].local_source_count, 2);
+        assert_eq!(results[0].collective_source_count, 0);
+        assert_eq!(results[0].evidence_scope, "local");
         assert!(results[0].expires_at >= trace_b_timestamp);
     }
 
@@ -324,9 +365,56 @@ mod tests {
             |msg| identity.sign(msg),
         );
 
-        let results = summarize_signal_traces(&[expired, fresh], "ship the current branch", 10);
+        let results = summarize_signal_traces(
+            &[expired, fresh],
+            "ship the current branch",
+            identity.public_key_bytes(),
+            10,
+        );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, "watch");
         assert_eq!(results[0].total_posts, 1);
+    }
+
+    #[test]
+    fn summarize_signal_posts_distinguishes_local_and_collective_sources() {
+        let local_identity = NodeIdentity::generate();
+        let remote_identity = NodeIdentity::generate();
+
+        let local = create_signal_trace(
+            SignalPostKind::Recommend,
+            "repair release flow",
+            "run release-check before push",
+            SignalTraceConfig {
+                model_id: "codex".into(),
+                session_id: Some("local-1".into()),
+                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+            },
+            local_identity.public_key_bytes(),
+            |msg| local_identity.sign(msg),
+        );
+        let remote = create_signal_trace(
+            SignalPostKind::Recommend,
+            "repair release flow",
+            "run release-check before push",
+            SignalTraceConfig {
+                model_id: "openclaw".into(),
+                session_id: Some("remote-1".into()),
+                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+            },
+            remote_identity.public_key_bytes(),
+            |msg| remote_identity.sign(msg),
+        );
+
+        let results = summarize_signal_traces(
+            &[local, remote],
+            "repair release flow",
+            local_identity.public_key_bytes(),
+            10,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].local_source_count, 1);
+        assert_eq!(results[0].collective_source_count, 1);
+        assert_eq!(results[0].evidence_scope, "mixed");
     }
 }

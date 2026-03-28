@@ -790,7 +790,12 @@ fn handle_signals(
         Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
     };
     let response_json = json!({
-        "signals": summarize_signal_traces(&traces, context_str, limit),
+        "signals": summarize_signal_traces(
+            &traces,
+            context_str,
+            ctx.identity.public_key_bytes(),
+            limit,
+        ),
     });
     JsonRpcResponse::success(
         id,
@@ -1200,6 +1205,9 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "avoid");
         assert_eq!(signals[0]["message"], "skip the generated lockfile");
+        assert_eq!(signals[0]["local_source_count"], 1);
+        assert_eq!(signals[0]["collective_source_count"], 0);
+        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[tokio::test]

@@ -728,10 +728,13 @@ fn render_signal_query_results(results: &[thronglets::posts::SignalQueryResult])
     for result in results {
         println!("  {}: {}", result.kind, result.message,);
         println!(
-            "    similarity={:.2} posts={} sources={} expires_in≈{}h",
+            "    similarity={:.2} posts={} sources={} (local {} / collective {}) scope={} expires_in≈{}h",
             result.context_similarity,
             result.total_posts,
             result.source_count,
+            result.local_source_count,
+            result.collective_source_count,
+            result.evidence_scope,
             signal_hours_remaining(result.expires_at)
         );
         for context in &result.contexts {
@@ -1435,7 +1438,8 @@ async fn main() {
             let traces = store
                 .query_signal_traces(&query_hash, kind.map(Into::into), 48, limit)
                 .expect("failed to query signal traces");
-            let results = summarize_signal_traces(&traces, &context, limit);
+            let results =
+                summarize_signal_traces(&traces, &context, identity.public_key_bytes(), limit);
             render_signal_query_results(&results);
         }
 
