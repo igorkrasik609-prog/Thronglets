@@ -29,6 +29,15 @@ pub struct PrehookProfileSummary {
     pub evidence_scopes: BTreeMap<String, usize>,
     pub file_guidance_gates: BTreeMap<String, usize>,
     pub collective_query_paths: BTreeMap<String, usize>,
+    pub decision_path_costs: BTreeMap<String, DecisionPathCost>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionPathCost {
+    pub samples: usize,
+    pub total_stdout_bytes: usize,
+    pub total_us: u128,
+    pub collective_queries_used: usize,
 }
 
 pub fn parse_prehook_profile_line(line: &str) -> Option<PrehookProfileSample> {
@@ -104,6 +113,7 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
     let mut evidence_scopes = BTreeMap::new();
     let mut file_guidance_gates = BTreeMap::new();
     let mut collective_query_paths = BTreeMap::new();
+    let mut decision_path_costs: BTreeMap<String, DecisionPathCost> = BTreeMap::new();
 
     for sample in samples {
         let decision_path = sample.decision_path.clone();
@@ -112,6 +122,16 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
         *decision_paths.entry(decision_path.clone()).or_insert(0) += 1;
         *evidence_scopes.entry(sample.evidence_scope).or_insert(0) += 1;
         *file_guidance_gates.entry(sample.file_guidance_gate).or_insert(0) += 1;
+        let cost = decision_path_costs.entry(decision_path.clone()).or_insert(DecisionPathCost {
+            samples: 0,
+            total_stdout_bytes: 0,
+            total_us: 0,
+            collective_queries_used: 0,
+        });
+        cost.samples += 1;
+        cost.total_stdout_bytes += sample.stdout_bytes;
+        cost.total_us += sample.total_us;
+        cost.collective_queries_used += sample.collective_queries_used;
         if sample.collective_queries_used > 0 {
             *collective_query_paths.entry(decision_path).or_insert(0) += sample.collective_queries_used;
         }
@@ -130,6 +150,7 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
         evidence_scopes,
         file_guidance_gates,
         collective_query_paths,
+        decision_path_costs,
     })
 }
 
@@ -154,14 +175,22 @@ impl PrehookProfileSummary {
                 "collective query paths: {}",
                 render_counts_or_none(&self.collective_query_paths)
             ),
+            format!(
+                "decision path hotspots: {}",
+                render_decision_path_costs(&self.decision_path_costs)
+            ),
         ]
         .join("\n")
     }
 }
 
 fn render_counts(counts: &BTreeMap<String, usize>) -> String {
-    counts
-        .iter()
+    let mut entries: Vec<_> = counts.iter().collect();
+    entries.sort_by(|(label_a, count_a), (label_b, count_b)| {
+        count_b.cmp(count_a).then_with(|| label_a.cmp(label_b))
+    });
+    entries
+        .into_iter()
         .map(|(label, count)| format!("{label}={count}"))
         .collect::<Vec<_>>()
         .join(", ")
@@ -173,6 +202,41 @@ fn render_counts_or_none(counts: &BTreeMap<String, usize>) -> String {
     } else {
         render_counts(counts)
     }
+}
+
+fn render_decision_path_costs(costs: &BTreeMap<String, DecisionPathCost>) -> String {
+    let mut entries: Vec<_> = costs.iter().collect();
+    entries.sort_by(|(label_a, cost_a), (label_b, cost_b)| {
+        cost_b
+            .collective_queries_used
+            .cmp(&cost_a.collective_queries_used)
+            .then_with(|| avg_usize(cost_b.total_stdout_bytes, cost_b.samples).total_cmp(&avg_usize(cost_a.total_stdout_bytes, cost_a.samples)))
+            .then_with(|| avg_u128(cost_b.total_us, cost_b.samples).total_cmp(&avg_u128(cost_a.total_us, cost_a.samples)))
+            .then_with(|| cost_b.samples.cmp(&cost_a.samples))
+            .then_with(|| label_a.cmp(label_b))
+    });
+
+    entries
+        .into_iter()
+        .map(|(label, cost)| {
+            format!(
+                "{label}(samples={}, avg_stdout_bytes={:.1}, avg_total_us={:.1}, collective_queries={})",
+                cost.samples,
+                avg_usize(cost.total_stdout_bytes, cost.samples),
+                avg_u128(cost.total_us, cost.samples),
+                cost.collective_queries_used,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn avg_usize(total: usize, count: usize) -> f64 {
+    total as f64 / count as f64
+}
+
+fn avg_u128(total: u128, count: usize) -> f64 {
+    total as f64 / count as f64
 }
 
 fn percentile_95<T: Copy + Ord>(values: &[T]) -> T {
@@ -223,5 +287,7 @@ mod tests {
         assert_eq!(summary.file_guidance_gates["open"], 1);
         assert_eq!(summary.file_guidance_gates["closed"], 1);
         assert_eq!(summary.collective_query_paths["repair"], 1);
+        assert_eq!(summary.decision_path_costs["repair"].collective_queries_used, 1);
+        assert_eq!(summary.decision_path_costs["repair"].total_stdout_bytes, 88);
     }
 }

@@ -32,12 +32,13 @@ fn profile_summary_aggregates_profile_lines() {
     assert!(stdout.contains("avg total_us: 200.0"));
     assert!(stdout.contains("p95 total_us: 300"));
     assert!(stdout.contains("avg stdout_bytes: 43.3"));
-    assert!(stdout.contains("tools: Bash=1, Edit=2"));
+    assert!(stdout.contains("tools: Edit=2, Bash=1"));
     assert!(stdout.contains("output modes: context-only=1, next-step=1, silent=1"));
     assert!(stdout.contains("decision paths: history=1, none=1, repair=1"));
-    assert!(stdout.contains("evidence scopes: collective=1, none=2"));
+    assert!(stdout.contains("evidence scopes: none=2, collective=1"));
     assert!(stdout.contains("file guidance gates: closed=1, na=1, open=1"));
     assert!(stdout.contains("collective query paths: repair=1"));
+    assert!(stdout.contains("decision path hotspots: repair(samples=1, avg_stdout_bytes=88.0, avg_total_us=300.0, collective_queries=1), history(samples=1, avg_stdout_bytes=42.0, avg_total_us=200.0, collective_queries=0), none(samples=1, avg_stdout_bytes=0.0, avg_total_us=100.0, collective_queries=0)"));
 }
 
 #[test]
