@@ -998,14 +998,19 @@ fn ensure_codex_agents_block(agents_path: &Path) -> io::Result<bool> {
         original.find(CODEX_AGENTS_START),
         original.find(CODEX_AGENTS_END),
     ) {
-        let end = end + CODEX_AGENTS_END.len();
+        let mut end = end + CODEX_AGENTS_END.len();
+        if original[end..].starts_with("\r\n") {
+            end += 2;
+        } else if original[end..].starts_with('\n') {
+            end += 1;
+        }
         let mut content = original.clone();
         content.replace_range(start..end, CODEX_AGENTS_BLOCK);
         content
     } else if original.trim().is_empty() {
-        format!("{CODEX_AGENTS_BLOCK}\n")
+        CODEX_AGENTS_BLOCK.into()
     } else {
-        format!("{}\n\n{}\n", original.trim_end(), CODEX_AGENTS_BLOCK)
+        format!("{}\n\n{}", original.trim_end(), CODEX_AGENTS_BLOCK)
     };
 
     if updated == original {
@@ -1164,5 +1169,24 @@ mod tests {
         let agents = fs::read_to_string(codex_dir.join("AGENTS.md")).unwrap();
         assert!(!agents.contains("old block"));
         assert_eq!(agents.matches(CODEX_AGENTS_START).count(), 1);
+    }
+
+    #[test]
+    fn install_codex_keeps_managed_block_idempotent() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let data_dir = temp.path().join("data");
+        let codex_dir = home.join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+
+        let first = install_codex(&home, &data_dir, Path::new("/tmp/thronglets"), false)
+            .unwrap()
+            .unwrap();
+        assert!(first.updated_agents_memory);
+
+        let second = install_codex(&home, &data_dir, Path::new("/tmp/thronglets"), false)
+            .unwrap()
+            .unwrap();
+        assert!(!second.updated_agents_memory);
     }
 }

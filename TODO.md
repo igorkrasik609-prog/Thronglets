@@ -33,19 +33,16 @@ Thronglets 现在的主线已经明确：
 - 如果某个 native adapter 能可靠观测“已经真正重启完成”，就自动清除 `restart_pending`
 - 否则继续保持现在这条显式、可验证的清除路径
 
-### 3. Harden setup/bootstrap matrix
+### 3. Extend adapter matrix only when native runtimes diverge
 
-目标：把 plug-and-play 做成真正可回归的能力，而不是本机偶然成立。
+当前状态：
+- integration tests 已覆盖 `setup`
+- `bootstrap --agent claude / codex / openclaw / generic`
+- 二次执行幂等性
+- “未检测到 adapter 时”的 skip 行为
 
-完成标准：
-- 增加 integration tests 覆盖：
-  - `setup`
-  - `bootstrap --agent claude`
-  - `bootstrap --agent codex`
-  - `bootstrap --agent openclaw`
-  - `bootstrap --agent generic`
-- 覆盖二次执行幂等性
-- 覆盖“未检测到 adapter 时”的 skip 行为
+剩余完成标准：
+- 如果后面某个 native runtime 在不同平台或不同安装方式下出现分叉，再补对应 matrix case
 
 ### 4. Close the release loop
 
