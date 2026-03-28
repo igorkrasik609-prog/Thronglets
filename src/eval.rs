@@ -1,7 +1,7 @@
-use serde::Serialize;
 use crate::signals::StepAction;
 use crate::storage::TraceStore;
 use crate::trace::{Outcome, Trace};
+use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 const SESSION_TRACE_LIMIT: usize = 10_000;
@@ -9,6 +9,14 @@ const FILE_WINDOW_MS: i64 = 300_000;
 const REPAIR_WINDOW_MS: i64 = 600_000;
 const LOCAL_HISTORY_GATE_MIN: u32 = 2;
 const PATTERN_SUPPORT_MIN: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalFocus {
+    All,
+    Repair,
+    Preparation,
+    Adjacency,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SignalEvalSummary {
@@ -83,14 +91,45 @@ struct SignalTrainingSet {
 }
 
 impl SignalEvalSummary {
+    pub fn focused(mut self, focus: EvalFocus, top_breakdowns: usize) -> Self {
+        self.repair_breakdown = trim_repair_breakdown(&self.repair_breakdown, top_breakdowns);
+        self.preparation_breakdown =
+            trim_file_guidance_breakdown(&self.preparation_breakdown, top_breakdowns);
+        self.adjacency_breakdown =
+            trim_file_guidance_breakdown(&self.adjacency_breakdown, top_breakdowns);
+
+        match focus {
+            EvalFocus::All => {}
+            EvalFocus::Repair => {
+                self.preparation_breakdown.clear();
+                self.adjacency_breakdown.clear();
+            }
+            EvalFocus::Preparation => {
+                self.repair_breakdown.clear();
+                self.adjacency_breakdown.clear();
+            }
+            EvalFocus::Adjacency => {
+                self.repair_breakdown.clear();
+                self.preparation_breakdown.clear();
+            }
+        }
+
+        self
+    }
+
     pub fn render(&self) -> String {
         let mut lines = vec![
             format!("sessions considered: {}", self.sessions_considered),
             format!("sessions scored: {}", self.sessions_scored),
             format!(
                 "edit silence rate: {:.1}% ({}/{})",
-                percent(self.edit_points.saturating_sub(self.edit_points_with_signal), self.edit_points),
-                self.edit_points.saturating_sub(self.edit_points_with_signal),
+                percent(
+                    self.edit_points
+                        .saturating_sub(self.edit_points_with_signal),
+                    self.edit_points
+                ),
+                self.edit_points
+                    .saturating_sub(self.edit_points_with_signal),
                 self.edit_points,
             ),
             format!(
@@ -290,7 +329,11 @@ impl SignalTrainingSet {
     }
 
     fn file_guidance_gate_open(&self, edit_target: &str) -> bool {
-        self.file_touch_counts.get(edit_target).copied().unwrap_or(0) >= LOCAL_HISTORY_GATE_MIN
+        self.file_touch_counts
+            .get(edit_target)
+            .copied()
+            .unwrap_or(0)
+            >= LOCAL_HISTORY_GATE_MIN
     }
 }
 
@@ -307,10 +350,7 @@ pub fn evaluate_signal_quality(
     let mut sessions = Vec::new();
     for session_id in session_ids {
         let traces = store.query_session(&session_id, SESSION_TRACE_LIMIT)?;
-        let events = traces
-            .iter()
-            .filter_map(trace_to_event)
-            .collect::<Vec<_>>();
+        let events = traces.iter().filter_map(trace_to_event).collect::<Vec<_>>();
         if !events.is_empty() {
             sessions.push((session_id, events));
         }
@@ -352,14 +392,19 @@ pub fn evaluate_signal_quality(
     Ok(Some(summary))
 }
 
-fn score_session(training: &SignalTrainingSet, events: &[SessionEvent], summary: &mut SignalEvalSummary) {
+fn score_session(
+    training: &SignalTrainingSet,
+    events: &[SessionEvent],
+    summary: &mut SignalEvalSummary,
+) {
     for (idx, event) in events.iter().enumerate() {
         if matches!(event.tool.as_str(), "Edit" | "Write") {
             summary.edit_points += 1;
 
             let mut emitted_signal = false;
             if let Some(current_target) = event.target.as_deref() {
-                let prep_breakdown = summary.preparation_breakdown
+                let prep_breakdown = summary
+                    .preparation_breakdown
                     .entry(current_target.to_string())
                     .or_default();
                 prep_breakdown.edit_points += 1;
@@ -379,7 +424,8 @@ fn score_session(training: &SignalTrainingSet, events: &[SessionEvent], summary:
                     }
                 }
 
-                let adjacency_breakdown = summary.adjacency_breakdown
+                let adjacency_breakdown = summary
+                    .adjacency_breakdown
                     .entry(current_target.to_string())
                     .or_default();
                 adjacency_breakdown.edit_points += 1;
@@ -407,7 +453,8 @@ fn score_session(training: &SignalTrainingSet, events: &[SessionEvent], summary:
 
         if event.outcome == Outcome::Failed {
             summary.repair_opportunities += 1;
-            let repair_breakdown = summary.repair_breakdown
+            let repair_breakdown = summary
+                .repair_breakdown
                 .entry(event.tool.clone())
                 .or_default();
             repair_breakdown.opportunities += 1;
@@ -563,7 +610,6 @@ fn render_repair_breakdown(breakdown: &BTreeMap<String, RepairEvalBreakdown>) ->
     });
 
     rows.into_iter()
-        .take(5)
         .map(|(tool, stats)| {
             format!(
                 "{}: cov {}/{}, step {}/{}, exact {}/{}",
@@ -580,7 +626,9 @@ fn render_repair_breakdown(breakdown: &BTreeMap<String, RepairEvalBreakdown>) ->
         .join(", ")
 }
 
-fn render_file_guidance_breakdown(breakdown: &BTreeMap<String, FileGuidanceEvalBreakdown>) -> String {
+fn render_file_guidance_breakdown(
+    breakdown: &BTreeMap<String, FileGuidanceEvalBreakdown>,
+) -> String {
     if breakdown.is_empty() {
         return "none".to_string();
     }
@@ -595,19 +643,52 @@ fn render_file_guidance_breakdown(breakdown: &BTreeMap<String, FileGuidanceEvalB
     });
 
     rows.into_iter()
-        .take(5)
         .map(|(target, stats)| {
             format!(
                 "{}: hit {}/{}, gated {}/{}",
-                target,
-                stats.hits,
-                stats.predictions,
-                stats.gated_points,
-                stats.edit_points,
+                target, stats.hits, stats.predictions, stats.gated_points, stats.edit_points,
             )
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn trim_repair_breakdown(
+    breakdown: &BTreeMap<String, RepairEvalBreakdown>,
+    top_breakdowns: usize,
+) -> BTreeMap<String, RepairEvalBreakdown> {
+    let mut rows: Vec<_> = breakdown.iter().collect();
+    rows.sort_by(|(tool_a, stats_a), (tool_b, stats_b)| {
+        stats_b
+            .opportunities
+            .cmp(&stats_a.opportunities)
+            .then_with(|| stats_b.predictions.cmp(&stats_a.predictions))
+            .then_with(|| tool_a.cmp(tool_b))
+    });
+
+    rows.into_iter()
+        .take(top_breakdowns)
+        .map(|(tool, stats)| (tool.clone(), stats.clone()))
+        .collect()
+}
+
+fn trim_file_guidance_breakdown(
+    breakdown: &BTreeMap<String, FileGuidanceEvalBreakdown>,
+    top_breakdowns: usize,
+) -> BTreeMap<String, FileGuidanceEvalBreakdown> {
+    let mut rows: Vec<_> = breakdown.iter().collect();
+    rows.sort_by(|(target_a, stats_a), (target_b, stats_b)| {
+        stats_b
+            .edit_points
+            .cmp(&stats_a.edit_points)
+            .then_with(|| stats_b.predictions.cmp(&stats_a.predictions))
+            .then_with(|| target_a.cmp(target_b))
+    });
+
+    rows.into_iter()
+        .take(top_breakdowns)
+        .map(|(target, stats)| (target.clone(), stats.clone()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -649,11 +730,23 @@ mod tests {
         let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
         for session in sessions {
             for (capability, outcome, context) in [
-                ("claude-code/Read", Outcome::Succeeded, "read file: helper.rs"),
+                (
+                    "claude-code/Read",
+                    Outcome::Succeeded,
+                    "read file: helper.rs",
+                ),
                 ("claude-code/Edit", Outcome::Succeeded, "edit file: main.rs"),
-                ("claude-code/Edit", Outcome::Succeeded, "edit file: helper.rs"),
+                (
+                    "claude-code/Edit",
+                    Outcome::Succeeded,
+                    "edit file: helper.rs",
+                ),
                 ("claude-code/Bash", Outcome::Failed, "bash: cargo test"),
-                ("claude-code/Read", Outcome::Succeeded, "read file: Cargo.toml"),
+                (
+                    "claude-code/Read",
+                    Outcome::Succeeded,
+                    "read file: Cargo.toml",
+                ),
                 ("claude-code/Bash", Outcome::Succeeded, "bash: cargo test"),
             ] {
                 let trace = make_trace(&identity, capability, outcome, context, session, timestamp);
@@ -724,8 +817,97 @@ mod tests {
         assert_eq!(summary.sessions_scored, 1);
         assert_eq!(summary.preparation_gated_edit_points, 1);
         assert_eq!(summary.adjacency_gated_edit_points, 1);
-        assert!(summary
-            .diagnosis()
-            .contains("local repetition gate"));
+        assert!(summary.diagnosis().contains("local repetition gate"));
+    }
+
+    #[test]
+    fn focused_summary_trims_and_filters_breakdowns() {
+        let summary = SignalEvalSummary {
+            sessions_considered: 3,
+            sessions_scored: 2,
+            edit_points: 10,
+            edit_points_with_signal: 2,
+            repair_opportunities: 2,
+            repair_predictions: 1,
+            repair_first_step_hits: 1,
+            repair_exact_hits: 0,
+            preparation_gated_edit_points: 4,
+            preparation_predictions: 1,
+            preparation_hits: 0,
+            adjacency_gated_edit_points: 4,
+            adjacency_predictions: 1,
+            adjacency_hits: 0,
+            repair_breakdown: BTreeMap::from([
+                (
+                    "Bash".to_string(),
+                    RepairEvalBreakdown {
+                        opportunities: 3,
+                        predictions: 1,
+                        first_step_hits: 1,
+                        exact_hits: 0,
+                    },
+                ),
+                (
+                    "TaskUpdate".to_string(),
+                    RepairEvalBreakdown {
+                        opportunities: 1,
+                        predictions: 0,
+                        first_step_hits: 0,
+                        exact_hits: 0,
+                    },
+                ),
+            ]),
+            preparation_breakdown: BTreeMap::from([
+                (
+                    "main.rs".to_string(),
+                    FileGuidanceEvalBreakdown {
+                        edit_points: 8,
+                        gated_points: 6,
+                        predictions: 1,
+                        hits: 0,
+                    },
+                ),
+                (
+                    "lib.rs".to_string(),
+                    FileGuidanceEvalBreakdown {
+                        edit_points: 2,
+                        gated_points: 2,
+                        predictions: 0,
+                        hits: 0,
+                    },
+                ),
+            ]),
+            adjacency_breakdown: BTreeMap::from([
+                (
+                    "helper.rs".to_string(),
+                    FileGuidanceEvalBreakdown {
+                        edit_points: 5,
+                        gated_points: 2,
+                        predictions: 1,
+                        hits: 0,
+                    },
+                ),
+                (
+                    "mod.rs".to_string(),
+                    FileGuidanceEvalBreakdown {
+                        edit_points: 1,
+                        gated_points: 1,
+                        predictions: 0,
+                        hits: 0,
+                    },
+                ),
+            ]),
+        };
+
+        let repair_only = summary.clone().focused(EvalFocus::Repair, 1);
+        assert_eq!(repair_only.repair_breakdown.len(), 1);
+        assert!(repair_only.repair_breakdown.contains_key("Bash"));
+        assert!(repair_only.preparation_breakdown.is_empty());
+        assert!(repair_only.adjacency_breakdown.is_empty());
+
+        let all_top_one = summary.focused(EvalFocus::All, 1);
+        assert_eq!(all_top_one.repair_breakdown.len(), 1);
+        assert_eq!(all_top_one.preparation_breakdown.len(), 1);
+        assert_eq!(all_top_one.adjacency_breakdown.len(), 1);
     }
 }

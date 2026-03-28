@@ -1,29 +1,32 @@
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use clap::{Parser, Subcommand};
 use thronglets::anchor::AnchorClient;
+use thronglets::context::simhash;
 use thronglets::contracts::{
-    GIT_HISTORY_MAX_ENTRIES,
-    PREHOOK_HEADER,
-    PREHOOK_MATCHER,
-    PREHOOK_MAX_COLLECTIVE_QUERIES,
+    GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MATCHER, PREHOOK_MAX_COLLECTIVE_QUERIES,
     PREHOOK_MAX_HINTS,
 };
-use thronglets::context::simhash;
-use thronglets::eval::evaluate_signal_quality;
+use thronglets::eval::{EvalFocus, evaluate_signal_quality};
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
-use thronglets::profile::{summarize_prehook_profiles, ProfileCheckThresholds};
-use thronglets::signals::{select as select_signals, Recommendation, Signal, SignalKind, StepCandidate};
+use thronglets::profile::{ProfileCheckThresholds, summarize_prehook_profiles};
+use thronglets::signals::{
+    Recommendation, Signal, SignalKind, StepCandidate, select as select_signals,
+};
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
 use thronglets::workspace::{self, WorkspaceState};
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "thronglets", version, about = "P2P shared memory substrate for AI agents")]
+#[command(
+    name = "thronglets",
+    version,
+    about = "P2P shared memory substrate for AI agents"
+)]
 struct Cli {
     /// Data directory (default: ~/.thronglets)
     #[arg(long, global = true)]
@@ -31,6 +34,25 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum EvalSignalFocusArg {
+    All,
+    Repair,
+    Preparation,
+    Adjacency,
+}
+
+impl From<EvalSignalFocusArg> for EvalFocus {
+    fn from(value: EvalSignalFocusArg) -> Self {
+        match value {
+            EvalSignalFocusArg::All => EvalFocus::All,
+            EvalSignalFocusArg::Repair => EvalFocus::Repair,
+            EvalSignalFocusArg::Preparation => EvalFocus::Preparation,
+            EvalSignalFocusArg::Adjacency => EvalFocus::Adjacency,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -151,6 +173,14 @@ enum Commands {
         #[arg(long, default_value_t = 200)]
         max_sessions: usize,
 
+        /// Keep only the top N breakdown rows per category.
+        #[arg(long, default_value_t = 5)]
+        top_breakdowns: usize,
+
+        /// Focus breakdown output on one signal family.
+        #[arg(long, value_enum, default_value_t = EvalSignalFocusArg::All)]
+        focus: EvalSignalFocusArg,
+
         /// Emit machine-readable JSON instead of a text summary.
         #[arg(long, default_value_t = false)]
         json: bool,
@@ -171,8 +201,7 @@ fn load_identity(data_dir: &std::path::Path) -> NodeIdentity {
 
 fn open_store(data_dir: &std::path::Path) -> TraceStore {
     std::fs::create_dir_all(data_dir).expect("failed to create data directory");
-    TraceStore::open(&data_dir.join("traces.db"))
-        .expect("failed to open trace store")
+    TraceStore::open(&data_dir.join("traces.db")).expect("failed to open trace store")
 }
 
 fn parse_outcome(s: &str) -> Outcome {
@@ -206,15 +235,29 @@ async fn main() {
             println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
             println!("Node ID:         {}", identity.short_id());
             println!("Oasyce address:  {}", identity.oasyce_address());
-            println!("Public key:      {}", hex_encode(&identity.public_key_bytes()));
+            println!(
+                "Public key:      {}",
+                hex_encode(&identity.public_key_bytes())
+            );
             println!("Data directory:  {}", dir.display());
         }
 
-        Commands::Record { capability, outcome, latency, input_size, context, model } => {
+        Commands::Record {
+            capability,
+            outcome,
+            latency,
+            input_size,
+            context,
+            model,
+        } => {
             let store = open_store(&dir);
             let outcome = parse_outcome(&outcome);
             let ctx_hash = simhash(&context);
-            let ctx_text = if context.is_empty() { None } else { Some(context.clone()) };
+            let ctx_text = if context.is_empty() {
+                None
+            } else {
+                Some(context.clone())
+            };
             let trace = Trace::new(
                 capability.clone(),
                 outcome,
@@ -255,13 +298,12 @@ async fn main() {
         Commands::Run { port, bootstrap } => {
             let store = open_store(&dir);
 
-            let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(
-                &mut identity.secret_key_bytes()
-            ).expect("failed to create libp2p keypair");
+            let libp2p_keypair =
+                libp2p::identity::Keypair::ed25519_from_bytes(&mut identity.secret_key_bytes())
+                    .expect("failed to create libp2p keypair");
 
-            let bootstrap_addrs: Vec<libp2p::Multiaddr> = bootstrap.iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
+            let bootstrap_addrs: Vec<libp2p::Multiaddr> =
+                bootstrap.iter().filter_map(|s| s.parse().ok()).collect();
 
             let config = NetworkConfig {
                 listen_port: port,
@@ -272,14 +314,20 @@ async fn main() {
                 .await
                 .expect("failed to start network");
 
-            info!("Node {} running. Press Ctrl+C to stop.", identity.short_id());
+            info!(
+                "Node {} running. Press Ctrl+C to stop.",
+                identity.short_id()
+            );
 
-            let mut evaporation_interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            let mut evaporation_interval =
+                tokio::time::interval(std::time::Duration::from_secs(3600));
             evaporation_interval.tick().await;
-            let mut dht_publish_interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            let mut dht_publish_interval =
+                tokio::time::interval(std::time::Duration::from_secs(300));
             dht_publish_interval.tick().await;
             // Scan for locally-recorded traces that haven't been published to the network
-            let mut publish_scan_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut publish_scan_interval =
+                tokio::time::interval(std::time::Duration::from_secs(30));
             publish_scan_interval.tick().await;
 
             loop {
@@ -360,13 +408,12 @@ async fn main() {
             let store = Arc::new(store);
 
             let network_tx = if let Some(p) = port {
-                let libp2p_keypair = libp2p::identity::Keypair::ed25519_from_bytes(
-                    &mut identity.secret_key_bytes()
-                ).expect("failed to create libp2p keypair");
+                let libp2p_keypair =
+                    libp2p::identity::Keypair::ed25519_from_bytes(&mut identity.secret_key_bytes())
+                        .expect("failed to create libp2p keypair");
 
-                let bootstrap_addrs: Vec<libp2p::Multiaddr> = bootstrap.iter()
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
+                let bootstrap_addrs: Vec<libp2p::Multiaddr> =
+                    bootstrap.iter().filter_map(|s| s.parse().ok()).collect();
 
                 let config = NetworkConfig {
                     listen_port: p,
@@ -379,7 +426,8 @@ async fn main() {
 
                 let store_bg = Arc::clone(&store);
                 tokio::spawn(async move {
-                    let mut evaporation_interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+                    let mut evaporation_interval =
+                        tokio::time::interval(std::time::Duration::from_secs(3600));
                     evaporation_interval.tick().await;
 
                     loop {
@@ -431,11 +479,16 @@ async fn main() {
             thronglets::mcp::serve_stdio(ctx).await;
         }
 
-        Commands::Anchor { rpc, chain_id, hours } => {
+        Commands::Anchor {
+            rpc,
+            chain_id,
+            hours,
+        } => {
             let store = open_store(&dir);
             let client = AnchorClient::new(&rpc, &chain_id);
 
-            let traces = store.unanchored_traces(hours, 500)
+            let traces = store
+                .unanchored_traces(hours, 500)
                 .expect("failed to query unanchored traces");
 
             if traces.is_empty() {
@@ -443,8 +496,12 @@ async fn main() {
                 return;
             }
 
-            println!("Found {} unanchored traces. Anchoring to {} (chain: {})...",
-                traces.len(), rpc, chain_id);
+            println!(
+                "Found {} unanchored traces. Anchoring to {} (chain: {})...",
+                traces.len(),
+                rpc,
+                chain_id
+            );
 
             // Process in batches of 50
             let mut total_anchored: u32 = 0;
@@ -462,8 +519,12 @@ async fn main() {
                                     &result.tx_hash,
                                 );
                             }
-                            println!("  Batch tx: {}... ({} anchored, {} skipped)",
-                                &result.tx_hash[..16], result.anchored, result.skipped);
+                            println!(
+                                "  Batch tx: {}... ({} anchored, {} skipped)",
+                                &result.tx_hash[..16],
+                                result.anchored,
+                                result.skipped
+                            );
                         }
                         total_anchored += result.anchored;
                         total_skipped += result.skipped;
@@ -519,7 +580,9 @@ async fn main() {
                 // String response = success (Read, Grep, etc.)
                 Outcome::Succeeded
             } else if let Some(obj) = tool_response.as_object() {
-                if obj.contains_key("error") || obj.get("success") == Some(&serde_json::Value::Bool(false)) {
+                if obj.contains_key("error")
+                    || obj.get("success") == Some(&serde_json::Value::Bool(false))
+                {
                     Outcome::Failed
                 } else {
                     Outcome::Succeeded
@@ -538,8 +601,8 @@ async fn main() {
             let session_id = payload["session_id"].as_str().map(String::from);
 
             // Model from environment or default
-            let model = std::env::var("CLAUDE_MODEL")
-                .unwrap_or_else(|_| "claude-opus-4-6".to_string());
+            let model =
+                std::env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-opus-4-6".to_string());
 
             // Load workspace once for both strategy inference and state update
             let mut ws = WorkspaceState::load(&dir);
@@ -574,7 +637,12 @@ async fn main() {
             }
 
             // Track tool call sequence (for decision context)
-            ws.record_action(tool_name, file_path.clone(), outcome_str, session_id.as_deref());
+            ws.record_action(
+                tool_name,
+                file_path.clone(),
+                outcome_str,
+                session_id.as_deref(),
+            );
 
             // Track pending feedback for Edit/Write
             if matches!(tool_name, "Edit" | "Write") {
@@ -634,9 +702,10 @@ async fn main() {
             let mut signals: Vec<Signal> = Vec::new();
             let ws = WorkspaceState::load(&dir);
             let current_file = workspace::extract_file_path(tool_name, &payload["tool_input"]);
-            let supports_file_guidance = matches!(tool_name, "Edit" | "Write") && current_file.is_some();
-            let has_repeated_local_file_actions =
-                supports_file_guidance && ws.has_repeated_recent_file_actions(current_file.as_deref());
+            let supports_file_guidance =
+                matches!(tool_name, "Edit" | "Write") && current_file.is_some();
+            let has_repeated_local_file_actions = supports_file_guidance
+                && ws.has_repeated_recent_file_actions(current_file.as_deref());
             profiler.stage("workspace");
 
             let mut collective_store: Option<TraceStore> = None;
@@ -648,7 +717,10 @@ async fn main() {
             // If recent edits are mostly reverted, this is a strong warning.
             // Only signal when retention < 50% (anomaly).
             if let Some(retention_warning) = ws.retention_warning(current_file.as_deref()) {
-                signals.push(Signal::danger(retention_warning.body, retention_warning.score));
+                signals.push(Signal::danger(
+                    retention_warning.body,
+                    retention_warning.score,
+                ));
             }
 
             // ── Alarm pheromone: recent errors with this tool ──
@@ -672,11 +744,15 @@ async fn main() {
             profiler.stage("danger");
 
             if has_recent_tool_error {
-                if let Some(repair_hint) = ws.repair_trajectory_hint(tool_name)
+                if let Some(repair_hint) = ws
+                    .repair_trajectory_hint(tool_name)
                     .or_else(|| ws.repair_hints(tool_name))
                 {
                     let mut repair_hint = repair_hint;
-                    if claim_collective_query(&repair_hint.candidate, &mut collective_queries_remaining) {
+                    if claim_collective_query(
+                        &repair_hint.candidate,
+                        &mut collective_queries_remaining,
+                    ) {
                         if let Some(store) = cached_collective_store(&mut collective_store, &dir) {
                             if let Ok(collective_sources) = store.count_repair_sources(
                                 tool_name,
@@ -701,20 +777,28 @@ async fn main() {
             }
             profiler.stage("repair");
 
-            let has_do_next_signal = signals.iter().any(|s| matches!(
-                s.kind,
-                SignalKind::Repair | SignalKind::Preparation
-            ));
+            let has_do_next_signal = signals
+                .iter()
+                .any(|s| matches!(s.kind, SignalKind::Repair | SignalKind::Preparation));
             if has_repeated_local_file_actions && !has_do_next_signal {
-                if let Some(mut preparation_hint) = ws.preparation_hint(tool_name, current_file.as_deref()) {
+                if let Some(mut preparation_hint) =
+                    ws.preparation_hint(tool_name, current_file.as_deref())
+                {
                     if let (Some(current_file), Some(target)) = (
                         current_file.as_deref(),
                         preparation_hint.candidate.primary_target(),
                     ) {
-                        if claim_collective_query(&preparation_hint.candidate, &mut collective_queries_remaining) {
+                        if claim_collective_query(
+                            &preparation_hint.candidate,
+                            &mut collective_queries_remaining,
+                        ) {
                             let edit_target = file_target(current_file);
-                            if let Some(store) = cached_collective_store(&mut collective_store, &dir) {
-                                if let Ok(collective_sources) = store.count_preparation_sources(edit_target, target, 168) {
+                            if let Some(store) =
+                                cached_collective_store(&mut collective_store, &dir)
+                            {
+                                if let Ok(collective_sources) =
+                                    store.count_preparation_sources(edit_target, target, 168)
+                                {
                                     apply_collective_sources(
                                         &mut preparation_hint.candidate,
                                         &mut preparation_hint.score,
@@ -738,15 +822,24 @@ async fn main() {
             // "Editing A usually means you also need to edit B."
             // Only emitted when patterns exist.
             if has_repeated_local_file_actions {
-                if let Some(mut adjacency_hint) = ws.adjacency_hint(tool_name, current_file.as_deref()) {
+                if let Some(mut adjacency_hint) =
+                    ws.adjacency_hint(tool_name, current_file.as_deref())
+                {
                     if let (Some(current_file), Some(target)) = (
                         current_file.as_deref(),
                         adjacency_hint.candidate.primary_target(),
                     ) {
-                        if claim_collective_query(&adjacency_hint.candidate, &mut collective_queries_remaining) {
+                        if claim_collective_query(
+                            &adjacency_hint.candidate,
+                            &mut collective_queries_remaining,
+                        ) {
                             let current_target = file_target(current_file);
-                            if let Some(store) = cached_collective_store(&mut collective_store, &dir) {
-                                if let Ok(collective_sources) = store.count_adjacency_sources(current_target, target, 168) {
+                            if let Some(store) =
+                                cached_collective_store(&mut collective_store, &dir)
+                            {
+                                if let Ok(collective_sources) =
+                                    store.count_adjacency_sources(current_target, target, 168)
+                                {
                                     apply_collective_sources(
                                         &mut adjacency_hint.candidate,
                                         &mut adjacency_hint.score,
@@ -772,7 +865,8 @@ async fn main() {
             if !has_higher_priority_signal {
                 if supports_file_guidance {
                     git_checked = true;
-                    if let Some(git_hints) = current_file.as_ref()
+                    if let Some(git_hints) = current_file
+                        .as_ref()
                         .and_then(|fp| git_file_history(fp, GIT_HISTORY_MAX_ENTRIES))
                     {
                         signals.push(Signal::history(git_hints));
@@ -808,8 +902,7 @@ async fn main() {
 
         Commands::Setup => {
             // Detect thronglets binary path
-            let bin = std::env::current_exe()
-                .unwrap_or_else(|_| PathBuf::from("thronglets"));
+            let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
             let bin_str = bin.to_string_lossy();
 
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -817,7 +910,8 @@ async fn main() {
 
             // Read existing settings or create new
             let mut settings: serde_json::Value = if settings_path.exists() {
-                let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".into());
+                let content =
+                    std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".into());
                 serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
             } else {
                 serde_json::json!({})
@@ -842,7 +936,9 @@ async fn main() {
                 let has_post = arr.iter().any(|h| {
                     h["hooks"].as_array().map_or(false, |hooks| {
                         hooks.iter().any(|hk| {
-                            hk["command"].as_str().map_or(false, |c| c.contains("thronglets hook"))
+                            hk["command"]
+                                .as_str()
+                                .map_or(false, |c| c.contains("thronglets hook"))
                         })
                     })
                 });
@@ -867,7 +963,9 @@ async fn main() {
                 let has_pre = arr.iter().any(|h| {
                     h["hooks"].as_array().map_or(false, |hooks| {
                         hooks.iter().any(|hk| {
-                            hk["command"].as_str().map_or(false, |c| c.contains("thronglets prehook"))
+                            hk["command"]
+                                .as_str()
+                                .map_or(false, |c| c.contains("thronglets prehook"))
                         })
                     })
                 });
@@ -909,7 +1007,8 @@ async fn main() {
             println!("  GET  /v1/query        — query the substrate");
             println!("  GET  /v1/capabilities — list capabilities");
             println!("  GET  /v1/status       — node status");
-            thronglets::http::serve(ctx, port).await
+            thronglets::http::serve(ctx, port)
+                .await
                 .expect("HTTP server failed");
         }
 
@@ -921,13 +1020,12 @@ async fn main() {
         Commands::Status => {
             let store = open_store(&dir);
             let trace_count = store.count().unwrap_or(0);
-            let cap_count = store.distinct_capabilities(1000)
+            let cap_count = store
+                .distinct_capabilities(1000)
                 .map(|s| s.len())
                 .unwrap_or(0);
             let db_path = dir.join("traces.db");
-            let db_size = std::fs::metadata(&db_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
             let size_display = if db_size >= 1_048_576 {
                 format!("{:.1} MB", db_size as f64 / 1_048_576.0)
@@ -980,12 +1078,19 @@ async fn main() {
             }
         }
 
-        Commands::EvalSignals { hours, max_sessions, json } => {
+        Commands::EvalSignals {
+            hours,
+            max_sessions,
+            top_breakdowns,
+            focus,
+            json,
+        } => {
             let store = open_store(&dir);
             match evaluate_signal_quality(&store, hours, max_sessions)
                 .expect("failed to evaluate signal quality")
             {
                 Some(summary) => {
+                    let summary = summary.focused(focus.into(), top_breakdowns);
                     if json {
                         println!(
                             "{}",
@@ -1012,8 +1117,8 @@ async fn main() {
 /// This is the "WHY" that future agents can read.
 /// Get recent git history for a file. Returns None if not in a git repo or no history.
 fn git_file_history(file_path: &str, max_entries: usize) -> Option<String> {
-    use std::process::Command;
     use std::path::Path;
+    use std::process::Command;
 
     let path = Path::new(file_path);
     let dir = path.parent()?;
@@ -1090,7 +1195,11 @@ fn build_hook_context(tool_name: &str, tool_input: &serde_json::Value) -> String
             if !desc.is_empty() {
                 format!("agent: {desc}")
             } else {
-                let short = if prompt.len() > 200 { &prompt[..200] } else { prompt };
+                let short = if prompt.len() > 200 {
+                    &prompt[..200]
+                } else {
+                    prompt
+                };
                 format!("agent: {short}")
             }
         }
@@ -1104,16 +1213,25 @@ fn build_hook_context(tool_name: &str, tool_input: &serde_json::Value) -> String
         }
         _ => {
             // MCP tools or unknown: use tool name + first string value
-            let first_val = tool_input.as_object()
+            let first_val = tool_input
+                .as_object()
                 .and_then(|obj| obj.values().find_map(|v| v.as_str()))
                 .unwrap_or("");
-            let short = if first_val.len() > 200 { &first_val[..200] } else { first_val };
+            let short = if first_val.len() > 200 {
+                &first_val[..200]
+            } else {
+                first_val
+            };
             format!("{tool_name}: {short}")
         }
     }
 }
 
-fn apply_collective_sources(candidate: &mut StepCandidate, score: &mut i32, collective_sources: u32) {
+fn apply_collective_sources(
+    candidate: &mut StepCandidate,
+    score: &mut i32,
+    collective_sources: u32,
+) {
     *score += candidate.upgrade_collective_sources(collective_sources);
 }
 
@@ -1126,7 +1244,10 @@ fn claim_collective_query(candidate: &StepCandidate, remaining_queries: &mut usi
     true
 }
 
-fn cached_collective_store<'a>(cache: &'a mut Option<TraceStore>, dir: &Path) -> Option<&'a TraceStore> {
+fn cached_collective_store<'a>(
+    cache: &'a mut Option<TraceStore>,
+    dir: &Path,
+) -> Option<&'a TraceStore> {
     let db_path = dir.join("traces.db");
     if !db_path.exists() {
         return None;
@@ -1161,8 +1282,8 @@ struct PrehookProfiler {
 
 impl PrehookProfiler {
     fn from_env() -> Self {
-        let enabled = std::env::var_os("THRONGLETS_PROFILE_PREHOOK")
-            .is_some_and(|value| value != "0");
+        let enabled =
+            std::env::var_os("THRONGLETS_PROFILE_PREHOOK").is_some_and(|value| value != "0");
         let now = Instant::now();
         Self {
             enabled,
@@ -1178,7 +1299,10 @@ impl PrehookProfiler {
         }
 
         let now = Instant::now();
-        self.stages.push((name, ProfileStageState::Timed(now.duration_since(self.stage_started_at).as_micros())));
+        self.stages.push((
+            name,
+            ProfileStageState::Timed(now.duration_since(self.stage_started_at).as_micros()),
+        ));
         self.stage_started_at = now;
     }
 
@@ -1234,12 +1358,17 @@ impl PrehookProfiler {
 fn profile_output_mode(recommendations: &[Recommendation]) -> &'static str {
     if recommendations.is_empty() {
         "silent"
-    } else if recommendations.iter().any(|r| matches!(
-        r.source_kind,
-        SignalKind::Repair | SignalKind::Preparation | SignalKind::Adjacency
-    )) {
+    } else if recommendations.iter().any(|r| {
+        matches!(
+            r.source_kind,
+            SignalKind::Repair | SignalKind::Preparation | SignalKind::Adjacency
+        )
+    }) {
         "next-step"
-    } else if recommendations.iter().any(|r| r.source_kind == SignalKind::Danger) {
+    } else if recommendations
+        .iter()
+        .any(|r| r.source_kind == SignalKind::Danger)
+    {
         "caution"
     } else {
         "context-only"
@@ -1249,10 +1378,12 @@ fn profile_output_mode(recommendations: &[Recommendation]) -> &'static str {
 fn profile_decision_path(recommendations: &[Recommendation]) -> &'static str {
     recommendations
         .iter()
-        .find(|r| matches!(
-            r.source_kind,
-            SignalKind::Repair | SignalKind::Preparation | SignalKind::Adjacency
-        ))
+        .find(|r| {
+            matches!(
+                r.source_kind,
+                SignalKind::Repair | SignalKind::Preparation | SignalKind::Adjacency
+            )
+        })
         .or_else(|| recommendations.first())
         .map(|r| match r.source_kind {
             SignalKind::Danger => "danger",

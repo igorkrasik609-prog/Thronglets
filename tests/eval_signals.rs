@@ -40,11 +40,23 @@ fn eval_signals_reports_holdout_metrics() {
     let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
     for session in ["s1", "s2", "s3"] {
         for (capability, outcome, context) in [
-            ("claude-code/Read", Outcome::Succeeded, "read file: helper.rs"),
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: helper.rs",
+            ),
             ("claude-code/Edit", Outcome::Succeeded, "edit file: main.rs"),
-            ("claude-code/Edit", Outcome::Succeeded, "edit file: helper.rs"),
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                "edit file: helper.rs",
+            ),
             ("claude-code/Bash", Outcome::Failed, "bash: cargo test"),
-            ("claude-code/Read", Outcome::Succeeded, "read file: Cargo.toml"),
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: Cargo.toml",
+            ),
             ("claude-code/Bash", Outcome::Succeeded, "bash: cargo test"),
         ] {
             let trace = make_trace(&identity, capability, outcome, context, session, timestamp);
@@ -89,11 +101,23 @@ fn eval_signals_can_emit_json() {
     let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
     for session in ["s1", "s2", "s3"] {
         for (capability, outcome, context) in [
-            ("claude-code/Read", Outcome::Succeeded, "read file: helper.rs"),
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: helper.rs",
+            ),
             ("claude-code/Edit", Outcome::Succeeded, "edit file: main.rs"),
-            ("claude-code/Edit", Outcome::Succeeded, "edit file: helper.rs"),
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                "edit file: helper.rs",
+            ),
             ("claude-code/Bash", Outcome::Failed, "bash: cargo test"),
-            ("claude-code/Read", Outcome::Succeeded, "read file: Cargo.toml"),
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: Cargo.toml",
+            ),
             ("claude-code/Bash", Outcome::Succeeded, "bash: cargo test"),
         ] {
             let trace = make_trace(&identity, capability, outcome, context, session, timestamp);
@@ -127,4 +151,86 @@ fn eval_signals_can_emit_json() {
     assert_eq!(parsed["sessions_considered"], 3);
     assert!(parsed["repair_breakdown"]["Bash"].is_object());
     assert!(parsed["preparation_breakdown"]["main.rs"].is_object());
+}
+
+#[test]
+fn eval_signals_json_can_focus_and_trim_breakdowns() {
+    let dir = TempDir::new().unwrap();
+    let store = TraceStore::open(&dir.path().join("traces.db")).unwrap();
+    let identity = NodeIdentity::generate();
+
+    let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
+    for session in ["s1", "s2", "s3"] {
+        for (capability, outcome, context) in [
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: helper.rs",
+            ),
+            ("claude-code/Edit", Outcome::Succeeded, "edit file: main.rs"),
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                "edit file: helper.rs",
+            ),
+            ("claude-code/Bash", Outcome::Failed, "bash: cargo test"),
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                "read file: Cargo.toml",
+            ),
+            ("claude-code/Bash", Outcome::Succeeded, "bash: cargo test"),
+            (
+                "claude-code/TaskUpdate",
+                Outcome::Failed,
+                "TaskUpdate: plan",
+            ),
+        ] {
+            let trace = make_trace(&identity, capability, outcome, context, session, timestamp);
+            store.insert(&trace).unwrap();
+            timestamp += 1_000;
+        }
+        timestamp += 60_000;
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args([
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "eval-signals",
+            "--hours",
+            "168",
+            "--max-sessions",
+            "10",
+            "--json",
+            "--focus",
+            "repair",
+            "--top-breakdowns",
+            "1",
+        ])
+        .output()
+        .expect("spawn focused eval-signals --json");
+
+    assert!(
+        output.status.success(),
+        "focused eval-signals --json failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("parse focused eval-signals json");
+    let repair_keys = parsed["repair_breakdown"]
+        .as_object()
+        .expect("repair breakdown object");
+    let prep_keys = parsed["preparation_breakdown"]
+        .as_object()
+        .expect("preparation breakdown object");
+    let adjacency_keys = parsed["adjacency_breakdown"]
+        .as_object()
+        .expect("adjacency breakdown object");
+
+    assert_eq!(repair_keys.len(), 1);
+    assert!(repair_keys.contains_key("Bash"));
+    assert!(prep_keys.is_empty());
+    assert!(adjacency_keys.is_empty());
 }

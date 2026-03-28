@@ -89,6 +89,12 @@ thronglets eval-signals --hours 168 --max-sessions 200
 thronglets eval-signals --hours 168 --max-sessions 200 --json
 ```
 
+如果只想看某一类问题，不想把整仓库的 breakdown 全打出来，可以再加：
+
+```bash
+thronglets eval-signals --hours 168 --max-sessions 200 --focus repair --top-breakdowns 3
+```
+
 ## 为什么这很重要
 
 没有 Thronglets，你的 AI 对每个文件都是盲的。它不知道：

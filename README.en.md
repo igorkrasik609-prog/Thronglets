@@ -89,6 +89,12 @@ If you want machine-readable output for scripts or CI, add:
 thronglets eval-signals --hours 168 --max-sessions 200 --json
 ```
 
+If you only want one class of problem and do not want the full repository-wide breakdown, add:
+
+```bash
+thronglets eval-signals --hours 168 --max-sessions 200 --focus repair --top-breakdowns 3
+```
+
 ## Why This Matters
 
 Without Thronglets, your AI approaches every file blind. It doesn't know:
