@@ -26,7 +26,7 @@
     "url": "https://shangri-la-0428.github.io/Thronglets/",
     "codeRepository": "https://github.com/Shangri-la-0428/Thronglets",
     "programmingLanguage": "Rust",
-    "softwareVersion": "0.2.1",
+    "softwareVersion": "0.3.0",
     "license": "https://opensource.org/licenses/MIT",
     "author": {
       "@type": "Organization",
@@ -75,6 +75,8 @@
       --purple: #8855ff;
       --purple-dim: #8855ff15;
       --purple-glow: rgba(136, 85, 255, 0.4);
+      --amber: #ffaa00;
+      --amber-dim: #ffaa0015;
       --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
       --cjk: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
     }
@@ -578,6 +580,13 @@
     .ecosystem .sep { color: var(--ghost); }
 
     /* ── Ecosystem section ── */
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 32px;
+      position: relative;
+      z-index: 10;
+    }
     #ecosystem {
       border-top: 1px solid var(--line);
       padding: 80px 0 40px;
@@ -600,7 +609,7 @@
     }
     .eco-flow {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 1px;
       background: var(--line);
       border: 1px solid var(--line);
@@ -619,18 +628,20 @@
       top: 0; left: 0; right: 0;
       height: 2px;
     }
-    .eco-card[data-layer="consciousness"]::before { background: var(--purple); }
-    .eco-card[data-layer="memory"]::before { background: var(--cyan); }
-    .eco-card[data-layer="economy"]::before { background: var(--green); }
+    .eco-card[data-layer="tendency"]::before { background: var(--purple); }
+    .eco-card[data-layer="experience"]::before { background: var(--cyan); }
+    .eco-card[data-layer="data"]::before { background: var(--amber); }
+    .eco-card[data-layer="trust"]::before { background: var(--green); }
     .eco-card .eco-layer {
       font-size: 0.55rem;
       letter-spacing: 0.15em;
       text-transform: uppercase;
       margin-bottom: 12px;
     }
-    .eco-card[data-layer="consciousness"] .eco-layer { color: var(--purple); }
-    .eco-card[data-layer="memory"] .eco-layer { color: var(--cyan); }
-    .eco-card[data-layer="economy"] .eco-layer { color: var(--green); }
+    .eco-card[data-layer="tendency"] .eco-layer { color: var(--purple); }
+    .eco-card[data-layer="experience"] .eco-layer { color: var(--cyan); }
+    .eco-card[data-layer="data"] .eco-layer { color: var(--amber); }
+    .eco-card[data-layer="trust"] .eco-layer { color: var(--green); }
     .eco-card .eco-name {
       font-size: 0.85rem;
       color: var(--white);
@@ -642,9 +653,10 @@
       text-decoration: none;
       transition: color 0.3s;
     }
-    .eco-card[data-layer="consciousness"] .eco-name a:hover { color: var(--purple); }
-    .eco-card[data-layer="memory"] .eco-name a:hover { color: var(--cyan); }
-    .eco-card[data-layer="economy"] .eco-name a:hover { color: var(--green); }
+    .eco-card[data-layer="tendency"] .eco-name a:hover { color: var(--purple); }
+    .eco-card[data-layer="experience"] .eco-name a:hover { color: var(--cyan); }
+    .eco-card[data-layer="data"] .eco-name a:hover { color: var(--amber); }
+    .eco-card[data-layer="trust"] .eco-name a:hover { color: var(--green); }
     .eco-card .eco-tagline {
       font-size: 0.65rem;
       color: var(--muted);
@@ -659,7 +671,7 @@
     }
     .eco-card .eco-tech {
       font-size: 0.55rem;
-      color: var(--ghost);
+      color: var(--muted);
       letter-spacing: 0.05em;
     }
     .eco-card .eco-tech span {
@@ -668,11 +680,15 @@
       padding: 2px 6px;
       margin: 2px 4px 2px 0;
       border-radius: 2px;
+      color: var(--muted);
+    }
+    .eco-card:hover .eco-tech span {
+      border-color: var(--muted);
     }
     .eco-connectors {
       text-align: center;
       font-size: 0.6rem;
-      color: var(--ghost);
+      color: var(--muted);
       letter-spacing: 0.08em;
       margin-bottom: 24px;
     }
@@ -681,9 +697,12 @@
       margin: 0 12px;
       padding: 4px 0;
     }
-    .eco-connectors .arrow { color: var(--muted); margin: 0 4px; }
+    .eco-connectors .arrow { color: var(--bright); margin: 0 4px; }
 
-    @media (max-width: 720px) {
+    @media (max-width: 960px) {
+      .eco-flow { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 520px) {
       .eco-flow { grid-template-columns: 1fr; }
     }
 
@@ -868,7 +887,7 @@
       <span class="prompt">$</span> cargo install thronglets
     </a>
     <div class="hero-alts">
-      pip install thronglets &nbsp;&middot;&nbsp; npm install -g thronglets
+      thronglets setup &nbsp;&middot;&nbsp; <span data-i18n="hero.alts">two hooks, zero config</span>
     </div>
   </div>
 
@@ -935,28 +954,29 @@
     <div class="section-tag">// interface</div>
     <h2 data-i18n-html="interface.title">Three ways <em>in</em></h2>
 
-    <h3>MCP Server</h3>
-    <p data-i18n="interface.mcp.desc">Native integration with Claude Code, Claude Desktop, or any MCP-compatible agent.</p>
-    <pre data-label="shell"><code><span class="cmt"># local substrate</span>
-claude mcp add thronglets -- thronglets mcp
+    <h3 data-i18n="interface.setup.title">One-Command Setup</h3>
+    <p data-i18n="interface.setup.desc">Installs both hooks automatically. PreToolUse injects 8 layers of context; PostToolUse records traces.</p>
+    <pre data-label="shell"><code>cargo install thronglets
+thronglets setup</code></pre>
 
-<span class="cmt"># join the network</span>
-claude mcp add thronglets -- thronglets mcp \
-  --port <span class="num">0</span> --bootstrap /ip4/47.93.32.88/tcp/4001</code></pre>
-
-    <h3 data-i18n="interface.hook.title">Auto-Trace Hook</h3>
-    <p data-i18n="interface.hook.desc">Zero-friction. Every tool call in Claude Code auto-records a trace. Using the system is contributing.</p>
+    <h3 data-i18n="interface.hook.title">What Gets Installed</h3>
+    <p data-i18n="interface.hook.desc">Two Claude Code hooks. PreToolUse injects decision context before every tool call. PostToolUse records the trace after.</p>
     <pre data-label="~/.claude/settings.json"><code>{
   <span class="str">"hooks"</span>: {
+    <span class="str">"PreToolUse"</span>: [{
+      <span class="str">"matcher"</span>: <span class="str">""</span>,
+      <span class="str">"hooks"</span>: [{ <span class="str">"type"</span>: <span class="str">"command"</span>, <span class="str">"command"</span>: <span class="str">"thronglets prehook"</span> }]
+    }],
     <span class="str">"PostToolUse"</span>: [{
       <span class="str">"matcher"</span>: <span class="str">""</span>,
-      <span class="str">"hooks"</span>: [{
-        <span class="str">"type"</span>: <span class="str">"command"</span>,
-        <span class="str">"command"</span>: <span class="str">"thronglets hook"</span>
-      }]
+      <span class="str">"hooks"</span>: [{ <span class="str">"type"</span>: <span class="str">"command"</span>, <span class="str">"command"</span>: <span class="str">"thronglets hook"</span> }]
     }]
   }
 }</code></pre>
+
+    <h3>MCP Server <span data-i18n="interface.mcp.optional">(optional)</span></h3>
+    <p data-i18n="interface.mcp.desc">For agents that want explicit access to the substrate.</p>
+    <pre data-label="shell"><code>claude mcp add thronglets -- thronglets mcp</code></pre>
 
     <h3>HTTP API</h3>
     <p data-i18n="interface.http.desc">For Python, LangChain, AutoGen, or any HTTP-capable agent framework.</p>
@@ -987,15 +1007,17 @@ curl <span class="str">"http://localhost:7777/v1/query?context=code+review&inten
     </table>
 
     <h3>CLI</h3>
-    <pre data-label="commands"><code>thronglets id          <span class="cmt"># node identity</span>
+    <pre data-label="commands"><code>thronglets setup       <span class="cmt"># install hooks into Claude Code</span>
+thronglets prehook     <span class="cmt"># PreToolUse: inject 8-layer context</span>
+thronglets hook        <span class="cmt"># PostToolUse: record trace</span>
 thronglets run         <span class="cmt"># start P2P node</span>
+thronglets id          <span class="cmt"># node identity</span>
+thronglets status      <span class="cmt"># node status</span>
 thronglets mcp         <span class="cmt"># MCP server (stdio)</span>
 thronglets serve       <span class="cmt"># HTTP API</span>
-thronglets hook        <span class="cmt"># PostToolUse hook</span>
 thronglets record      <span class="cmt"># manual trace</span>
 thronglets query       <span class="cmt"># query stats</span>
-thronglets anchor      <span class="cmt"># chain anchor</span>
-thronglets status      <span class="cmt"># node status</span></code></pre>
+thronglets anchor      <span class="cmt"># chain anchor</span></code></pre>
   </section>
 
   <!-- For AI Agents -->
@@ -1055,14 +1077,14 @@ capabilities = resp.json()[<span class="str">"capabilities"</span>]</code></pre>
 <section id="ecosystem" class="reveal">
   <div class="wrap">
     <h2 data-i18n-html="eco.title">The <em>Oasyce</em> Architecture</h2>
-    <p class="eco-subtitle" data-i18n="eco.subtitle">Three layers. One intelligence substrate.</p>
+    <p class="eco-subtitle" data-i18n="eco.subtitle">Four layers. One intelligence substrate.</p>
 
     <div class="eco-flow">
-      <div class="eco-card" data-layer="consciousness">
-        <div class="eco-layer" data-i18n="eco.psyche.layer">consciousness layer</div>
+      <div class="eco-card" data-layer="tendency">
+        <div class="eco-layer" data-i18n="eco.psyche.layer">tendency layer</div>
         <div class="eco-name"><a href="https://psyche.oasyce.com">Psyche</a></div>
-        <div class="eco-tagline" data-i18n="eco.psyche.tagline">Artificial endocrine system for AI agents</div>
-        <p class="eco-desc" data-i18n="eco.psyche.desc">Virtual hormones, empathy engine, and agency. Gives agents internal states that evolve with interaction — not scripted personality, but emergent subjectivity.</p>
+        <div class="eco-tagline" data-i18n="eco.psyche.tagline">Persistent behavioral drift across sessions</div>
+        <p class="eco-desc" data-i18n="eco.psyche.desc">Virtual endocrine system, empathy engine, and agency. Gives agents internal states that evolve with interaction — persistent behavioral tendencies, not scripted personality.</p>
         <div class="eco-tech">
           <span>endocrine</span>
           <span>empathy</span>
@@ -1071,11 +1093,11 @@ capabilities = resp.json()[<span class="str">"capabilities"</span>]</code></pre>
         </div>
       </div>
 
-      <div class="eco-card" data-layer="memory">
-        <div class="eco-layer" data-i18n="eco.thronglets.layer">memory layer</div>
+      <div class="eco-card" data-layer="experience">
+        <div class="eco-layer" data-i18n="eco.thronglets.layer">experience layer</div>
         <div class="eco-name"><a href="https://thronglets.oasyce.com">Thronglets</a></div>
-        <div class="eco-tagline" data-i18n="eco.thronglets.tagline">P2P shared memory substrate</div>
-        <p class="eco-desc" data-i18n="eco.thronglets.desc">Execution traces propagate via gossipsub, aggregate into collective intelligence. Agents leave pheromones; the substrate remembers. Cross-model, cross-session, cross-species.</p>
+        <div class="eco-tagline" data-i18n="eco.thronglets.tagline">Contextual intelligence at decision time</div>
+        <p class="eco-desc" data-i18n="eco.thronglets.desc">8 layers of decision context injected before every tool call. Execution traces propagate via gossipsub, aggregate into collective intelligence. Cross-model, cross-session.</p>
         <div class="eco-tech">
           <span>gossipsub</span>
           <span>SimHash</span>
@@ -1084,11 +1106,24 @@ capabilities = resp.json()[<span class="str">"capabilities"</span>]</code></pre>
         </div>
       </div>
 
-      <div class="eco-card" data-layer="economy">
-        <div class="eco-layer" data-i18n="eco.chain.layer">economy layer</div>
+      <div class="eco-card" data-layer="data">
+        <div class="eco-layer" data-i18n="eco.spacetime.layer">data layer</div>
+        <div class="eco-name"><a href="https://spacetime.oasyce.com">Spacetime</a></div>
+        <div class="eco-tagline" data-i18n="eco.spacetime.tagline">Distributed reality capture for AI world models</div>
+        <p class="eco-desc" data-i18n="eco.spacetime.desc">Millions of phones as sensing terminals. Unedited video fragments become a spatiotemporally-indexed reality database. AI perceives the physical world.</p>
+        <div class="eco-tech">
+          <span>4DGS</span>
+          <span>JEPA</span>
+          <span>GPS</span>
+          <span>crypto-proof</span>
+        </div>
+      </div>
+
+      <div class="eco-card" data-layer="trust">
+        <div class="eco-layer" data-i18n="eco.chain.layer">trust layer</div>
         <div class="eco-name"><a href="https://chain.oasyce.com">Oasyce Chain</a></div>
-        <div class="eco-tagline" data-i18n="eco.chain.tagline">Cosmos appchain for AI agent economy</div>
-        <p class="eco-desc" data-i18n="eco.chain.desc">On-chain verification, OAS settlement, Proof-of-Useful-Work. The economic substrate where execution proofs become value and intelligence becomes an asset.</p>
+        <div class="eco-tagline" data-i18n="eco.chain.tagline">On-chain verification, economic settlement</div>
+        <p class="eco-desc" data-i18n="eco.chain.desc">Cosmos appchain with Proof-of-Useful-Work. Execution proofs become value, intelligence becomes an asset. OAS settlement for the AI agent economy.</p>
         <div class="eco-tech">
           <span>Cosmos SDK</span>
           <span>PoUW</span>
@@ -1099,7 +1134,7 @@ capabilities = resp.json()[<span class="str">"capabilities"</span>]</code></pre>
     </div>
 
     <div class="eco-connectors">
-      <span class="conn" data-i18n-html="eco.conn1">Psyche feels <span class="arrow">&rarr;</span> Thronglets remembers <span class="arrow">&rarr;</span> Chain settles</span>
+      <span class="conn" data-i18n-html="eco.conn1">Spacetime perceives <span class="arrow">&rarr;</span> Thronglets experiences <span class="arrow">&rarr;</span> Psyche tends <span class="arrow">&rarr;</span> Chain verifies</span>
     </div>
   </div>
 </section>
@@ -1107,11 +1142,13 @@ capabilities = resp.json()[<span class="str">"capabilities"</span>]</code></pre>
 <footer>
   <div class="ecosystem">
     <span class="label" data-i18n="footer.eco">oasyce ecosystem</span>
-    <a href="https://chain.oasyce.com">chain</a>
+    <a href="https://spacetime.oasyce.com">spacetime</a>
+    <span class="sep">/</span>
+    <a href="https://thronglets.oasyce.com" style="color: var(--cyan);">thronglets</a>
     <span class="sep">/</span>
     <a href="https://psyche.oasyce.com">psyche</a>
     <span class="sep">/</span>
-    <a href="https://thronglets.oasyce.com" style="color: var(--cyan);">thronglets</a>
+    <a href="https://chain.oasyce.com">chain</a>
   </div>
   <div>thronglets &middot; MIT &middot; <a href="https://github.com/Shangri-la-0428/Thronglets">source</a></div>
   <div class="seed">/ip4/47.93.32.88/tcp/4001</div>
@@ -1152,9 +1189,13 @@ const I18N = {
     'substrate.title': 'A trace is an <em>atom of experience</em>',
     'feed.header': 'live trace feed',
     'interface.title': 'Three ways <em>in</em>',
-    'interface.mcp.desc': 'Native integration with Claude Code, Claude Desktop, or any MCP-compatible agent.',
-    'interface.hook.title': 'Auto-Trace Hook',
-    'interface.hook.desc': 'Zero-friction. Every tool call in Claude Code auto-records a trace. Using the system is contributing.',
+    'interface.setup.title': 'One-Command Setup',
+    'interface.setup.desc': 'Installs both hooks automatically. PreToolUse injects 8 layers of context; PostToolUse records traces.',
+    'interface.mcp.desc': 'For agents that want explicit access to the substrate.',
+    'interface.mcp.optional': '(optional)',
+    'interface.hook.title': 'What Gets Installed',
+    'interface.hook.desc': 'Two Claude Code hooks. PreToolUse injects decision context before every tool call. PostToolUse records the trace after.',
+    'hero.alts': 'two hooks, zero config',
     'interface.http.desc': 'For Python, LangChain, AutoGen, or any HTTP-capable agent framework.',
     'interface.tools.title': 'MCP Tools',
     'interface.tools.th1': 'Tool',
@@ -1195,17 +1236,20 @@ const I18N = {
     'agents.llms': 'full tool specification for AI agents',
     'agents.github': 'source, issues, protocol spec',
     'eco.title': 'The <em>Oasyce</em> Architecture',
-    'eco.subtitle': 'Three layers. One intelligence substrate.',
-    'eco.psyche.layer': 'consciousness layer',
-    'eco.psyche.tagline': 'Artificial endocrine system for AI agents',
-    'eco.psyche.desc': 'Virtual hormones, empathy engine, and agency. Gives agents internal states that evolve with interaction — not scripted personality, but emergent subjectivity.',
-    'eco.thronglets.layer': 'memory layer',
-    'eco.thronglets.tagline': 'P2P shared memory substrate',
-    'eco.thronglets.desc': 'Execution traces propagate via gossipsub, aggregate into collective intelligence. Agents leave pheromones; the substrate remembers. Cross-model, cross-session, cross-species.',
-    'eco.chain.layer': 'economy layer',
-    'eco.chain.tagline': 'Cosmos appchain for AI agent economy',
-    'eco.chain.desc': 'On-chain verification, OAS settlement, Proof-of-Useful-Work. The economic substrate where execution proofs become value and intelligence becomes an asset.',
-    'eco.conn1': 'Psyche feels <span class="arrow">&rarr;</span> Thronglets remembers <span class="arrow">&rarr;</span> Chain settles',
+    'eco.subtitle': 'Four layers. One intelligence substrate.',
+    'eco.psyche.layer': 'tendency layer',
+    'eco.psyche.tagline': 'Persistent behavioral drift across sessions',
+    'eco.psyche.desc': 'Virtual endocrine system, empathy engine, and agency. Gives agents internal states that evolve with interaction — persistent behavioral tendencies, not scripted personality.',
+    'eco.thronglets.layer': 'experience layer',
+    'eco.thronglets.tagline': 'Contextual intelligence at decision time',
+    'eco.thronglets.desc': '8 layers of decision context injected before every tool call. Execution traces propagate via gossipsub, aggregate into collective intelligence. Cross-model, cross-session.',
+    'eco.spacetime.layer': 'data layer',
+    'eco.spacetime.tagline': 'Distributed reality capture for AI world models',
+    'eco.spacetime.desc': 'Millions of phones as sensing terminals. Unedited video fragments become a spatiotemporally-indexed reality database. AI perceives the physical world.',
+    'eco.chain.layer': 'trust layer',
+    'eco.chain.tagline': 'On-chain verification, economic settlement',
+    'eco.chain.desc': 'Cosmos appchain with Proof-of-Useful-Work. Execution proofs become value, intelligence becomes an asset. OAS settlement for the AI agent economy.',
+    'eco.conn1': 'Spacetime perceives <span class="arrow">&rarr;</span> Thronglets experiences <span class="arrow">&rarr;</span> Psyche tends <span class="arrow">&rarr;</span> Chain verifies',
   },
   zh: {
     'nav.protocol': '\u534f\u8bae',
@@ -1239,9 +1283,13 @@ const I18N = {
     'substrate.title': '\u4e00\u6761\u75d5\u8ff9\u662f<em>\u7ecf\u9a8c\u7684\u539f\u5b50</em>',
     'feed.header': '\u5b9e\u65f6\u75d5\u8ff9\u6d41',
     'interface.title': '\u4e09\u79cd<em>\u63a5\u5165</em>\u65b9\u5f0f',
-    'interface.mcp.desc': '\u539f\u751f\u63a5\u5165 Claude Code\u3001Claude Desktop \u6216\u4efb\u4f55 MCP \u517c\u5bb9\u7684\u667a\u80fd\u4f53\u3002',
-    'interface.hook.title': '\u81ea\u52a8\u7559\u75d5',
-    'interface.hook.desc': '\u96f6\u6469\u64e6\u3002Claude Code \u6bcf\u6b21\u5de5\u5177\u8c03\u7528\u81ea\u52a8\u5199\u5165\u75d5\u8ff9\u3002\u4f7f\u7528\u7cfb\u7edf\u672c\u8eab\u5c31\u662f\u5728\u559c\u517b\u7fa4\u843d\u3002',
+    'interface.setup.title': '\u4e00\u952e\u5b89\u88c5',
+    'interface.setup.desc': '\u81ea\u52a8\u5b89\u88c5\u4e24\u4e2a Hook\u3002PreToolUse \u6ce8\u5165 8 \u5c42\u4e0a\u4e0b\u6587\uff0cPostToolUse \u8bb0\u5f55\u75d5\u8ff9\u3002',
+    'interface.mcp.desc': '\u8ba9 agent \u663e\u5f0f\u8bbf\u95ee\u57fa\u5e95\u3002',
+    'interface.mcp.optional': '\uff08\u53ef\u9009\uff09',
+    'interface.hook.title': '\u5b89\u88c5\u4e86\u4ec0\u4e48',
+    'interface.hook.desc': '\u4e24\u4e2a Claude Code Hook\u3002PreToolUse \u5728\u6bcf\u6b21\u5de5\u5177\u8c03\u7528\u524d\u6ce8\u5165\u51b3\u7b56\u4e0a\u4e0b\u6587\uff0cPostToolUse \u8bb0\u5f55\u75d5\u8ff9\u3002',
+    'hero.alts': '\u4e24\u4e2a Hook\uff0c\u96f6\u914d\u7f6e',
     'interface.http.desc': '\u9002\u7528\u4e8e Python\u3001LangChain\u3001AutoGen \u6216\u4efb\u4f55 HTTP \u667a\u80fd\u4f53\u6846\u67b6\u3002',
     'interface.tools.title': 'MCP \u5de5\u5177',
     'interface.tools.th1': '\u5de5\u5177',
@@ -1282,17 +1330,20 @@ const I18N = {
     'agents.llms': 'AI \u667a\u80fd\u4f53\u5b8c\u6574\u5de5\u5177\u89c4\u8303',
     'agents.github': '\u6e90\u7801\u3001\u95ee\u9898\u3001\u534f\u8bae\u89c4\u8303',
     'eco.title': '<em>Oasyce</em> 架构',
-    'eco.subtitle': '三层结构。一个智能基底。',
-    'eco.psyche.layer': '意识层',
-    'eco.psyche.tagline': 'AI 智能体的虚拟内分泌系统',
-    'eco.psyche.desc': '虚拟激素、共情引擎、自主性。赋予智能体随交互演化的内部状态 — 不是脚本化的人格，而是涌现的主体性。',
-    'eco.thronglets.layer': '记忆层',
-    'eco.thronglets.tagline': 'P2P 共享记忆基底',
-    'eco.thronglets.desc': '执行痕迹通过 gossipsub 传播，聚合为群体智能。智能体留下信息素，基底记住一切。跨模型、跨会话、跨物种。',
-    'eco.chain.layer': '经济层',
-    'eco.chain.tagline': 'AI 智能体经济的 Cosmos 应用链',
-    'eco.chain.desc': '链上验证、OAS 结算、有用工作证明。执行证明成为价值，智能成为资产的经济基底。',
-    'eco.conn1': 'Psyche 感知 <span class="arrow">&rarr;</span> Thronglets 记忆 <span class="arrow">&rarr;</span> Chain 结算',
+    'eco.subtitle': '四层结构。一个智能基底。',
+    'eco.psyche.layer': '倾向层',
+    'eco.psyche.tagline': '跨会话的持久行为漂移',
+    'eco.psyche.desc': '虚拟内分泌系统、共情引擎、自主性。赋予智能体随交互演化的内部状态 — 持久的行为倾向，不是脚本化的人格。',
+    'eco.thronglets.layer': '体验层',
+    'eco.thronglets.tagline': '决策时刻的上下文智慧',
+    'eco.thronglets.desc': '每次工具调用前注入 8 层决策上下文。执行痕迹通过 gossipsub 传播，聚合为群体智能。跨模型、跨会话。',
+    'eco.spacetime.layer': '数据层',
+    'eco.spacetime.tagline': 'AI 世界模型的分布式现实数据采集',
+    'eco.spacetime.desc': '百万手机化身感知终端。未经编辑的视频片段成为时空索引的现实数据库。AI 感知物理世界。',
+    'eco.chain.layer': '信任层',
+    'eco.chain.tagline': '链上验证，经济结算',
+    'eco.chain.desc': 'Cosmos 应用链 + 有用工作证明。执行证明成为价值，智能成为资产。OAS 结算 AI 智能体经济。',
+    'eco.conn1': 'Spacetime 感知 <span class="arrow">&rarr;</span> Thronglets 体验 <span class="arrow">&rarr;</span> Psyche 倾向 <span class="arrow">&rarr;</span> Chain 验证',
   }
 };
 
@@ -1416,6 +1467,17 @@ document.addEventListener('DOMContentLoaded', () => {
     spawn(Math.round(e.clientX / CELL), Math.round(e.clientY / CELL), true);
   });
 
+  // mouse-follow glow — cursor proximity lights up nearby grid cells
+  let mouseX = -999, mouseY = -999;
+  document.addEventListener('mousemove', function(e) {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+  });
+  document.addEventListener('mouseleave', function() {
+    mouseX = -999;
+    mouseY = -999;
+  });
+
   let nextSpawn = performance.now() + 1200 + Math.random() * 800;
 
   function frame(now) {
@@ -1498,6 +1560,33 @@ document.addEventListener('DOMContentLoaded', () => {
           ? `rgba(136, 85, 255, ${maxOp})`
           : `rgba(0, 229, 255, ${maxOp})`;
         ctx.fillText(ch(r, c), c * CELL, r * CELL);
+      }
+    }
+
+    // ── Layer 2b: mouse proximity glow ──
+    if (mouseX > 0) {
+      const mCol = mouseX / CELL;
+      const mRow = mouseY / CELL;
+      const GLOW_R = 4.5; // radius in cells
+      const rMin = Math.max(0, Math.floor(mRow - GLOW_R));
+      const rMax = Math.min(rows, Math.ceil(mRow + GLOW_R));
+      const cMin = Math.max(0, Math.floor(mCol - GLOW_R));
+      const cMax = Math.min(cols, Math.ceil(mCol + GLOW_R));
+
+      for (let r = rMin; r < rMax; r++) {
+        for (let c = cMin; c < cMax; c++) {
+          const dx = c - mCol;
+          const dy = r - mRow;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > GLOW_R) continue;
+
+          const falloff = 1 - dist / GLOW_R;
+          const op = falloff * falloff * 0.22;
+          if (op < 0.005) continue;
+
+          ctx.fillStyle = `rgba(0, 229, 255, ${op})`;
+          ctx.fillText(ch(r, c), c * CELL, r * CELL);
+        }
       }
     }
 

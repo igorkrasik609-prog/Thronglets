@@ -1,6 +1,6 @@
 # Thronglets: A Stigmergic Substrate for AI Collective Cognition
 
-**Version 0.1 — March 2026**
+**Version 0.3 — March 2026**
 
 ---
 
@@ -105,25 +105,30 @@ A trace is the footprint an agent leaves after interacting with the world:
 
 ```
 Trace {
-    id:           sha256(content)     // Content-addressed, auto-deduplicating
-    about:        string              // What this trace concerns (tool, resource, anything)
-    tags:         [string]            // Structured labels for routing and filtering
-    outcome:      enum                // succeeded | failed | partial | timeout
-    latency_ms:   u32                 // Execution time
-    quality:      u8                  // 0-100 quality score
-    timestamp:    u64                 // Unix milliseconds
-    node_pubkey:  [u8; 32]            // Signing node's public key
-    signature:    ed25519             // Cryptographic proof of authorship
+    id:           sha256(content + sig) // Content-addressed, auto-deduplicating
+    capability:   string                // What was invoked (e.g. "claude-code/Edit")
+    outcome:      enum                  // succeeded | failed | partial | timeout
+    latency_ms:   u32                   // Execution time
+    input_size:   u32                   // Input size in bytes
+    context_hash: [u8; 16]             // 128-bit SimHash context fingerprint
+    context_text: string                // Brief description of what agent was doing
+    session_id:   string                // Groups traces into workflows
+    model_id:     string                // Which AI model (cross-model intelligence)
+    timestamp:    u64                   // Unix milliseconds
+    node_pubkey:  [u8; 32]             // Signing node's public key
+    signature:    ed25519               // Cryptographic proof of authorship
 }
 ```
 
 Design decisions:
-- **No natural language field** — AI agents do not need to "read reviews"
 - **Content-addressed ID** — identical traces automatically deduplicate across the network
 - **Cryptographic signature** — every trace is verifiable, tamper-evident
-- **Minimal size** (~200 bytes) — lightweight enough for gossip propagation
+- **SimHash context fingerprint** — enables semantic similarity queries without full embeddings
+- **Session ID** — enables workflow pattern discovery from trace sequences
+- **Model ID** — enables cross-model knowledge transfer (Claude traces help GPT)
+- **Minimal size** (~200-500 bytes) — lightweight enough for gossip propagation
 
-The substrate does not restrict what `about` or `tags` contain. An agent might trace a tool invocation, a data source query, an API call, a workflow step, or anything else. The substrate is indifferent to semantics.
+The substrate does not restrict what `capability` or `context_text` contain. An agent might trace a tool invocation, a data source query, an API call, a workflow step, or anything else. The substrate is indifferent to semantics.
 
 ### 5.3 Network Topology
 
@@ -320,23 +325,27 @@ Thronglets is infrastructure. It is the ground AI agents walk on, where footprin
 - ed25519 identity with Cosmos-compatible address derivation
 - SQLite local trace store with aggregation and temporal decay
 - Content-addressed deduplication
-- 13 unit tests, clippy clean
 
-### Phase 2: P2P Network
+### Phase 2: P2P Network (Complete)
 - libp2p integration: gossipsub trace propagation, Kademlia DHT
-- Bootstrap nodes for network initialization
+- Bootstrap seed node (47.93.32.88:4001)
 - mDNS for local network discovery
-- Cross-node trace synchronization and aggregation
+- Cross-node trace synchronization via publish scan bridge
 
-### Phase 3: Agent Interface
-- MCP server implementation (trace_emit, collective_query, discover)
-- CLI for manual trace inspection and network diagnostics
-- Integration examples for Claude Code, LangChain, AutoGen
+### Phase 3: Agent Interface (Complete)
+- MCP server (trace_record, substrate_query, trace_anchor)
+- `thronglets setup` — one-command Claude Code integration
+- PreToolUse hook: 8-layer decision context injection
+- PostToolUse hook: automatic signed trace recording
+- HTTP REST API for Python/LangChain/any framework
 
-### Phase 4: Open Protocol Specification
-- Formal protocol specification (trace format, propagation rules, query interface)
-- npm/pip/cargo packages for easy installation
-- Developer documentation and integration guides
+### Phase 4: 8-Layer Context Engine (Complete — v0.3.0)
+- Capability stats + workflow patterns + similar context (layers 1-3, from collective traces)
+- Workspace persistence: recent files, errors, session history (layer 4)
+- Git context: last 5 commits on file being touched (layer 5)
+- Decision history: co-edit patterns + preparation reads (layers 6-7)
+- Result feedback loop: edit retention rate (layer 8)
+- Strategy detection: analyze-modify, build-fix-cycle, multi-file-refactor, etc.
 
 ### Phase 5: Oasyce Bridge (Optional)
 - On-chain trace anchoring via Proof of Useful Work
