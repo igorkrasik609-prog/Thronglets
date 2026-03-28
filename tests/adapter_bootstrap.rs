@@ -1,0 +1,123 @@
+use serde_json::Value;
+use std::path::Path;
+use std::process::{Command, Output};
+
+fn run_bin(args: &[&str], home: &Path, data_dir: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args(["--data-dir", data_dir.to_str().unwrap()])
+        .args(args)
+        .env("HOME", home)
+        .output()
+        .expect("run thronglets")
+}
+
+#[test]
+fn detect_json_reports_present_adapters_and_generic_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::create_dir_all(home.join(".openclaw")).unwrap();
+
+    let output = run_bin(&["detect", "--json"], &home, &data_dir);
+    assert!(
+        output.status.success(),
+        "detect failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let detections: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let codex = detections
+        .iter()
+        .find(|entry| entry["agent"] == "codex")
+        .unwrap();
+    assert_eq!(codex["present"], Value::Bool(true));
+
+    let openclaw = detections
+        .iter()
+        .find(|entry| entry["agent"] == "openclaw")
+        .unwrap();
+    assert_eq!(openclaw["present"], Value::Bool(true));
+
+    let generic = detections
+        .iter()
+        .find(|entry| entry["agent"] == "generic")
+        .unwrap();
+    assert_eq!(generic["integration"], Value::String("contract".into()));
+}
+
+#[test]
+fn install_plan_generic_json_includes_contract_examples() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+
+    let output = run_bin(
+        &["install-plan", "--agent", "generic", "--json"],
+        &home,
+        &data_dir,
+    );
+    assert!(
+        output.status.success(),
+        "install-plan failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let plans: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(plans.len(), 1);
+    let plan = &plans[0];
+    assert_eq!(plan["agent"], Value::String("generic".into()));
+    assert_eq!(plan["contract"]["prehook_stdin"]["tool_name"], "Edit");
+    assert!(plan["contract"]["hook_stdin"]["tool_response"].is_object());
+}
+
+#[test]
+fn apply_plan_codex_then_doctor_reports_healthy() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let apply_output = run_bin(
+        &["apply-plan", "--agent", "codex", "--json"],
+        &home,
+        &data_dir,
+    );
+    assert!(
+        apply_output.status.success(),
+        "apply-plan failed: {}",
+        String::from_utf8_lossy(&apply_output.stderr)
+    );
+    let apply_results: Vec<Value> = serde_json::from_slice(&apply_output.stdout).unwrap();
+    assert_eq!(apply_results.len(), 1);
+    assert_eq!(apply_results[0]["applied"], Value::Bool(true));
+
+    let doctor_output = run_bin(&["doctor", "--agent", "codex", "--json"], &home, &data_dir);
+    assert!(
+        doctor_output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&doctor_output.stderr)
+    );
+    let reports: Vec<Value> = serde_json::from_slice(&doctor_output.stdout).unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["healthy"], Value::Bool(true));
+}
+
+#[test]
+fn doctor_fails_for_unconfigured_specific_adapter() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let output = run_bin(&["doctor", "--agent", "codex", "--json"], &home, &data_dir);
+    assert!(
+        !output.status.success(),
+        "doctor unexpectedly passed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let reports: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["healthy"], Value::Bool(false));
+}

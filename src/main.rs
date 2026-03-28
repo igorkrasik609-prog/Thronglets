@@ -1,7 +1,10 @@
 mod setup_support;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use setup_support::{install_claude, install_codex, install_openclaw};
+use setup_support::{
+    AdapterApplyResult, AdapterDetection, AdapterDoctor, AdapterKind, AdapterPlan, detect_adapter,
+    doctor_adapter, install_claude, install_codex, install_openclaw, install_plan,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -56,6 +59,15 @@ enum ReleaseEvalScopeArg {
     Both,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AdapterArg {
+    All,
+    Claude,
+    Codex,
+    Openclaw,
+    Generic,
+}
+
 impl From<EvalSignalFocusArg> for EvalFocus {
     fn from(value: EvalSignalFocusArg) -> Self {
         match value {
@@ -63,6 +75,18 @@ impl From<EvalSignalFocusArg> for EvalFocus {
             EvalSignalFocusArg::Repair => EvalFocus::Repair,
             EvalSignalFocusArg::Preparation => EvalFocus::Preparation,
             EvalSignalFocusArg::Adjacency => EvalFocus::Adjacency,
+        }
+    }
+}
+
+impl AdapterArg {
+    fn includes(self, adapter: AdapterKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::Claude => matches!(adapter, AdapterKind::Claude),
+            Self::Codex => matches!(adapter, AdapterKind::Codex),
+            Self::Openclaw => matches!(adapter, AdapterKind::OpenClaw),
+            Self::Generic => matches!(adapter, AdapterKind::Generic),
         }
     }
 }
@@ -153,6 +177,50 @@ enum Commands {
 
     /// One-command setup: install known local agent adapters and hook integrations.
     Setup,
+
+    /// Detect locally available agent runtimes and bootstrap surfaces.
+    Detect {
+        /// Restrict detection to one adapter family.
+        #[arg(long, value_enum, default_value_t = AdapterArg::All)]
+        agent: AdapterArg,
+
+        /// Emit machine-readable JSON.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// Show the machine-readable install plan for one adapter or all adapters.
+    InstallPlan {
+        /// Restrict planning to one adapter family.
+        #[arg(long, value_enum, default_value_t = AdapterArg::All)]
+        agent: AdapterArg,
+
+        /// Emit machine-readable JSON.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// Apply the install plan for one adapter or all known adapters.
+    ApplyPlan {
+        /// Restrict application to one adapter family.
+        #[arg(long, value_enum, default_value_t = AdapterArg::All)]
+        agent: AdapterArg,
+
+        /// Emit machine-readable JSON.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// Verify whether a configured adapter is healthy.
+    Doctor {
+        /// Restrict verification to one adapter family.
+        #[arg(long, value_enum, default_value_t = AdapterArg::All)]
+        agent: AdapterArg,
+
+        /// Emit machine-readable JSON.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 
     /// Start HTTP API server for non-MCP agents (Python, LangChain, etc.)
     Serve {
@@ -252,10 +320,14 @@ enum Commands {
 }
 
 fn data_dir(cli_override: &Option<PathBuf>) -> PathBuf {
-    cli_override.clone().unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".thronglets")
-    })
+    cli_override
+        .clone()
+        .unwrap_or_else(|| home_dir().join(".thronglets"))
+}
+
+fn home_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home)
 }
 
 fn load_identity(data_dir: &std::path::Path) -> NodeIdentity {
@@ -279,6 +351,239 @@ fn parse_outcome(s: &str) -> Outcome {
             Outcome::Succeeded
         }
     }
+}
+
+fn selected_adapters(target: AdapterArg) -> Vec<AdapterKind> {
+    [
+        AdapterKind::Claude,
+        AdapterKind::Codex,
+        AdapterKind::OpenClaw,
+        AdapterKind::Generic,
+    ]
+    .into_iter()
+    .filter(|adapter| target.includes(*adapter))
+    .collect()
+}
+
+fn selected_known_adapters(target: AdapterArg) -> Vec<AdapterKind> {
+    selected_adapters(target)
+        .into_iter()
+        .filter(|adapter| !matches!(adapter, AdapterKind::Generic))
+        .collect()
+}
+
+fn print_json<T: serde::Serialize>(value: &T) {
+    println!("{}", serde_json::to_string_pretty(value).unwrap());
+}
+
+fn render_detections(detections: &[AdapterDetection]) {
+    println!("Detected adapters:");
+    for detection in detections {
+        println!(
+            "  {}: present={} configurable={} integration={}",
+            detection.agent,
+            if detection.present { "yes" } else { "no" },
+            if detection.configurable { "yes" } else { "no" },
+            detection.integration
+        );
+        for path in &detection.paths {
+            println!("    path: {path}");
+        }
+        if let Some(note) = &detection.note {
+            println!("    note: {note}");
+        }
+    }
+}
+
+fn render_install_plans(plans: &[AdapterPlan]) {
+    println!("Install plan:");
+    for plan in plans {
+        println!(
+            "  {}: integration={} default={} restart={}",
+            plan.agent,
+            plan.integration,
+            if plan.apply_by_default { "yes" } else { "no" },
+            if plan.requires_restart { "yes" } else { "no" }
+        );
+        for action in &plan.actions {
+            println!("    action: {action}");
+        }
+        if let Some(apply_command) = &plan.apply_command {
+            println!("    apply: {apply_command}");
+        }
+        println!("    doctor: {}", plan.doctor_command);
+    }
+}
+
+fn render_doctor_reports(reports: &[AdapterDoctor]) {
+    println!("Adapter health:");
+    for report in reports {
+        println!(
+            "  {}: {}",
+            report.agent,
+            if report.healthy {
+                "healthy"
+            } else {
+                "needs-fix"
+            }
+        );
+        for check in &report.checks {
+            println!(
+                "    [{}] {} — {}",
+                if check.ok { "ok" } else { "missing" },
+                check.name,
+                check.detail
+            );
+        }
+        for remediation in &report.remediation {
+            println!("    fix: {remediation}");
+        }
+        if let Some(note) = &report.note {
+            println!("    note: {note}");
+        }
+    }
+}
+
+fn render_apply_results(results: &[AdapterApplyResult]) {
+    println!("Applied adapter plan:");
+    for result in results {
+        println!(
+            "  {}: {}",
+            result.agent,
+            if result.applied { "applied" } else { "skipped" }
+        );
+        for changed in &result.changed {
+            println!("    change: {changed}");
+        }
+        for path in &result.paths {
+            println!("    path: {path}");
+        }
+        if result.requires_restart {
+            println!("    restart: required");
+        }
+        if let Some(note) = &result.note {
+            println!("    note: {note}");
+        }
+    }
+}
+
+fn apply_selected_adapters(
+    target: AdapterArg,
+    home_dir: &Path,
+    data_dir: &Path,
+    bin_path: &Path,
+) -> std::io::Result<Vec<AdapterApplyResult>> {
+    let mut results = Vec::new();
+
+    for agent in selected_known_adapters(target) {
+        match agent {
+            AdapterKind::Claude => {
+                let result = install_claude(home_dir, bin_path)?;
+                let mut changed = Vec::new();
+                if result.added_post_hook {
+                    changed.push("installed PostToolUse hook".into());
+                }
+                if result.added_pre_hook {
+                    changed.push("installed PreToolUse hook".into());
+                }
+                if changed.is_empty() {
+                    changed.push("hooks already present".into());
+                }
+                results.push(AdapterApplyResult {
+                    agent: agent.key().into(),
+                    applied: true,
+                    changed,
+                    requires_restart: false,
+                    paths: vec![result.settings_path.display().to_string()],
+                    note: None,
+                });
+            }
+            AdapterKind::Codex => {
+                let force = !matches!(target, AdapterArg::All);
+                if let Some(result) = install_codex(home_dir, data_dir, bin_path, force)? {
+                    let mut changed = Vec::new();
+                    if result.created_config {
+                        changed.push("created Codex config".into());
+                    }
+                    if result.updated_server {
+                        changed.push("installed Thronglets MCP server".into());
+                    }
+                    if result.updated_agents_memory {
+                        changed.push("updated managed AGENTS block".into());
+                    }
+                    if changed.is_empty() {
+                        changed.push("config already present".into());
+                    }
+                    results.push(AdapterApplyResult {
+                        agent: agent.key().into(),
+                        applied: true,
+                        changed,
+                        requires_restart: true,
+                        paths: vec![
+                            result.config_path.display().to_string(),
+                            result.agents_path.display().to_string(),
+                        ],
+                        note: Some("Restart Codex to load the MCP server.".into()),
+                    });
+                } else {
+                    results.push(AdapterApplyResult {
+                        agent: agent.key().into(),
+                        applied: false,
+                        changed: vec![],
+                        requires_restart: false,
+                        paths: vec![],
+                        note: Some("Codex not detected; skipped in all-adapters mode.".into()),
+                    });
+                }
+            }
+            AdapterKind::OpenClaw => {
+                let force = !matches!(target, AdapterArg::All);
+                if let Some(result) = install_openclaw(home_dir, data_dir, bin_path, true, force)? {
+                    let mut changed = Vec::new();
+                    if result.created_config {
+                        changed.push("created OpenClaw config".into());
+                    } else {
+                        changed.push("updated OpenClaw plugin config".into());
+                    }
+                    changed.push("wrote local plugin assets".into());
+                    results.push(AdapterApplyResult {
+                        agent: agent.key().into(),
+                        applied: true,
+                        changed,
+                        requires_restart: true,
+                        paths: vec![
+                            result.config_path.display().to_string(),
+                            result.plugin_dir.display().to_string(),
+                        ],
+                        note: Some(if result.restarted_gateway {
+                            "Requested OpenClaw gateway restart.".into()
+                        } else {
+                            "OpenClaw gateway restart may still be required.".into()
+                        }),
+                    });
+                } else {
+                    results.push(AdapterApplyResult {
+                        agent: agent.key().into(),
+                        applied: false,
+                        changed: vec![],
+                        requires_restart: false,
+                        paths: vec![],
+                        note: Some("OpenClaw not detected; skipped in all-adapters mode.".into()),
+                    });
+                }
+            }
+            AdapterKind::Generic => {}
+        }
+    }
+
+    Ok(results)
+}
+
+fn doctor_should_fail(target: AdapterArg, reports: &[AdapterDoctor]) -> bool {
+    reports.iter().any(|report| match target {
+        AdapterArg::All => report.present && !report.healthy,
+        _ => report.agent != AdapterKind::Generic.key() && !report.healthy,
+    })
 }
 
 #[tokio::main]
@@ -952,84 +1257,72 @@ async fn main() {
 
         Commands::Setup => {
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            let home_dir = PathBuf::from(&home);
-            let claude = install_claude(&home_dir, &bin).expect("failed to configure Claude Code");
-            let codex = install_codex(&home_dir, &dir, &bin).expect("failed to configure Codex");
-            let openclaw = install_openclaw(&home_dir, &dir, &bin, true)
-                .expect("failed to configure OpenClaw");
+            let home_dir = home_dir();
+            let results = apply_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
+                .expect("failed to apply adapter plan");
 
             println!("Thronglets setup complete.");
             println!();
-            println!("  ✓ Claude Code PostToolUse hook");
-            println!("  ✓ Claude Code PreToolUse hook");
-            println!("    {}", claude.settings_path.display());
-            println!(
-                "    changes: post={}, pre={}",
-                if claude.added_post_hook {
-                    "installed"
-                } else {
-                    "already-present"
-                },
-                if claude.added_pre_hook {
-                    "installed"
-                } else {
-                    "already-present"
-                }
-            );
-            if let Some(codex) = codex {
-                println!("  ✓ Codex MCP server");
-                println!("    {}", codex.config_path.display());
-                println!(
-                    "    config: {}",
-                    if codex.created_config {
-                        "created"
-                    } else if codex.updated_server {
-                        "updated"
-                    } else {
-                        "already-present"
-                    }
-                );
-                println!(
-                    "    agents memory: {} ({})",
-                    codex.agents_path.display(),
-                    if codex.updated_agents_memory {
-                        "updated"
-                    } else {
-                        "already-present"
-                    }
-                );
-                println!("    restart Codex to pick up the MCP server");
-            } else {
-                println!("  • Codex not detected — skipped");
-            }
-            if let Some(openclaw) = openclaw {
-                println!("  ✓ OpenClaw plugin");
-                println!("    {}", openclaw.config_path.display());
-                println!("    plugin: {}", openclaw.plugin_dir.display());
-                println!(
-                    "    config: {}",
-                    if openclaw.created_config {
-                        "created"
-                    } else {
-                        "updated"
-                    }
-                );
-                if openclaw.restarted_gateway {
-                    println!("    gateway restart requested");
-                } else {
-                    println!("    gateway restart required");
-                }
-            } else {
-                println!("  • OpenClaw not detected — skipped");
-            }
-            println!();
-            println!("To also enable MCP tools (substrate_query, trace_record):");
-            println!("  claude mcp add thronglets -- {} mcp", bin.display());
+            render_apply_results(&results);
             println!();
             println!(
                 "Known adapters are now installed. Other agents can call `thronglets hook` and `thronglets prehook` with the same JSON contract."
             );
+        }
+
+        Commands::Detect { agent, json } => {
+            let home_dir = home_dir();
+            let detections: Vec<_> = selected_adapters(agent)
+                .into_iter()
+                .map(|adapter| detect_adapter(&home_dir, &dir, adapter))
+                .collect();
+            if json {
+                print_json(&detections);
+            } else {
+                render_detections(&detections);
+            }
+        }
+
+        Commands::InstallPlan { agent, json } => {
+            let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            let home_dir = home_dir();
+            let plans: Vec<_> = selected_adapters(agent)
+                .into_iter()
+                .map(|adapter| install_plan(&home_dir, &dir, &bin, adapter))
+                .collect();
+            if json {
+                print_json(&plans);
+            } else {
+                render_install_plans(&plans);
+            }
+        }
+
+        Commands::ApplyPlan { agent, json } => {
+            let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            let home_dir = home_dir();
+            let results = apply_selected_adapters(agent, &home_dir, &dir, &bin)
+                .expect("failed to apply adapter plan");
+            if json {
+                print_json(&results);
+            } else {
+                render_apply_results(&results);
+            }
+        }
+
+        Commands::Doctor { agent, json } => {
+            let home_dir = home_dir();
+            let reports: Vec<_> = selected_adapters(agent)
+                .into_iter()
+                .map(|adapter| doctor_adapter(&home_dir, &dir, adapter))
+                .collect();
+            if json {
+                print_json(&reports);
+            } else {
+                render_doctor_reports(&reports);
+            }
+            if doctor_should_fail(agent, &reports) {
+                std::process::exit(1);
+            }
         }
 
         Commands::Serve { port } => {

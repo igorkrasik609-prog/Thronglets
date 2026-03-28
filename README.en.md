@@ -52,6 +52,20 @@ Underneath, there is only one agent contract:
 
 Known AIs use native adapters. Unknown AIs use the same `hook/prehook` contract. No second protocol.
 
+If you want an AI to bootstrap itself, it does not need to read the docs first. Use the machine-facing flow:
+
+```bash
+thronglets detect --json
+thronglets install-plan --agent codex --json
+thronglets apply-plan --agent codex --json
+thronglets doctor --agent codex --json
+```
+
+`detect` discovers local runtimes.  
+`install-plan` returns the executable plan and contract.  
+`apply-plan` writes the config.  
+`doctor` verifies health and exits non-zero when a targeted adapter is still broken.
+
 The minimum JSON contract is fixed. `prehook` reads input like:
 
 ```json

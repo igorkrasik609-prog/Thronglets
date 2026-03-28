@@ -52,6 +52,20 @@ thronglets setup
 
 也就是说，已知 AI 走原生适配器，未知 AI 走同一个 `hook/prehook` contract，不需要再发明第二套协议。
 
+如果你要让 AI 自己完成接入，不需要先读文档。直接走这组机器接口：
+
+```bash
+thronglets detect --json
+thronglets install-plan --agent codex --json
+thronglets apply-plan --agent codex --json
+thronglets doctor --agent codex --json
+```
+
+`detect` 负责发现本机有哪些 runtime。  
+`install-plan` 返回可执行计划和 contract。  
+`apply-plan` 真正写配置。  
+`doctor` 验证是否接通，并在坏状态时返回非零退出码。
+
 最小接入 JSON 也固定了。`prehook` 读这一类输入：
 
 ```json

@@ -1,3 +1,4 @@
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::fs;
 use std::io;
@@ -43,6 +44,95 @@ pub struct CodexSetupResult {
     pub created_config: bool,
     pub updated_server: bool,
     pub updated_agents_memory: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterKind {
+    Claude,
+    Codex,
+    OpenClaw,
+    Generic,
+}
+
+impl AdapterKind {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Claude => "claude-code",
+            Self::Codex => "codex",
+            Self::OpenClaw => "openclaw",
+            Self::Generic => "generic",
+        }
+    }
+
+    pub fn integration(self) -> &'static str {
+        match self {
+            Self::Generic => "contract",
+            _ => "native",
+        }
+    }
+
+    pub fn apply_by_default(self) -> bool {
+        !matches!(self, Self::Generic)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdapterDetection {
+    pub agent: String,
+    pub present: bool,
+    pub configurable: bool,
+    pub integration: String,
+    pub apply_by_default: bool,
+    pub paths: Vec<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HookContractExamples {
+    pub prehook_stdin: Value,
+    pub hook_stdin: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdapterPlan {
+    pub agent: String,
+    pub present: bool,
+    pub configurable: bool,
+    pub integration: String,
+    pub apply_by_default: bool,
+    pub requires_restart: bool,
+    pub paths: Vec<String>,
+    pub actions: Vec<String>,
+    pub apply_command: Option<String>,
+    pub doctor_command: String,
+    pub contract: Option<HookContractExamples>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdapterCheck {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdapterDoctor {
+    pub agent: String,
+    pub present: bool,
+    pub healthy: bool,
+    pub checks: Vec<AdapterCheck>,
+    pub remediation: Vec<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdapterApplyResult {
+    pub agent: String,
+    pub applied: bool,
+    pub changed: Vec<String>,
+    pub requires_restart: bool,
+    pub paths: Vec<String>,
+    pub note: Option<String>,
 }
 
 pub fn install_claude(home_dir: &Path, bin_path: &Path) -> io::Result<ClaudeSetupResult> {
@@ -98,12 +188,13 @@ pub fn install_openclaw(
     data_dir: &Path,
     bin_path: &Path,
     restart_gateway: bool,
+    force_install: bool,
 ) -> io::Result<Option<OpenClawSetupResult>> {
-    if !should_configure_openclaw(home_dir) {
+    if !force_install && !should_configure_openclaw(home_dir) {
         return Ok(None);
     }
 
-    let config_path = home_dir.join(".openclaw").join("openclaw.json");
+    let config_path = openclaw_config_path(home_dir);
     let created_config = !config_path.exists();
     let plugin_dir = data_dir.join(OPENCLAW_PLUGIN_ID);
 
@@ -142,8 +233,9 @@ pub fn install_codex(
     home_dir: &Path,
     data_dir: &Path,
     bin_path: &Path,
+    force_install: bool,
 ) -> io::Result<Option<CodexSetupResult>> {
-    if !should_configure_codex(home_dir) {
+    if !force_install && !should_configure_codex(home_dir) {
         return Ok(None);
     }
 
@@ -174,6 +266,416 @@ pub fn install_codex(
         updated_server,
         updated_agents_memory,
     }))
+}
+
+pub fn detect_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> AdapterDetection {
+    match agent {
+        AdapterKind::Claude => {
+            let settings_path = claude_settings_path(home_dir);
+            let present = should_configure_claude(home_dir);
+            AdapterDetection {
+                agent: agent.key().into(),
+                present,
+                configurable: true,
+                integration: agent.integration().into(),
+                apply_by_default: agent.apply_by_default(),
+                paths: vec![settings_path.display().to_string()],
+                note: (!present).then_some(
+                    "Claude was not detected, but Thronglets can still preseed ~/.claude/settings.json."
+                        .into(),
+                ),
+            }
+        }
+        AdapterKind::Codex => {
+            let config_path = codex_config_path(home_dir);
+            let agents_path = codex_agents_path(home_dir);
+            let present = should_configure_codex(home_dir);
+            AdapterDetection {
+                agent: agent.key().into(),
+                present,
+                configurable: true,
+                integration: agent.integration().into(),
+                apply_by_default: agent.apply_by_default(),
+                paths: vec![
+                    config_path.display().to_string(),
+                    agents_path.display().to_string(),
+                ],
+                note: (!present).then_some(
+                    "Codex was not detected; apply-plan can still bootstrap ~/.codex if explicitly requested."
+                        .into(),
+                ),
+            }
+        }
+        AdapterKind::OpenClaw => {
+            let config_path = openclaw_config_path(home_dir);
+            let plugin_dir = data_dir.join(OPENCLAW_PLUGIN_ID);
+            let present = should_configure_openclaw(home_dir);
+            AdapterDetection {
+                agent: agent.key().into(),
+                present,
+                configurable: present,
+                integration: agent.integration().into(),
+                apply_by_default: agent.apply_by_default(),
+                paths: vec![
+                    config_path.display().to_string(),
+                    plugin_dir.display().to_string(),
+                ],
+                note: (!present).then_some(
+                    "OpenClaw was not detected; apply-plan will skip it unless explicitly targeted."
+                        .into(),
+                ),
+            }
+        }
+        AdapterKind::Generic => AdapterDetection {
+            agent: agent.key().into(),
+            present: true,
+            configurable: true,
+            integration: agent.integration().into(),
+            apply_by_default: agent.apply_by_default(),
+            paths: vec![],
+            note: Some(
+                "Unknown agents should self-bootstrap by calling `thronglets prehook` and `thronglets hook` with the universal JSON contract."
+                    .into(),
+            ),
+        },
+    }
+}
+
+pub fn install_plan(
+    home_dir: &Path,
+    data_dir: &Path,
+    bin_path: &Path,
+    agent: AdapterKind,
+) -> AdapterPlan {
+    let detection = detect_adapter(home_dir, data_dir, agent);
+    match agent {
+        AdapterKind::Claude => AdapterPlan {
+            agent: detection.agent,
+            present: detection.present,
+            configurable: detection.configurable,
+            integration: detection.integration,
+            apply_by_default: detection.apply_by_default,
+            requires_restart: false,
+            paths: detection.paths,
+            actions: vec![
+                format!(
+                    "Write PostToolUse hook in {} that runs `{}`",
+                    claude_settings_path(home_dir).display(),
+                    bin_path.display()
+                ) + " hook",
+                format!(
+                    "Write PreToolUse hook with matcher `{PREHOOK_MATCHER}` that runs `{}`",
+                    bin_path.display()
+                ) + " prehook",
+            ],
+            apply_command: Some("thronglets apply-plan --agent claude".into()),
+            doctor_command: "thronglets doctor --agent claude".into(),
+            contract: None,
+        },
+        AdapterKind::Codex => AdapterPlan {
+            agent: detection.agent,
+            present: detection.present,
+            configurable: detection.configurable,
+            integration: detection.integration,
+            apply_by_default: detection.apply_by_default,
+            requires_restart: true,
+            paths: detection.paths,
+            actions: vec![
+                format!(
+                    "Write [mcp_servers.{CODEX_MCP_SERVER_ID}] in {} pointing to `{}` with `--data-dir {}` and `mcp`",
+                    codex_config_path(home_dir).display(),
+                    bin_path.display(),
+                    data_dir.display()
+                ),
+                format!(
+                    "Write or refresh the managed Thronglets block in {}",
+                    codex_agents_path(home_dir).display()
+                ),
+            ],
+            apply_command: Some("thronglets apply-plan --agent codex".into()),
+            doctor_command: "thronglets doctor --agent codex".into(),
+            contract: None,
+        },
+        AdapterKind::OpenClaw => AdapterPlan {
+            agent: detection.agent,
+            present: detection.present,
+            configurable: detection.configurable,
+            integration: detection.integration,
+            apply_by_default: detection.apply_by_default,
+            requires_restart: true,
+            paths: detection.paths,
+            actions: vec![
+                format!(
+                    "Write plugin assets into {}",
+                    data_dir.join(OPENCLAW_PLUGIN_ID).display()
+                ),
+                format!(
+                    "Enable `{OPENCLAW_PLUGIN_ID}` in {} and point it at `{}`",
+                    openclaw_config_path(home_dir).display(),
+                    bin_path.display()
+                ),
+                "Request `openclaw gateway restart` in the background.".into(),
+            ],
+            apply_command: Some("thronglets apply-plan --agent openclaw".into()),
+            doctor_command: "thronglets doctor --agent openclaw".into(),
+            contract: None,
+        },
+        AdapterKind::Generic => AdapterPlan {
+            agent: detection.agent,
+            present: detection.present,
+            configurable: detection.configurable,
+            integration: detection.integration,
+            apply_by_default: detection.apply_by_default,
+            requires_restart: false,
+            paths: detection.paths,
+            actions: vec![
+                "Before high-impact tools, send a JSON payload to `thronglets prehook` and treat stdout as internal decision guidance.".into(),
+                "After tool execution, send the same payload plus `tool_response` to `thronglets hook`.".into(),
+            ],
+            apply_command: None,
+            doctor_command: "thronglets doctor --agent generic".into(),
+            contract: Some(hook_contract_examples()),
+        },
+    }
+}
+
+pub fn doctor_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> AdapterDoctor {
+    match agent {
+        AdapterKind::Claude => doctor_claude(home_dir),
+        AdapterKind::Codex => doctor_codex(home_dir),
+        AdapterKind::OpenClaw => doctor_openclaw(home_dir, data_dir),
+        AdapterKind::Generic => AdapterDoctor {
+            agent: agent.key().into(),
+            present: true,
+            healthy: true,
+            checks: vec![AdapterCheck {
+                name: "contract".into(),
+                ok: true,
+                detail:
+                    "Generic adapters do not require local config. Use the hook/prehook contract."
+                        .into(),
+            }],
+            remediation: vec![],
+            note: Some(
+                "Run `thronglets install-plan --agent generic --json` to fetch the exact contract examples."
+                    .into(),
+            ),
+        },
+    }
+}
+
+fn should_configure_claude(home_dir: &Path) -> bool {
+    home_dir.join(".claude").exists() || executable_on_path("claude")
+}
+
+fn claude_settings_path(home_dir: &Path) -> PathBuf {
+    home_dir.join(".claude").join("settings.json")
+}
+
+fn codex_config_path(home_dir: &Path) -> PathBuf {
+    home_dir.join(".codex").join("config.toml")
+}
+
+fn codex_agents_path(home_dir: &Path) -> PathBuf {
+    home_dir.join(".codex").join("AGENTS.md")
+}
+
+fn openclaw_root_dir(home_dir: &Path) -> PathBuf {
+    let legacy = home_dir.join(".openclaw");
+    if legacy.exists() {
+        legacy
+    } else {
+        let xdg = home_dir.join(".config").join("openclaw");
+        if xdg.exists() { xdg } else { legacy }
+    }
+}
+
+fn openclaw_config_path(home_dir: &Path) -> PathBuf {
+    openclaw_root_dir(home_dir).join("openclaw.json")
+}
+
+fn hook_contract_examples() -> HookContractExamples {
+    let prehook_stdin = json!({
+        "agent_source": "my-agent",
+        "model": "my-model",
+        "session_id": "session-123",
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "src/main.rs"
+        }
+    });
+    let mut hook_stdin = prehook_stdin.clone();
+    if let Some(obj) = hook_stdin.as_object_mut() {
+        obj.insert("tool_response".into(), json!({"success": true}));
+    }
+    HookContractExamples {
+        prehook_stdin,
+        hook_stdin,
+    }
+}
+
+fn read_json(path: &Path) -> Option<Value> {
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn read_toml(path: &Path) -> Option<toml::Table> {
+    let content = fs::read_to_string(path).ok()?;
+    toml::from_str(&content).ok()
+}
+
+fn claude_hook_present(settings: &Value, phase: &str, command_fragment: &str) -> bool {
+    settings["hooks"][phase].as_array().is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry["hooks"].as_array().is_some_and(|hooks| {
+                hooks.iter().any(|candidate| {
+                    candidate["command"]
+                        .as_str()
+                        .is_some_and(|command| command.contains(command_fragment))
+                })
+            })
+        })
+    })
+}
+
+fn doctor_claude(home_dir: &Path) -> AdapterDoctor {
+    let settings_path = claude_settings_path(home_dir);
+    let settings = read_json(&settings_path);
+    let post_ok = settings
+        .as_ref()
+        .is_some_and(|value| claude_hook_present(value, "PostToolUse", "thronglets hook"));
+    let pre_ok = settings
+        .as_ref()
+        .is_some_and(|value| claude_hook_present(value, "PreToolUse", "thronglets prehook"));
+    let checks = vec![
+        AdapterCheck {
+            name: "post-hook".into(),
+            ok: post_ok,
+            detail: format!("PostToolUse hook in {}", settings_path.display()),
+        },
+        AdapterCheck {
+            name: "pre-hook".into(),
+            ok: pre_ok,
+            detail: format!("PreToolUse hook in {}", settings_path.display()),
+        },
+    ];
+    let healthy = checks.iter().all(|check| check.ok);
+    AdapterDoctor {
+        agent: AdapterKind::Claude.key().into(),
+        present: should_configure_claude(home_dir),
+        healthy,
+        remediation: (!healthy)
+            .then_some(vec!["thronglets apply-plan --agent claude".into()])
+            .unwrap_or_default(),
+        checks,
+        note: None,
+    }
+}
+
+fn codex_server_present(config: &toml::Table) -> bool {
+    config
+        .get("mcp_servers")
+        .and_then(TomlValue::as_table)
+        .and_then(|servers| servers.get(CODEX_MCP_SERVER_ID))
+        .and_then(TomlValue::as_table)
+        .is_some_and(|server| {
+            server.get("command").and_then(TomlValue::as_str).is_some()
+                && server.get("args").and_then(TomlValue::as_array).is_some()
+        })
+}
+
+fn codex_agents_block_present(path: &Path) -> bool {
+    fs::read_to_string(path).ok().is_some_and(|content| {
+        content.contains(CODEX_AGENTS_START) && content.contains(CODEX_AGENTS_END)
+    })
+}
+
+fn doctor_codex(home_dir: &Path) -> AdapterDoctor {
+    let config_path = codex_config_path(home_dir);
+    let agents_path = codex_agents_path(home_dir);
+    let config = read_toml(&config_path);
+    let server_ok = config.as_ref().is_some_and(codex_server_present);
+    let agents_ok = codex_agents_block_present(&agents_path);
+    let checks = vec![
+        AdapterCheck {
+            name: "mcp-server".into(),
+            ok: server_ok,
+            detail: format!(
+                "[mcp_servers.{CODEX_MCP_SERVER_ID}] in {}",
+                config_path.display()
+            ),
+        },
+        AdapterCheck {
+            name: "agents-memory".into(),
+            ok: agents_ok,
+            detail: format!("managed Thronglets block in {}", agents_path.display()),
+        },
+    ];
+    let healthy = checks.iter().all(|check| check.ok);
+    AdapterDoctor {
+        agent: AdapterKind::Codex.key().into(),
+        present: should_configure_codex(home_dir),
+        healthy,
+        remediation: (!healthy)
+            .then_some(vec!["thronglets apply-plan --agent codex".into()])
+            .unwrap_or_default(),
+        checks,
+        note: healthy
+            .then_some("Restart Codex after config changes so the MCP server is loaded.".into()),
+    }
+}
+
+fn openclaw_plugin_config_present(config: &Value, plugin_dir: &Path) -> bool {
+    let allow_ok = config["plugins"]["allow"].as_array().is_some_and(|values| {
+        values
+            .iter()
+            .any(|value| value.as_str() == Some(OPENCLAW_PLUGIN_ID))
+    });
+    let load_ok = config["plugins"]["load"]["paths"]
+        .as_array()
+        .is_some_and(|values| {
+            values
+                .iter()
+                .any(|value| value.as_str() == Some(plugin_dir.to_string_lossy().as_ref()))
+        });
+    let entry_ok = config["plugins"]["entries"][OPENCLAW_PLUGIN_ID]["enabled"] == Value::Bool(true);
+    let install_ok = !config["plugins"]["installs"][OPENCLAW_PLUGIN_ID].is_null();
+    allow_ok && load_ok && entry_ok && install_ok
+}
+
+fn doctor_openclaw(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
+    let config_path = openclaw_config_path(home_dir);
+    let plugin_dir = data_dir.join(OPENCLAW_PLUGIN_ID);
+    let config = read_json(&config_path);
+    let assets_ok =
+        plugin_dir.join("openclaw.plugin.json").exists() && plugin_dir.join("index.mjs").exists();
+    let config_ok = config
+        .as_ref()
+        .is_some_and(|value| openclaw_plugin_config_present(value, &plugin_dir));
+    let checks = vec![
+        AdapterCheck {
+            name: "plugin-assets".into(),
+            ok: assets_ok,
+            detail: format!("plugin assets in {}", plugin_dir.display()),
+        },
+        AdapterCheck {
+            name: "plugin-config".into(),
+            ok: config_ok,
+            detail: format!("plugin entry in {}", config_path.display()),
+        },
+    ];
+    let healthy = checks.iter().all(|check| check.ok);
+    AdapterDoctor {
+        agent: AdapterKind::OpenClaw.key().into(),
+        present: should_configure_openclaw(home_dir),
+        healthy,
+        remediation: (!healthy)
+            .then_some(vec!["thronglets apply-plan --agent openclaw".into()])
+            .unwrap_or_default(),
+        checks,
+        note: healthy
+            .then_some("OpenClaw gateway restart may be required after plugin changes.".into()),
+    }
 }
 
 fn ensure_hook(target: &mut Value, hook: &Value, command_fragment: &str) -> bool {
@@ -388,7 +890,7 @@ mod tests {
         let data_dir = temp.path().join("data");
         fs::create_dir_all(home.join(".openclaw")).unwrap();
 
-        let result = install_openclaw(&home, &data_dir, Path::new("/tmp/thronglets"), false)
+        let result = install_openclaw(&home, &data_dir, Path::new("/tmp/thronglets"), false, false)
             .unwrap()
             .unwrap();
 
@@ -437,7 +939,7 @@ mod tests {
         )
         .unwrap();
 
-        install_openclaw(&home, &data_dir, Path::new("/tmp/thronglets"), false)
+        install_openclaw(&home, &data_dir, Path::new("/tmp/thronglets"), false, false)
             .unwrap()
             .unwrap();
 
@@ -457,7 +959,7 @@ mod tests {
         let data_dir = temp.path().join("data");
         fs::create_dir_all(home.join(".codex")).unwrap();
 
-        let result = install_codex(&home, &data_dir, Path::new("/tmp/thronglets"))
+        let result = install_codex(&home, &data_dir, Path::new("/tmp/thronglets"), false)
             .unwrap()
             .unwrap();
 
@@ -495,7 +997,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = install_codex(&home, &data_dir, Path::new("/tmp/thronglets"))
+        let result = install_codex(&home, &data_dir, Path::new("/tmp/thronglets"), false)
             .unwrap()
             .unwrap();
 
