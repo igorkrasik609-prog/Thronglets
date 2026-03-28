@@ -82,6 +82,10 @@ thronglets eval-signals --hours 168 --max-sessions 200
 ```
 
 By default, this only evaluates sessions from the current project directory. It replays recent history offline, treats earlier history as training and later sessions as holdout, and reports `edit silence rate`, `repair coverage`, `repair first-step precision`, `repair exact precision`, `preparation precision`, and `adjacency precision`. It stays entirely on the cold path and does not touch prehook latency.
+The result view now also includes three more outcome-facing metrics:
+- `local edit retention`: recent local feedback from the current project's `workspace.json`
+- `holdout failed command rate`: `Bash` failure rate in holdout sessions
+- `holdout first successful change latency`: a proxy for time from session start to the first successful `Edit/Write`
 The output now also includes `repair / preparation / adjacency breakdown` plus a short `diagnosis`, so you can tell apart “not enough data”, “blocked by the local repetition gate”, and “pattern is too noisy”.
 If you want machine-readable output for scripts or CI, add:
 
@@ -95,7 +99,7 @@ If you want one release-oriented gate that combines hot-path and cold-path check
 cat prehook.log | thronglets release-check --global
 ```
 
-It prints an overall `PASS / FAIL` plus separate `profile` and `eval` sections. When there is not enough offline history yet, `eval` returns `SKIP` instead of blocking release just because the repo is cold. If you want missing prehook samples to fail the gate as well, add:
+It prints an overall `PASS / FAIL` plus separate `profile` and `eval` sections. The `eval` section now also carries current-project `local edit retention`, holdout `failed command rate`, and `first successful change latency` alongside signal precision. When there is not enough offline history yet, `eval` returns `SKIP` instead of blocking release just because the repo is cold. If you want missing prehook samples to fail the gate as well, add:
 
 ```bash
 cat prehook.log | thronglets release-check --global --require-profile-samples

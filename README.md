@@ -82,6 +82,10 @@ thronglets eval-signals --hours 168 --max-sessions 200
 ```
 
 这个命令默认只看当前项目目录下的 session，离线重放最近历史，把更早的历史当训练集、把更晚的 session 当 holdout，输出 `edit silence rate`、`repair coverage`、`repair first-step precision`、`repair exact precision`、`preparation precision` 和 `adjacency precision`。它完全在冷路径运行，不会碰 prehook 热路径预算。
+结果视图里现在还会补 3 个更贴近真实结果的指标：
+- `local edit retention`：来自当前项目 `workspace.json` 的最近本地反馈
+- `holdout failed command rate`：holdout session 里 `Bash` 的失败率
+- `holdout first successful change latency`：从 session 开始到第一次成功 `Edit/Write` 的时间代理
 输出里还会带上 `repair / preparation / adjacency breakdown` 和一条简短 `diagnosis`，用来区分“数据太少”“本地重复门槛挡住了”还是“模式本身太噪”。
 如果想喂给脚本或 CI，可以直接加：
 
@@ -95,7 +99,7 @@ thronglets eval-signals --hours 168 --max-sessions 200 --json
 cat prehook.log | thronglets release-check --global
 ```
 
-它会输出一个总的 `PASS / FAIL`，并分别给出 `profile` 和 `eval` 两段。没有足够离线历史时，`eval` 会是 `SKIP`，而不是因为冷启动直接挡住发布；如果你想把缺失的 prehook 样本也当成失败，可以再加：
+它会输出一个总的 `PASS / FAIL`，并分别给出 `profile` 和 `eval` 两段。`eval` 里除了 signal precision，也会带上当前项目的 `local edit retention`、holdout `failed command rate` 和 `first successful change latency`。没有足够离线历史时，`eval` 会是 `SKIP`，而不是因为冷启动直接挡住发布；如果你想把缺失的 prehook 样本也当成失败，可以再加：
 
 ```bash
 cat prehook.log | thronglets release-check --global --require-profile-samples

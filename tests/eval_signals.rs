@@ -6,6 +6,7 @@ use thronglets::context::simhash;
 use thronglets::identity::NodeIdentity;
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
+use thronglets::workspace::{PendingFeedback, WorkspaceState};
 
 fn make_trace(
     identity: &NodeIdentity,
@@ -89,6 +90,8 @@ fn eval_signals_reports_holdout_metrics() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("project scope: global"));
     assert!(stdout.contains("sessions considered: 3"));
+    assert!(stdout.contains("holdout failed command rate"));
+    assert!(stdout.contains("holdout first successful change latency"));
     assert!(stdout.contains("repair first-step precision"));
     assert!(stdout.contains("preparation precision"));
     assert!(stdout.contains("adjacency precision"));
@@ -390,4 +393,85 @@ fn eval_signals_defaults_to_project_scope() {
     );
     assert_eq!(parsed["sessions_considered"], 2);
     assert_eq!(parsed["sessions_scored"], 1);
+}
+
+#[test]
+fn eval_signals_includes_local_feedback_for_project_scope() {
+    let dir = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let store = TraceStore::open(&dir.path().join("traces.db")).unwrap();
+    let identity = NodeIdentity::generate();
+
+    let mut timestamp = chrono::Utc::now().timestamp_millis() as u64 - 10_000;
+    for session in ["p1", "p2"] {
+        let helper = project.path().join("helper.rs");
+        let main = project.path().join("main.rs");
+        for (capability, outcome, context) in [
+            (
+                "claude-code/Read",
+                Outcome::Succeeded,
+                format!("read file: {}", helper.display()),
+            ),
+            (
+                "claude-code/Edit",
+                Outcome::Succeeded,
+                format!("edit file: {}", main.display()),
+            ),
+            (
+                "claude-code/Bash",
+                Outcome::Failed,
+                "bash: cargo test".to_string(),
+            ),
+        ] {
+            let trace = make_trace(&identity, capability, outcome, &context, session, timestamp);
+            store.insert(&trace).unwrap();
+            timestamp += 1_000;
+        }
+        timestamp += 60_000;
+    }
+
+    let mut workspace = WorkspaceState {
+        updated_ms: chrono::Utc::now().timestamp_millis(),
+        ..WorkspaceState::default()
+    };
+    workspace.pending_feedback.push_back(PendingFeedback {
+        file_path: project.path().join("main.rs").display().to_string(),
+        action: "Edit".into(),
+        timestamp_ms: 0,
+        resolved: true,
+        outcome: Some("committed".into()),
+    });
+    workspace.pending_feedback.push_back(PendingFeedback {
+        file_path: project.path().join("lib.rs").display().to_string(),
+        action: "Edit".into(),
+        timestamp_ms: 0,
+        resolved: true,
+        outcome: Some("reverted".into()),
+    });
+    workspace.save(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .current_dir(project.path())
+        .args([
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "eval-signals",
+            "--hours",
+            "168",
+            "--max-sessions",
+            "10",
+            "--json",
+        ])
+        .output()
+        .expect("spawn project-scoped eval-signals with local feedback");
+
+    assert!(
+        output.status.success(),
+        "project-scoped eval-signals with local feedback failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("parse local feedback json");
+    assert_eq!(parsed["local_feedback"]["resolved_edits"], 2);
+    assert_eq!(parsed["local_feedback"]["retention_percent"], 50);
 }

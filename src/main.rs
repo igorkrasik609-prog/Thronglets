@@ -9,7 +9,8 @@ use thronglets::contracts::{
     PREHOOK_MAX_HINTS,
 };
 use thronglets::eval::{
-    EvalCheckStatus, EvalCheckThresholds, EvalConfig, EvalFocus, evaluate_signal_quality,
+    EvalCheckStatus, EvalCheckThresholds, EvalConfig, EvalFocus, LocalFeedbackSummary,
+    evaluate_signal_quality,
 };
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
@@ -1185,6 +1186,7 @@ async fn main() {
 
             let eval_thresholds = EvalCheckThresholds::default();
             let store = open_store(&dir);
+            let local_feedback = LocalFeedbackSummary::from_workspace(&WorkspaceState::load(&dir));
             let default_project_root = project_root.unwrap_or_else(|| {
                 std::env::current_dir().expect("failed to determine current working directory")
             });
@@ -1196,12 +1198,20 @@ async fn main() {
                         hours,
                         max_sessions,
                         Some(default_project_root.as_path()),
+                        local_feedback.clone(),
                         &eval_thresholds,
                     ),
                 )],
                 ReleaseEvalScopeArg::Global => vec![(
                     "global",
-                    run_release_eval_section(&store, hours, max_sessions, None, &eval_thresholds),
+                    run_release_eval_section(
+                        &store,
+                        hours,
+                        max_sessions,
+                        None,
+                        None,
+                        &eval_thresholds,
+                    ),
                 )],
                 ReleaseEvalScopeArg::Both => vec![
                     (
@@ -1211,6 +1221,7 @@ async fn main() {
                             hours,
                             max_sessions,
                             Some(default_project_root.as_path()),
+                            local_feedback,
                             &eval_thresholds,
                         ),
                     ),
@@ -1220,6 +1231,7 @@ async fn main() {
                             &store,
                             hours,
                             max_sessions,
+                            None,
                             None,
                             &eval_thresholds,
                         ),
@@ -1317,7 +1329,12 @@ async fn main() {
                         }
                     } else {
                         summary
-                    };
+                    }
+                    .with_local_feedback(if project_scope.is_some() {
+                        LocalFeedbackSummary::from_workspace(&WorkspaceState::load(&dir))
+                    } else {
+                        None
+                    });
                     let summary = summary.focused(focus.into(), top_breakdowns);
                     if json {
                         println!(
@@ -1656,6 +1673,7 @@ fn run_release_eval_section(
     hours: u64,
     max_sessions: usize,
     project_scope: Option<&Path>,
+    local_feedback: Option<LocalFeedbackSummary>,
     thresholds: &EvalCheckThresholds,
 ) -> (&'static str, bool, String, serde_json::Value) {
     match evaluate_signal_quality(
@@ -1668,6 +1686,7 @@ fn run_release_eval_section(
     .expect("failed to evaluate signal quality")
     {
         Some(summary) => {
+            let summary = summary.with_local_feedback(local_feedback);
             let check = summary.check(thresholds);
             let (status, rendered) = summary.render_check(thresholds);
             (

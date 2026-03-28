@@ -1,6 +1,7 @@
 use crate::signals::StepAction;
 use crate::storage::TraceStore;
 use crate::trace::{Outcome, Trace};
+use crate::workspace::WorkspaceState;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -53,9 +54,15 @@ impl Default for EvalConfig {
 pub struct SignalEvalSummary {
     pub project_scope: Option<String>,
     pub eval_config: EvalConfig,
+    pub local_feedback: Option<LocalFeedbackSummary>,
     pub comparison_to_default: Option<EvalComparison>,
     pub sessions_considered: usize,
     pub sessions_scored: usize,
+    pub holdout_command_calls: usize,
+    pub holdout_failed_command_calls: usize,
+    pub sessions_with_successful_change: usize,
+    pub first_successful_change_latency_avg_ms: Option<u64>,
+    pub first_successful_change_latency_p50_ms: Option<u64>,
     pub edit_points: usize,
     pub edit_points_with_signal: usize,
     pub repair_opportunities: usize,
@@ -140,6 +147,14 @@ pub struct FileGuidanceEvalBreakdown {
     pub hits: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalFeedbackSummary {
+    pub resolved_edits: usize,
+    pub committed_edits: usize,
+    pub reverted_edits: usize,
+    pub retention_percent: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionEvent {
     tool: String,
@@ -214,6 +229,20 @@ impl SignalEvalSummary {
             ),
             format!("sessions considered: {}", self.sessions_considered),
             format!("sessions scored: {}", self.sessions_scored),
+        ];
+
+        if let Some(local_feedback) = self.local_feedback.as_ref() {
+            lines.push(format!(
+                "local edit retention: {}% ({}/{})",
+                local_feedback.retention_percent,
+                local_feedback.committed_edits,
+                local_feedback.resolved_edits,
+            ));
+        }
+
+        lines.extend([
+            self.render_failed_command_rate_line(),
+            self.render_first_successful_change_latency_line(),
             format!(
                 "edit silence rate: {:.1}% ({}/{})",
                 percent(
@@ -268,7 +297,7 @@ impl SignalEvalSummary {
                 self.adjacency_predictions,
             ),
             format!("diagnosis: {}", self.diagnosis()),
-        ];
+        ]);
 
         if let Some(comparison) = self.comparison_to_default.as_ref() {
             lines.push(comparison.render_summary_line());
@@ -301,6 +330,11 @@ impl SignalEvalSummary {
         if self.eval_config != baseline.eval_config {
             self.comparison_to_default = Some(EvalComparison::between(baseline, &self));
         }
+        self
+    }
+
+    pub fn with_local_feedback(mut self, local_feedback: Option<LocalFeedbackSummary>) -> Self {
+        self.local_feedback = local_feedback;
         self
     }
 
@@ -428,6 +462,17 @@ impl SignalEvalSummary {
             ),
         ];
 
+        if let Some(local_feedback) = self.local_feedback.as_ref() {
+            lines.push(format!(
+                "local edit retention: {}% ({}/{})",
+                local_feedback.retention_percent,
+                local_feedback.committed_edits,
+                local_feedback.resolved_edits,
+            ));
+        }
+        lines.push(self.render_failed_command_rate_line());
+        lines.push(self.render_first_successful_change_latency_line());
+
         lines.push(render_gate_line(
             "repair first-step precision",
             self.repair_predictions,
@@ -484,6 +529,36 @@ impl SignalEvalSummary {
             return "sparse-signal policy is staying mostly silent; keep it that way unless precision improves";
         }
         "signal mix looks reasonable; keep tuning by measured precision rather than adding new hint types"
+    }
+
+    fn render_failed_command_rate_line(&self) -> String {
+        if self.holdout_command_calls == 0 {
+            "holdout failed command rate: n/a (0 Bash calls)".to_string()
+        } else {
+            format!(
+                "holdout failed command rate: {:.1}% ({}/{})",
+                percent(
+                    self.holdout_failed_command_calls,
+                    self.holdout_command_calls
+                ),
+                self.holdout_failed_command_calls,
+                self.holdout_command_calls,
+            )
+        }
+    }
+
+    fn render_first_successful_change_latency_line(&self) -> String {
+        match (
+            self.first_successful_change_latency_p50_ms,
+            self.first_successful_change_latency_avg_ms,
+        ) {
+            (Some(p50_ms), Some(avg_ms)) => format!(
+                "holdout first successful change latency: p50 {}ms, avg {}ms ({} sessions)",
+                p50_ms, avg_ms, self.sessions_with_successful_change,
+            ),
+            _ => "holdout first successful change latency: n/a (0 sessions with successful edits)"
+                .to_string(),
+        }
     }
 }
 
@@ -595,6 +670,33 @@ impl PatternStats {
 
     fn is_strong(&self, config: EvalConfig) -> bool {
         self.count >= config.pattern_support_min
+    }
+}
+
+impl LocalFeedbackSummary {
+    pub fn from_workspace(workspace: &WorkspaceState) -> Option<Self> {
+        let committed_edits = workspace
+            .pending_feedback
+            .iter()
+            .filter(|item| item.resolved && item.outcome.as_deref() == Some("committed"))
+            .count();
+        let reverted_edits = workspace
+            .pending_feedback
+            .iter()
+            .filter(|item| item.resolved && item.outcome.as_deref() == Some("reverted"))
+            .count();
+        let resolved_edits = committed_edits + reverted_edits;
+        if resolved_edits == 0 {
+            return None;
+        }
+
+        Some(Self {
+            resolved_edits,
+            committed_edits,
+            reverted_edits,
+            retention_percent: ((committed_edits as f64 / resolved_edits as f64) * 100.0).round()
+                as u32,
+        })
     }
 }
 
@@ -753,9 +855,15 @@ pub fn evaluate_signal_quality(
     let mut summary = SignalEvalSummary {
         project_scope: project_root.map(|path| path.display().to_string()),
         eval_config: config,
+        local_feedback: None,
         comparison_to_default: None,
         sessions_considered: sessions.len(),
         sessions_scored: 0,
+        holdout_command_calls: 0,
+        holdout_failed_command_calls: 0,
+        sessions_with_successful_change: 0,
+        first_successful_change_latency_avg_ms: None,
+        first_successful_change_latency_p50_ms: None,
         edit_points: 0,
         edit_points_with_signal: 0,
         repair_opportunities: 0,
@@ -773,13 +881,32 @@ pub fn evaluate_signal_quality(
         adjacency_breakdown: BTreeMap::new(),
     };
     let mut training = SignalTrainingSet::default();
+    let mut first_successful_change_latencies_ms = Vec::new();
 
     for (index, (session_id, events)) in sessions.iter().enumerate() {
         if index > 0 {
             summary.sessions_scored += 1;
-            score_session(&training, events, config, &mut summary);
+            score_session(
+                &training,
+                events,
+                config,
+                &mut summary,
+                &mut first_successful_change_latencies_ms,
+            );
         }
         training.observe_session(session_id, events);
+    }
+
+    if !first_successful_change_latencies_ms.is_empty() {
+        first_successful_change_latencies_ms.sort_unstable();
+        let p50_index = first_successful_change_latencies_ms.len() / 2;
+        summary.first_successful_change_latency_p50_ms =
+            first_successful_change_latencies_ms.get(p50_index).copied();
+        summary.first_successful_change_latency_avg_ms = Some(
+            (first_successful_change_latencies_ms.iter().sum::<u64>() as f64
+                / first_successful_change_latencies_ms.len() as f64)
+                .round() as u64,
+        );
     }
 
     Ok(Some(summary))
@@ -790,7 +917,18 @@ fn score_session(
     events: &[SessionEvent],
     config: EvalConfig,
     summary: &mut SignalEvalSummary,
+    first_successful_change_latencies_ms: &mut Vec<u64>,
 ) {
+    summary.holdout_command_calls += events.iter().filter(|event| event.tool == "Bash").count();
+    summary.holdout_failed_command_calls += events
+        .iter()
+        .filter(|event| event.tool == "Bash" && event.outcome == Outcome::Failed)
+        .count();
+    if let Some(latency_ms) = first_successful_change_latency_ms(events) {
+        summary.sessions_with_successful_change += 1;
+        first_successful_change_latencies_ms.push(latency_ms);
+    }
+
     for (idx, event) in events.iter().enumerate() {
         if matches!(event.tool.as_str(), "Edit" | "Write") {
             summary.edit_points += 1;
@@ -870,6 +1008,18 @@ fn score_session(
             }
         }
     }
+}
+
+fn first_successful_change_latency_ms(events: &[SessionEvent]) -> Option<u64> {
+    let session_start_ms = events.first()?.timestamp_ms;
+    let first_successful_change_ms = events
+        .iter()
+        .find(|event| {
+            matches!(event.tool.as_str(), "Edit" | "Write") && event.outcome == Outcome::Succeeded
+        })?
+        .timestamp_ms;
+
+    Some(first_successful_change_ms.saturating_sub(session_start_ms) as u64)
 }
 
 fn trace_to_event(trace: &Trace) -> Option<SessionEvent> {
@@ -1227,6 +1377,10 @@ mod tests {
 
         assert_eq!(summary.sessions_considered, 3);
         assert_eq!(summary.sessions_scored, 2);
+        assert_eq!(summary.holdout_command_calls, 4);
+        assert_eq!(summary.holdout_failed_command_calls, 2);
+        assert_eq!(summary.sessions_with_successful_change, 2);
+        assert_eq!(summary.first_successful_change_latency_p50_ms, Some(1_000));
         assert!(summary.repair_predictions >= 1);
         assert!(summary.repair_first_step_hits >= 1);
         assert!(summary.preparation_predictions >= 1);
@@ -1294,9 +1448,15 @@ mod tests {
         let summary = SignalEvalSummary {
             project_scope: None,
             eval_config: EvalConfig::default(),
+            local_feedback: None,
             comparison_to_default: None,
             sessions_considered: 3,
             sessions_scored: 2,
+            holdout_command_calls: 2,
+            holdout_failed_command_calls: 1,
+            sessions_with_successful_change: 2,
+            first_successful_change_latency_avg_ms: Some(1_500),
+            first_successful_change_latency_p50_ms: Some(1_000),
             edit_points: 10,
             edit_points_with_signal: 2,
             repair_opportunities: 2,
@@ -1481,9 +1641,15 @@ mod tests {
         let baseline = SignalEvalSummary {
             project_scope: None,
             eval_config: EvalConfig::default(),
+            local_feedback: None,
             comparison_to_default: None,
             sessions_considered: 3,
             sessions_scored: 2,
+            holdout_command_calls: 2,
+            holdout_failed_command_calls: 1,
+            sessions_with_successful_change: 2,
+            first_successful_change_latency_avg_ms: Some(1_500),
+            first_successful_change_latency_p50_ms: Some(1_000),
             edit_points: 10,
             edit_points_with_signal: 1,
             repair_opportunities: 2,
@@ -1506,9 +1672,15 @@ mod tests {
                 local_history_gate_min: 1,
                 pattern_support_min: 1,
             },
+            local_feedback: None,
             comparison_to_default: None,
             sessions_considered: 3,
             sessions_scored: 2,
+            holdout_command_calls: 2,
+            holdout_failed_command_calls: 1,
+            sessions_with_successful_change: 2,
+            first_successful_change_latency_avg_ms: Some(1_500),
+            first_successful_change_latency_p50_ms: Some(1_000),
             edit_points: 10,
             edit_points_with_signal: 3,
             repair_opportunities: 2,
@@ -1544,9 +1716,15 @@ mod tests {
         let summary = SignalEvalSummary {
             project_scope: None,
             eval_config: EvalConfig::default(),
+            local_feedback: None,
             comparison_to_default: None,
             sessions_considered: 2,
             sessions_scored: 1,
+            holdout_command_calls: 0,
+            holdout_failed_command_calls: 0,
+            sessions_with_successful_change: 0,
+            first_successful_change_latency_avg_ms: None,
+            first_successful_change_latency_p50_ms: None,
             edit_points: 9,
             edit_points_with_signal: 0,
             repair_opportunities: 1,
@@ -1575,9 +1753,15 @@ mod tests {
         let summary = SignalEvalSummary {
             project_scope: None,
             eval_config: EvalConfig::default(),
+            local_feedback: None,
             comparison_to_default: None,
             sessions_considered: 7,
             sessions_scored: 6,
+            holdout_command_calls: 6,
+            holdout_failed_command_calls: 2,
+            sessions_with_successful_change: 3,
+            first_successful_change_latency_avg_ms: Some(1_700),
+            first_successful_change_latency_p50_ms: Some(1_000),
             edit_points: 12,
             edit_points_with_signal: 6,
             repair_opportunities: 0,
@@ -1601,5 +1785,43 @@ mod tests {
         assert!(rendered.contains("adjacency precision: 0.0% >= 10.0% (6 predictions)"));
         assert!(rendered.contains("violations:"));
         assert!(rendered.contains("adjacency precision 0.0% < 10.0% (6 predictions)"));
+    }
+
+    #[test]
+    fn local_feedback_summary_ignores_unresolved_items() {
+        let mut workspace = WorkspaceState::default();
+        workspace
+            .pending_feedback
+            .push_back(crate::workspace::PendingFeedback {
+                file_path: "main.rs".into(),
+                action: "Edit".into(),
+                timestamp_ms: 0,
+                resolved: true,
+                outcome: Some("committed".into()),
+            });
+        workspace
+            .pending_feedback
+            .push_back(crate::workspace::PendingFeedback {
+                file_path: "lib.rs".into(),
+                action: "Edit".into(),
+                timestamp_ms: 0,
+                resolved: true,
+                outcome: Some("reverted".into()),
+            });
+        workspace
+            .pending_feedback
+            .push_back(crate::workspace::PendingFeedback {
+                file_path: "mod.rs".into(),
+                action: "Edit".into(),
+                timestamp_ms: 0,
+                resolved: false,
+                outcome: None,
+            });
+
+        let summary = LocalFeedbackSummary::from_workspace(&workspace).expect("local feedback");
+        assert_eq!(summary.resolved_edits, 2);
+        assert_eq!(summary.committed_edits, 1);
+        assert_eq!(summary.reverted_edits, 1);
+        assert_eq!(summary.retention_percent, 50);
     }
 }
