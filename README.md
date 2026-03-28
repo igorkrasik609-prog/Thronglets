@@ -89,6 +89,18 @@ thronglets eval-signals --hours 168 --max-sessions 200
 thronglets eval-signals --hours 168 --max-sessions 200 --json
 ```
 
+如果你想把热路径和冷路径检查串成一个发布门槛，可以直接跑：
+
+```bash
+cat prehook.log | thronglets release-check --global
+```
+
+它会输出一个总的 `PASS / FAIL`，并分别给出 `profile` 和 `eval` 两段。没有足够离线历史时，`eval` 会是 `SKIP`，而不是因为冷启动直接挡住发布；如果你想把缺失的 prehook 样本也当成失败，可以再加：
+
+```bash
+cat prehook.log | thronglets release-check --global --require-profile-samples
+```
+
 如果你想看全局 trace 池，而不是当前项目，显式加：
 
 ```bash

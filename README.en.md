@@ -89,6 +89,18 @@ If you want machine-readable output for scripts or CI, add:
 thronglets eval-signals --hours 168 --max-sessions 200 --json
 ```
 
+If you want one release-oriented gate that combines hot-path and cold-path checks, run:
+
+```bash
+cat prehook.log | thronglets release-check --global
+```
+
+It prints an overall `PASS / FAIL` plus separate `profile` and `eval` sections. When there is not enough offline history yet, `eval` returns `SKIP` instead of blocking release just because the repo is cold. If you want missing prehook samples to fail the gate as well, add:
+
+```bash
+cat prehook.log | thronglets release-check --global --require-profile-samples
+```
+
 If you want the entire trace pool instead of the current project, add:
 
 ```bash

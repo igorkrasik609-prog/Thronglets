@@ -8,7 +8,9 @@ use thronglets::contracts::{
     GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MATCHER, PREHOOK_MAX_COLLECTIVE_QUERIES,
     PREHOOK_MAX_HINTS,
 };
-use thronglets::eval::{evaluate_signal_quality, EvalConfig, EvalFocus};
+use thronglets::eval::{
+    evaluate_signal_quality, EvalCheckStatus, EvalCheckThresholds, EvalConfig, EvalFocus,
+};
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
@@ -162,6 +164,30 @@ enum Commands {
     /// Check whether profiled prehook logs still fit release-oriented sparse-signal thresholds.
     /// Reads log lines from stdin and exits non-zero on regression.
     ProfileCheck,
+
+    /// Run a release-oriented operator gate across prehook profile logs and offline signal quality.
+    /// Reads optional prehook profile lines from stdin, then evaluates current offline signal quality.
+    ReleaseCheck {
+        /// Look back over traces from the last N hours.
+        #[arg(long, default_value_t = 168)]
+        hours: u64,
+
+        /// Evaluate at most this many recent sessions.
+        #[arg(long, default_value_t = 200)]
+        max_sessions: usize,
+
+        /// Scope evaluation to this project root. Defaults to the current working directory.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+
+        /// Evaluate across the entire trace store instead of scoping to one project.
+        #[arg(long, default_value_t = false)]
+        global: bool,
+
+        /// Fail if no prehook profile samples are supplied on stdin.
+        #[arg(long, default_value_t = false)]
+        require_profile_samples: bool,
+    },
 
     /// Replay recent sessions offline and score sparse-signal usefulness.
     EvalSignals {
@@ -1094,6 +1120,82 @@ async fn main() {
             }
         }
 
+        Commands::ReleaseCheck {
+            hours,
+            max_sessions,
+            project_root,
+            global,
+            require_profile_samples,
+        } => {
+            let mut input = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
+
+            let profile_section = match summarize_prehook_profiles(&input) {
+                Some(summary) => {
+                    let (passed, rendered) =
+                        summary.render_check(&ProfileCheckThresholds::default());
+                    (
+                        if passed { "PASS" } else { "FAIL" },
+                        !passed,
+                        strip_check_header(&rendered),
+                    )
+                }
+                None => (
+                    if require_profile_samples {
+                        "FAIL"
+                    } else {
+                        "SKIP"
+                    },
+                    require_profile_samples,
+                    if require_profile_samples {
+                        "violations: no prehook profile samples found".to_string()
+                    } else {
+                        "notes: no prehook profile samples found".to_string()
+                    },
+                ),
+            };
+
+            let store = open_store(&dir);
+            let project_scope = if global {
+                None
+            } else {
+                Some(project_root.unwrap_or_else(|| {
+                    std::env::current_dir().expect("failed to determine current working directory")
+                }))
+            };
+            let eval_section = match evaluate_signal_quality(
+                &store,
+                hours,
+                max_sessions,
+                project_scope.as_deref(),
+                EvalConfig::default(),
+            )
+            .expect("failed to evaluate signal quality")
+            {
+                Some(summary) => {
+                    let (status, rendered) = summary.render_check(&EvalCheckThresholds::default());
+                    (
+                        status.label(),
+                        matches!(status, EvalCheckStatus::Fail),
+                        strip_check_header(&rendered),
+                    )
+                }
+                None => (
+                    "SKIP",
+                    false,
+                    "notes: not enough recent session history to evaluate signals yet".to_string(),
+                ),
+            };
+
+            let overall_failed = profile_section.1 || eval_section.1;
+            println!("{}", if overall_failed { "FAIL" } else { "PASS" });
+            print_release_section("profile", profile_section.0, &profile_section.2);
+            print_release_section("eval", eval_section.0, &eval_section.2);
+            if overall_failed {
+                std::process::exit(1);
+            }
+        }
+
         Commands::EvalSignals {
             hours,
             max_sessions,
@@ -1470,6 +1572,17 @@ fn profile_file_guidance_gate(
         "open"
     } else {
         "closed"
+    }
+}
+
+fn strip_check_header(rendered: &str) -> String {
+    rendered.lines().skip(1).collect::<Vec<_>>().join("\n")
+}
+
+fn print_release_section(name: &str, status: &str, body: &str) {
+    println!("{name}: {status}");
+    for line in body.lines() {
+        println!("  {line}");
     }
 }
 

@@ -10,6 +10,14 @@ const FILE_WINDOW_MS: i64 = 300_000;
 const REPAIR_WINDOW_MS: i64 = 600_000;
 const LOCAL_HISTORY_GATE_MIN: u32 = 2;
 const PATTERN_SUPPORT_MIN: u32 = 2;
+const DEFAULT_MIN_EVAL_SCORED_SESSIONS: usize = 5;
+const DEFAULT_MIN_EVAL_EDIT_POINTS: usize = 10;
+const DEFAULT_MIN_EDIT_SILENCE_PERCENT: f64 = 85.0;
+const DEFAULT_MIN_REPAIR_PREDICTIONS: usize = 3;
+const DEFAULT_MIN_REPAIR_FIRST_STEP_PRECISION_PERCENT: f64 = 25.0;
+const DEFAULT_MIN_FILE_GUIDANCE_PREDICTIONS: usize = 5;
+const DEFAULT_MIN_PREPARATION_PRECISION_PERCENT: f64 = 10.0;
+const DEFAULT_MIN_ADJACENCY_PRECISION_PERCENT: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvalFocus {
@@ -17,6 +25,13 @@ pub enum EvalFocus {
     Repair,
     Preparation,
     Adjacency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalCheckStatus {
+    Pass,
+    Fail,
+    Skip,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -56,6 +71,41 @@ pub struct SignalEvalSummary {
     pub repair_breakdown: BTreeMap<String, RepairEvalBreakdown>,
     pub preparation_breakdown: BTreeMap<String, FileGuidanceEvalBreakdown>,
     pub adjacency_breakdown: BTreeMap<String, FileGuidanceEvalBreakdown>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvalCheckThresholds {
+    pub min_scored_sessions: usize,
+    pub min_edit_points: usize,
+    pub min_edit_silence_percent: f64,
+    pub min_repair_predictions: usize,
+    pub min_repair_first_step_precision_percent: f64,
+    pub min_file_guidance_predictions: usize,
+    pub min_preparation_precision_percent: f64,
+    pub min_adjacency_precision_percent: f64,
+}
+
+impl Default for EvalCheckThresholds {
+    fn default() -> Self {
+        Self {
+            min_scored_sessions: DEFAULT_MIN_EVAL_SCORED_SESSIONS,
+            min_edit_points: DEFAULT_MIN_EVAL_EDIT_POINTS,
+            min_edit_silence_percent: DEFAULT_MIN_EDIT_SILENCE_PERCENT,
+            min_repair_predictions: DEFAULT_MIN_REPAIR_PREDICTIONS,
+            min_repair_first_step_precision_percent:
+                DEFAULT_MIN_REPAIR_FIRST_STEP_PRECISION_PERCENT,
+            min_file_guidance_predictions: DEFAULT_MIN_FILE_GUIDANCE_PREDICTIONS,
+            min_preparation_precision_percent: DEFAULT_MIN_PREPARATION_PRECISION_PERCENT,
+            min_adjacency_precision_percent: DEFAULT_MIN_ADJACENCY_PRECISION_PERCENT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalCheckResult {
+    pub status: EvalCheckStatus,
+    pub violations: Vec<String>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -254,6 +304,172 @@ impl SignalEvalSummary {
         self
     }
 
+    pub fn check(&self, thresholds: &EvalCheckThresholds) -> EvalCheckResult {
+        let mut notes = Vec::new();
+        if self.sessions_scored < thresholds.min_scored_sessions {
+            notes.push(format!(
+                "need at least {} scored sessions (got {}) before enforcing offline precision gates",
+                thresholds.min_scored_sessions, self.sessions_scored
+            ));
+        }
+        if self.edit_points < thresholds.min_edit_points {
+            notes.push(format!(
+                "need at least {} edit points (got {}) before enforcing offline precision gates",
+                thresholds.min_edit_points, self.edit_points
+            ));
+        }
+
+        if !notes.is_empty() {
+            return EvalCheckResult {
+                status: EvalCheckStatus::Skip,
+                violations: Vec::new(),
+                notes,
+            };
+        }
+
+        let mut violations = Vec::new();
+        let mut soft_notes = Vec::new();
+        let edit_silence_percent = percent(
+            self.edit_points
+                .saturating_sub(self.edit_points_with_signal),
+            self.edit_points,
+        );
+        if edit_silence_percent < thresholds.min_edit_silence_percent {
+            violations.push(format!(
+                "edit silence rate {:.1}% < {:.1}%",
+                edit_silence_percent, thresholds.min_edit_silence_percent
+            ));
+        }
+
+        if self.repair_predictions >= thresholds.min_repair_predictions {
+            let repair_first_step_precision =
+                percent(self.repair_first_step_hits, self.repair_predictions);
+            if repair_first_step_precision < thresholds.min_repair_first_step_precision_percent {
+                violations.push(format!(
+                    "repair first-step precision {:.1}% < {:.1}% ({} predictions)",
+                    repair_first_step_precision,
+                    thresholds.min_repair_first_step_precision_percent,
+                    self.repair_predictions
+                ));
+            }
+        } else if self.repair_opportunities > 0 {
+            soft_notes.push(format!(
+                "repair precision gate inactive: need at least {} predictions (got {})",
+                thresholds.min_repair_predictions, self.repair_predictions
+            ));
+        }
+
+        if self.preparation_predictions >= thresholds.min_file_guidance_predictions {
+            let preparation_precision =
+                percent(self.preparation_hits, self.preparation_predictions);
+            if preparation_precision < thresholds.min_preparation_precision_percent {
+                violations.push(format!(
+                    "preparation precision {:.1}% < {:.1}% ({} predictions)",
+                    preparation_precision,
+                    thresholds.min_preparation_precision_percent,
+                    self.preparation_predictions
+                ));
+            }
+        } else if self.edit_points > 0 {
+            soft_notes.push(format!(
+                "preparation precision gate inactive: need at least {} predictions (got {})",
+                thresholds.min_file_guidance_predictions, self.preparation_predictions
+            ));
+        }
+
+        if self.adjacency_predictions >= thresholds.min_file_guidance_predictions {
+            let adjacency_precision = percent(self.adjacency_hits, self.adjacency_predictions);
+            if adjacency_precision < thresholds.min_adjacency_precision_percent {
+                violations.push(format!(
+                    "adjacency precision {:.1}% < {:.1}% ({} predictions)",
+                    adjacency_precision,
+                    thresholds.min_adjacency_precision_percent,
+                    self.adjacency_predictions
+                ));
+            }
+        } else if self.edit_points > 0 {
+            soft_notes.push(format!(
+                "adjacency precision gate inactive: need at least {} predictions (got {})",
+                thresholds.min_file_guidance_predictions, self.adjacency_predictions
+            ));
+        }
+
+        EvalCheckResult {
+            status: if violations.is_empty() {
+                EvalCheckStatus::Pass
+            } else {
+                EvalCheckStatus::Fail
+            },
+            violations,
+            notes: soft_notes,
+        }
+    }
+
+    pub fn render_check(&self, thresholds: &EvalCheckThresholds) -> (EvalCheckStatus, String) {
+        let result = self.check(thresholds);
+        let edit_silence_percent = percent(
+            self.edit_points
+                .saturating_sub(self.edit_points_with_signal),
+            self.edit_points,
+        );
+        let mut lines = vec![
+            result.status.label().to_string(),
+            format!(
+                "sessions scored: {} >= {}",
+                self.sessions_scored, thresholds.min_scored_sessions
+            ),
+            format!(
+                "edit points: {} >= {}",
+                self.edit_points, thresholds.min_edit_points
+            ),
+            format!(
+                "edit silence rate: {:.1}% >= {:.1}%",
+                edit_silence_percent, thresholds.min_edit_silence_percent
+            ),
+        ];
+
+        lines.push(render_gate_line(
+            "repair first-step precision",
+            self.repair_predictions,
+            thresholds.min_repair_predictions,
+            percent(self.repair_first_step_hits, self.repair_predictions),
+            thresholds.min_repair_first_step_precision_percent,
+        ));
+        lines.push(render_gate_line(
+            "preparation precision",
+            self.preparation_predictions,
+            thresholds.min_file_guidance_predictions,
+            percent(self.preparation_hits, self.preparation_predictions),
+            thresholds.min_preparation_precision_percent,
+        ));
+        lines.push(render_gate_line(
+            "adjacency precision",
+            self.adjacency_predictions,
+            thresholds.min_file_guidance_predictions,
+            percent(self.adjacency_hits, self.adjacency_predictions),
+            thresholds.min_adjacency_precision_percent,
+        ));
+
+        match result.status {
+            EvalCheckStatus::Pass => {}
+            EvalCheckStatus::Fail => {
+                lines.push(format!("violations: {}", result.violations.join("; ")));
+            }
+            EvalCheckStatus::Skip => {
+                lines.push(format!("notes: {}", result.notes.join("; ")));
+            }
+        }
+
+        if matches!(result.status, EvalCheckStatus::Pass | EvalCheckStatus::Fail)
+            && !result.notes.is_empty()
+        {
+            lines.push(format!("notes: {}", result.notes.join("; ")));
+        }
+        lines.push(format!("diagnosis: {}", self.diagnosis()));
+
+        (result.status, lines.join("\n"))
+    }
+
     pub fn diagnosis(&self) -> &'static str {
         if self.repair_opportunities > 0 && self.repair_predictions == 0 {
             return "repair has too little repeated support; collect more failed->fixed sequences before widening hints";
@@ -268,6 +484,16 @@ impl SignalEvalSummary {
             return "sparse-signal policy is staying mostly silent; keep it that way unless precision improves";
         }
         "signal mix looks reasonable; keep tuning by measured precision rather than adding new hint types"
+    }
+}
+
+impl EvalCheckStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            EvalCheckStatus::Pass => "PASS",
+            EvalCheckStatus::Fail => "FAIL",
+            EvalCheckStatus::Skip => "SKIP",
+        }
     }
 }
 
@@ -815,6 +1041,26 @@ fn format_delta_tenths_pp(delta_tenths_pp: i32) -> String {
     format!("{:+.1}pp", delta_tenths_pp as f64 / 10.0)
 }
 
+fn render_gate_line(
+    label: &str,
+    predictions: usize,
+    min_predictions: usize,
+    precision_percent: f64,
+    threshold_percent: f64,
+) -> String {
+    if predictions >= min_predictions {
+        format!(
+            "{label}: {:.1}% >= {:.1}% ({} predictions)",
+            precision_percent, threshold_percent, predictions
+        )
+    } else {
+        format!(
+            "{label}: skipped (need at least {} predictions, got {})",
+            min_predictions, predictions
+        )
+    }
+}
+
 fn render_repair_breakdown(breakdown: &BTreeMap<String, RepairEvalBreakdown>) -> String {
     if breakdown.is_empty() {
         return "none".to_string();
@@ -1292,5 +1538,69 @@ mod tests {
         assert_eq!(comparison.preparation_gate_block_rate_delta_tenths_pp, -300);
         assert!(candidate.render().contains("vs default (2/2):"));
         assert!(candidate.render().contains("prep pred +2"));
+    }
+
+    #[test]
+    fn eval_check_skips_when_history_is_too_thin() {
+        let summary = SignalEvalSummary {
+            project_scope: None,
+            eval_config: EvalConfig::default(),
+            comparison_to_default: None,
+            sessions_considered: 2,
+            sessions_scored: 1,
+            edit_points: 9,
+            edit_points_with_signal: 0,
+            repair_opportunities: 1,
+            repair_predictions: 0,
+            repair_first_step_hits: 0,
+            repair_exact_hits: 0,
+            preparation_gated_edit_points: 9,
+            preparation_predictions: 0,
+            preparation_hits: 0,
+            adjacency_gated_edit_points: 9,
+            adjacency_predictions: 0,
+            adjacency_hits: 0,
+            repair_breakdown: BTreeMap::new(),
+            preparation_breakdown: BTreeMap::new(),
+            adjacency_breakdown: BTreeMap::new(),
+        };
+
+        let (status, rendered) = summary.render_check(&EvalCheckThresholds::default());
+        assert_eq!(status, EvalCheckStatus::Skip);
+        assert!(rendered.starts_with("SKIP"));
+        assert!(rendered.contains("need at least 5 scored sessions"));
+    }
+
+    #[test]
+    fn eval_check_fails_when_adjacency_is_noisy_with_enough_support() {
+        let summary = SignalEvalSummary {
+            project_scope: None,
+            eval_config: EvalConfig::default(),
+            comparison_to_default: None,
+            sessions_considered: 7,
+            sessions_scored: 6,
+            edit_points: 12,
+            edit_points_with_signal: 6,
+            repair_opportunities: 0,
+            repair_predictions: 0,
+            repair_first_step_hits: 0,
+            repair_exact_hits: 0,
+            preparation_gated_edit_points: 0,
+            preparation_predictions: 0,
+            preparation_hits: 0,
+            adjacency_gated_edit_points: 0,
+            adjacency_predictions: 6,
+            adjacency_hits: 0,
+            repair_breakdown: BTreeMap::new(),
+            preparation_breakdown: BTreeMap::new(),
+            adjacency_breakdown: BTreeMap::new(),
+        };
+
+        let (status, rendered) = summary.render_check(&EvalCheckThresholds::default());
+        assert_eq!(status, EvalCheckStatus::Fail);
+        assert!(rendered.starts_with("FAIL"));
+        assert!(rendered.contains("adjacency precision: 0.0% >= 10.0% (6 predictions)"));
+        assert!(rendered.contains("violations:"));
+        assert!(rendered.contains("adjacency precision 0.0% < 10.0% (6 predictions)"));
     }
 }
