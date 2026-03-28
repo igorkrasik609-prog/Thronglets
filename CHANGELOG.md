@@ -17,6 +17,7 @@
 - **True last-resort git fallback** — `git history` now runs only when prehook has no higher-value signal at all, including danger-only cases
 - **Top optimization candidate** — `profile-summary` now emits a single highest-value tuning target derived from path hotspots
 - **Output-budget observability** — `profile-summary` now reports emitted-line distribution and max-hint saturation, so selector tightening can be driven by actual budget pressure
+- **Release-facing profile check** — `thronglets profile-check` now turns profiled prehook logs into a PASS/FAIL gate with sparse-signal thresholds and a regression exit code
 
 ### Collective Learning
 

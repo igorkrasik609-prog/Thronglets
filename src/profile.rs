@@ -2,6 +2,11 @@ use crate::contracts::PREHOOK_MAX_HINTS;
 use std::collections::BTreeMap;
 
 const PREHOOK_PROFILE_PREFIX: &str = "[thronglets:prehook] ";
+const DEFAULT_MIN_PROFILE_SAMPLES: usize = 10;
+const DEFAULT_MAX_AVG_STDOUT_BYTES: f64 = 80.0;
+const DEFAULT_MAX_P95_STDOUT_BYTES: usize = 160;
+const DEFAULT_MAX_AVG_COLLECTIVE_QUERIES: f64 = 0.25;
+const DEFAULT_MAX_HINT_SATURATION_PERCENT: f64 = 20.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrehookProfileSample {
@@ -41,6 +46,27 @@ pub struct DecisionPathCost {
     pub total_stdout_bytes: usize,
     pub total_us: u128,
     pub collective_queries_used: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileCheckThresholds {
+    pub min_samples: usize,
+    pub max_avg_stdout_bytes: f64,
+    pub max_p95_stdout_bytes: usize,
+    pub max_avg_collective_queries: f64,
+    pub max_hint_saturation_percent: f64,
+}
+
+impl Default for ProfileCheckThresholds {
+    fn default() -> Self {
+        Self {
+            min_samples: DEFAULT_MIN_PROFILE_SAMPLES,
+            max_avg_stdout_bytes: DEFAULT_MAX_AVG_STDOUT_BYTES,
+            max_p95_stdout_bytes: DEFAULT_MAX_P95_STDOUT_BYTES,
+            max_avg_collective_queries: DEFAULT_MAX_AVG_COLLECTIVE_QUERIES,
+            max_hint_saturation_percent: DEFAULT_MAX_HINT_SATURATION_PERCENT,
+        }
+    }
 }
 
 pub fn parse_prehook_profile_line(line: &str) -> Option<PrehookProfileSample> {
@@ -222,6 +248,79 @@ impl PrehookProfileSummary {
             )
         }
     }
+
+    pub fn saturation_percent(&self) -> f64 {
+        self.saturated_samples as f64 / self.samples as f64 * 100.0
+    }
+
+    pub fn check(&self, thresholds: &ProfileCheckThresholds) -> Vec<String> {
+        let mut failures = Vec::new();
+
+        if self.samples < thresholds.min_samples {
+            failures.push(format!(
+                "need at least {} samples (got {})",
+                thresholds.min_samples, self.samples
+            ));
+        }
+        if self.avg_stdout_bytes > thresholds.max_avg_stdout_bytes {
+            failures.push(format!(
+                "avg_stdout_bytes {:.1} > {:.1}",
+                self.avg_stdout_bytes, thresholds.max_avg_stdout_bytes
+            ));
+        }
+        if self.p95_stdout_bytes > thresholds.max_p95_stdout_bytes {
+            failures.push(format!(
+                "p95_stdout_bytes {} > {}",
+                self.p95_stdout_bytes, thresholds.max_p95_stdout_bytes
+            ));
+        }
+        if self.avg_collective_queries_used > thresholds.max_avg_collective_queries {
+            failures.push(format!(
+                "avg_collective_queries_used {:.2} > {:.2}",
+                self.avg_collective_queries_used, thresholds.max_avg_collective_queries
+            ));
+        }
+        if self.saturation_percent() > thresholds.max_hint_saturation_percent {
+            failures.push(format!(
+                "max_hint_saturation {:.1}% > {:.1}%",
+                self.saturation_percent(),
+                thresholds.max_hint_saturation_percent
+            ));
+        }
+
+        failures
+    }
+
+    pub fn render_check(&self, thresholds: &ProfileCheckThresholds) -> (bool, String) {
+        let failures = self.check(thresholds);
+        let mut lines = vec![
+            format!("samples: {}", self.samples),
+            format!("avg stdout_bytes: {:.1} <= {:.1}", self.avg_stdout_bytes, thresholds.max_avg_stdout_bytes),
+            format!("p95 stdout_bytes: {} <= {}", self.p95_stdout_bytes, thresholds.max_p95_stdout_bytes),
+            format!(
+                "avg collective_queries_used: {:.2} <= {:.2}",
+                self.avg_collective_queries_used, thresholds.max_avg_collective_queries
+            ),
+            format!(
+                "max-hint saturation: {:.1}% <= {:.1}%",
+                self.saturation_percent(),
+                thresholds.max_hint_saturation_percent
+            ),
+        ];
+
+        if failures.is_empty() {
+            lines.insert(0, "PASS".to_string());
+            (true, lines.join("\n"))
+        } else {
+            lines.insert(0, "FAIL".to_string());
+            lines.push(format!("violations: {}", failures.join("; ")));
+            lines.push(format!(
+                "top optimization candidate: {}",
+                self.top_optimization_candidate()
+            ));
+            (false, lines.join("\n"))
+        }
+    }
 }
 
 fn render_counts(counts: &BTreeMap<String, usize>) -> String {
@@ -351,5 +450,49 @@ mod tests {
             summary.top_optimization_candidate(),
             "reduce collective queries in repair path (collective_queries=1, avg_stdout_bytes=88.0)"
         );
+    }
+
+    #[test]
+    fn profile_check_passes_when_metrics_fit_thresholds() {
+        let summary = summarize_prehook_profiles(
+            "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=40 output_mode=next-step decision_path=repair evidence_scope=collective file_guidance_gate=open collective_queries_used=0 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=1 stdout_bytes=30 output_mode=context-only decision_path=history evidence_scope=none file_guidance_gate=closed collective_queries_used=0 total_us=200\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100",
+        )
+        .unwrap();
+
+        let (passed, rendered) = summary.render_check(&ProfileCheckThresholds::default());
+        assert!(passed);
+        assert!(rendered.starts_with("PASS"));
+    }
+
+    #[test]
+    fn profile_check_fails_when_metrics_exceed_thresholds() {
+        let summary = summarize_prehook_profiles(
+            "[thronglets:prehook] tool=Edit emitted=3 stdout_bytes=200 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=180 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300",
+        )
+        .unwrap();
+
+        let (passed, rendered) = summary.render_check(&ProfileCheckThresholds::default());
+        assert!(!passed);
+        assert!(rendered.starts_with("FAIL"));
+        assert!(rendered.contains("violations:"));
+        assert!(rendered.contains("top optimization candidate: reduce collective queries in adjacency path"));
     }
 }

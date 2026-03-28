@@ -18,6 +18,23 @@ fn run_profile_summary(input: &str) -> std::process::Output {
     child.wait_with_output().expect("wait for thronglets")
 }
 
+fn run_profile_check(input: &str) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .arg("profile-check")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn thronglets profile-check");
+
+    {
+        let mut stdin = child.stdin.take().expect("stdin available");
+        stdin.write_all(input.as_bytes()).expect("write stdin");
+    }
+
+    child.wait_with_output().expect("wait for thronglets")
+}
+
 #[test]
 fn profile_summary_aggregates_profile_lines() {
     let output = run_profile_summary(
@@ -50,4 +67,45 @@ fn profile_summary_reports_when_no_samples_exist() {
 
     assert!(output.status.success(), "profile-summary failed: {}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "no prehook profile samples found");
+}
+
+#[test]
+fn profile_check_passes_for_sparse_logs() {
+    let output = run_profile_check(
+        "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=40 output_mode=next-step decision_path=repair evidence_scope=collective file_guidance_gate=open collective_queries_used=0 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=1 stdout_bytes=30 output_mode=context-only decision_path=history evidence_scope=none file_guidance_gate=closed collective_queries_used=0 total_us=200\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n\
+         [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100\n",
+    );
+
+    assert!(output.status.success(), "profile-check failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("PASS"));
+}
+
+#[test]
+fn profile_check_fails_for_regression_logs() {
+    let output = run_profile_check(
+        "[thronglets:prehook] tool=Edit emitted=3 stdout_bytes=200 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=180 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n\
+         [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open collective_queries_used=1 total_us=300\n",
+    );
+
+    assert!(!output.status.success(), "profile-check unexpectedly passed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("FAIL"));
+    assert!(stdout.contains("violations:"));
+    assert!(stdout.contains("top optimization candidate: reduce collective queries in adjacency path"));
 }

@@ -67,6 +67,14 @@ Those distributions are now hotspot-sorted, and `decision path hotspots` shows w
 If you only want the next cut to make, read the single `top optimization candidate` line.
 If you're deciding whether to tighten the selector further, read `emitted lines` and `max-hint saturation` first: only frequent 3-line saturation is a strong reason to keep trimming `maybe also`.
 
+For a release gate, you can run:
+
+```bash
+cat prehook.log | thronglets profile-check
+```
+
+It checks default thresholds for `avg/p95 stdout_bytes`, `avg collective_queries_used`, and `max-hint saturation`, and exits non-zero on regression.
+
 ## Why This Matters
 
 Without Thronglets, your AI approaches every file blind. It doesn't know:

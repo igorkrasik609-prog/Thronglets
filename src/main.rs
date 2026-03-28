@@ -14,7 +14,7 @@ use thronglets::context::simhash;
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
-use thronglets::profile::summarize_prehook_profiles;
+use thronglets::profile::{summarize_prehook_profiles, ProfileCheckThresholds};
 use thronglets::signals::{select as select_signals, Recommendation, Signal, SignalKind, StepCandidate};
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
@@ -135,6 +135,10 @@ enum Commands {
     /// Summarize stderr lines emitted by THRONGLETS_PROFILE_PREHOOK=1.
     /// Reads log lines from stdin and prints aggregate stats.
     ProfileSummary,
+
+    /// Check whether profiled prehook logs still fit release-oriented sparse-signal thresholds.
+    /// Reads log lines from stdin and exits non-zero on regression.
+    ProfileCheck,
 }
 
 fn data_dir(cli_override: &Option<PathBuf>) -> PathBuf {
@@ -938,6 +942,25 @@ async fn main() {
                 println!("{}", summary.render());
             } else {
                 println!("no prehook profile samples found");
+            }
+        }
+
+        Commands::ProfileCheck => {
+            let mut input = String::new();
+            if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+                std::process::exit(0);
+            }
+
+            if let Some(summary) = summarize_prehook_profiles(&input) {
+                let (passed, rendered) = summary.render_check(&ProfileCheckThresholds::default());
+                println!("{rendered}");
+                if !passed {
+                    std::process::exit(1);
+                }
+            } else {
+                println!("FAIL");
+                println!("violations: no prehook profile samples found");
+                std::process::exit(1);
             }
         }
     }

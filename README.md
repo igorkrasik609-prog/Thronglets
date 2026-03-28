@@ -67,6 +67,14 @@ cat prehook.log | thronglets profile-summary
 如果只想知道下一刀该砍哪，直接看 `top optimization candidate` 这一行。
 如果想判断要不要进一步收紧 selector，就先看 `emitted lines` 和 `max-hint saturation`：只有经常顶到 3 行上限时，才值得认真考虑继续砍 `maybe also`。
 
+做发布前检查时，可以直接用：
+
+```bash
+cat prehook.log | thronglets profile-check
+```
+
+它会基于默认阈值检查 `avg/p95 stdout_bytes`、`avg collective_queries_used` 和 `max-hint saturation`，失败时返回非零退出码。
+
 ## 为什么这很重要
 
 没有 Thronglets，你的 AI 对每个文件都是盲的。它不知道：
