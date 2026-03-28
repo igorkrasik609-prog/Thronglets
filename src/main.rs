@@ -794,19 +794,44 @@ fn render_signal_feed_results(results: &[thronglets::posts::SignalFeedResult]) {
         return;
     }
 
-    println!("Recent explicit signals:");
-    for result in results {
+    let focused: Vec<_> = results
+        .iter()
+        .filter(|result| result.focus_tier != "background")
+        .take(3)
+        .collect();
+    let display: Vec<_> = if focused.is_empty() {
+        results.iter().take(3).collect()
+    } else {
+        focused
+    };
+    let omitted_count = results.len().saturating_sub(display.len());
+
+    println!(
+        "{}",
+        if omitted_count > 0 {
+            "Signal focus:"
+        } else {
+            "Recent explicit signals:"
+        }
+    );
+    for result in display {
         println!("  {}: {}", result.kind, result.message);
         let model_suffix = if result.model_count > 1 {
             format!(" models={}", result.model_count)
         } else {
             String::new()
         };
+        let focus_suffix = if result.focus_tier != "background" {
+            format!(" focus={}", result.focus_tier)
+        } else {
+            String::new()
+        };
         println!(
-            "    posts={} sources={}{} (local {} / collective {}) scope={} expires_in≈{}h",
+            "    posts={} sources={}{}{} (local {} / collective {}) scope={} expires_in≈{}h",
             result.total_posts,
             result.source_count,
             model_suffix,
+            focus_suffix,
             result.local_source_count,
             result.collective_source_count,
             result.evidence_scope,
@@ -815,6 +840,9 @@ fn render_signal_feed_results(results: &[thronglets::posts::SignalFeedResult]) {
         for context in &result.contexts {
             println!("    context: {context}");
         }
+    }
+    if omitted_count > 0 {
+        println!("  + {omitted_count} lower-signal entries omitted");
     }
 }
 

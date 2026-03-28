@@ -117,6 +117,8 @@ pub struct SignalFeedResult {
     pub source_count: u32,
     pub model_count: u32,
     pub corroboration_tier: String,
+    pub focus_score: u8,
+    pub focus_tier: String,
     pub local_source_count: u32,
     pub collective_source_count: u32,
     pub evidence_scope: String,
@@ -186,7 +188,7 @@ fn create_signal_trace_at(
         expires_at: expires_at_ms(now_ms, config.ttl_hours),
     };
 
-    Trace::new(
+    let mut trace = Trace::new(
         kind.capability(),
         Outcome::Succeeded,
         0,
@@ -197,7 +199,9 @@ fn create_signal_trace_at(
         config.model_id,
         node_pubkey,
         sign_fn,
-    )
+    );
+    trace.timestamp = now_ms;
+    trace
 }
 
 pub fn summarize_signal_traces(
@@ -348,19 +352,28 @@ pub fn summarize_recent_signal_feed(
         .map(|group| {
             let local_source_count = group.local_sources.len() as u32;
             let collective_source_count = group.collective_sources.len() as u32;
+            let source_count = group.sources.len() as u32;
+            let model_count = group.models.len() as u32;
             let evidence_scope =
                 signal_evidence_scope(local_source_count, collective_source_count).to_string();
+            let freshness_rank =
+                signal_freshness_rank(now_ms, group.latest_timestamp, group.expires_at);
+            let focus_score = signal_focus_score(
+                collective_source_count,
+                source_count,
+                model_count,
+                freshness_rank,
+            );
             SignalFeedResult {
                 kind: group.kind.as_str().to_string(),
                 message: group.message,
                 total_posts: group.total_posts,
-                source_count: group.sources.len() as u32,
-                model_count: group.models.len() as u32,
-                corroboration_tier: signal_corroboration_tier(
-                    group.sources.len() as u32,
-                    group.models.len() as u32,
-                )
-                .to_string(),
+                source_count,
+                model_count,
+                corroboration_tier: signal_corroboration_tier(source_count, model_count)
+                    .to_string(),
+                focus_score,
+                focus_tier: signal_focus_tier(focus_score).to_string(),
                 local_source_count,
                 collective_source_count,
                 evidence_scope,
@@ -372,17 +385,9 @@ pub fn summarize_recent_signal_feed(
         .collect();
 
     results.sort_by(|a, b| {
-        b.collective_source_count
-            .cmp(&a.collective_source_count)
-            .then_with(|| {
-                signal_corroboration_rank(b.source_count, b.model_count)
-                    .cmp(&signal_corroboration_rank(a.source_count, a.model_count))
-            })
-            .then_with(|| {
-                signal_freshness_rank(now_ms, b.latest_timestamp, b.expires_at).cmp(
-                    &signal_freshness_rank(now_ms, a.latest_timestamp, a.expires_at),
-                )
-            })
+        b.focus_score
+            .cmp(&a.focus_score)
+            .then_with(|| b.collective_source_count.cmp(&a.collective_source_count))
             .then_with(|| b.source_count.cmp(&a.source_count))
             .then_with(|| b.model_count.cmp(&a.model_count))
             .then_with(|| b.latest_timestamp.cmp(&a.latest_timestamp))
@@ -471,6 +476,27 @@ fn signal_freshness_rank(now_ms: u64, latest_timestamp: u64, expires_at: u64) ->
         1
     } else {
         0
+    }
+}
+
+fn signal_focus_score(
+    collective_source_count: u32,
+    source_count: u32,
+    model_count: u32,
+    freshness_rank: u8,
+) -> u8 {
+    collective_source_count.min(2) as u8
+        + signal_corroboration_rank(source_count, model_count)
+        + freshness_rank
+}
+
+fn signal_focus_tier(focus_score: u8) -> &'static str {
+    if focus_score >= 5 {
+        "primary"
+    } else if focus_score >= 3 {
+        "secondary"
+    } else {
+        "background"
     }
 }
 
@@ -671,6 +697,7 @@ mod tests {
         assert_eq!(results[0].collective_source_count, 2);
         assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].corroboration_tier, "multi_model");
+        assert_eq!(results[0].focus_tier, "primary");
         assert_eq!(results[0].evidence_scope, "collective");
     }
 
@@ -746,10 +773,12 @@ mod tests {
         assert_eq!(results[0].source_count, 2);
         assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].corroboration_tier, "multi_model");
+        assert_eq!(results[0].focus_tier, "primary");
         assert_eq!(results[1].message, "rerun the targeted test first");
         assert_eq!(results[1].source_count, 2);
         assert_eq!(results[1].model_count, 1);
         assert_eq!(results[1].corroboration_tier, "repeated_source");
+        assert_eq!(results[1].focus_tier, "primary");
     }
 
     #[test]
@@ -945,8 +974,10 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].message, "rerun the targeted test first");
         assert_eq!(results[0].corroboration_tier, "multi_model");
+        assert_eq!(results[0].focus_tier, "primary");
         assert_eq!(results[1].message, "run release-check before push");
         assert_eq!(results[1].corroboration_tier, "multi_model");
+        assert_eq!(results[1].focus_tier, "secondary");
         assert_eq!(results[0].source_count, results[1].source_count);
         assert_eq!(
             results[0].collective_source_count,
@@ -964,6 +995,8 @@ mod tests {
                 source_count: 1,
                 model_count: 1,
                 corroboration_tier: "single_source".into(),
+                focus_score: 0,
+                focus_tier: "background".into(),
                 local_source_count: 1,
                 collective_source_count: 0,
                 evidence_scope: "local".into(),
@@ -978,6 +1011,8 @@ mod tests {
                 source_count: 2,
                 model_count: 2,
                 corroboration_tier: "multi_model".into(),
+                focus_score: 6,
+                focus_tier: "primary".into(),
                 local_source_count: 0,
                 collective_source_count: 2,
                 evidence_scope: "collective".into(),
@@ -1017,5 +1052,18 @@ mod tests {
                 > signal_freshness_rank(now, stale_latest, stale_latest + 72 * 60 * 60 * 1000)
         );
         assert!(signal_freshness_rank(now, now, expires) >= 1);
+    }
+
+    #[test]
+    fn signal_focus_tier_prefers_collective_multi_model() {
+        assert_eq!(signal_focus_tier(signal_focus_score(2, 2, 2, 2)), "primary");
+        assert_eq!(
+            signal_focus_tier(signal_focus_score(1, 2, 1, 1)),
+            "secondary"
+        );
+        assert_eq!(
+            signal_focus_tier(signal_focus_score(0, 1, 1, 0)),
+            "background"
+        );
     }
 }
