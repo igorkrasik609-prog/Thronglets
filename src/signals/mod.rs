@@ -40,7 +40,7 @@ pub struct Recommendation {
     pub candidate: Option<StepCandidate>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StepAction {
     pub tool: String,
     pub target: Option<String>,

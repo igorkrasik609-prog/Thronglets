@@ -11,6 +11,7 @@ use thronglets::contracts::{
     PREHOOK_MAX_HINTS,
 };
 use thronglets::context::simhash;
+use thronglets::eval::evaluate_signal_quality;
 use thronglets::identity::NodeIdentity;
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
@@ -139,6 +140,17 @@ enum Commands {
     /// Check whether profiled prehook logs still fit release-oriented sparse-signal thresholds.
     /// Reads log lines from stdin and exits non-zero on regression.
     ProfileCheck,
+
+    /// Replay recent sessions offline and score sparse-signal usefulness.
+    EvalSignals {
+        /// Look back over traces from the last N hours.
+        #[arg(long, default_value_t = 168)]
+        hours: u64,
+
+        /// Evaluate at most this many recent sessions.
+        #[arg(long, default_value_t = 200)]
+        max_sessions: usize,
+    },
 }
 
 fn data_dir(cli_override: &Option<PathBuf>) -> PathBuf {
@@ -961,6 +973,16 @@ async fn main() {
                 println!("FAIL");
                 println!("violations: no prehook profile samples found");
                 std::process::exit(1);
+            }
+        }
+
+        Commands::EvalSignals { hours, max_sessions } => {
+            let store = open_store(&dir);
+            match evaluate_signal_quality(&store, hours, max_sessions)
+                .expect("failed to evaluate signal quality")
+            {
+                Some(summary) => println!("{}", summary.render()),
+                None => println!("not enough recent session history to evaluate signals yet"),
             }
         }
     }

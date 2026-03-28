@@ -206,6 +206,28 @@ impl TraceStore {
         Self::collect_traces(&mut stmt, params![session_id, limit as i64])
     }
 
+    /// Return recent session ids ordered from oldest to newest among the most
+    /// recent `limit` sessions in the given time window.
+    pub fn recent_session_ids(&self, hours: u64, limit: usize) -> rusqlite::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let mut stmt = conn.prepare(
+            "SELECT session_id
+             FROM (
+                SELECT session_id, MAX(timestamp) AS last_seen
+                FROM traces
+                WHERE session_id IS NOT NULL
+                  AND timestamp >= ?1
+                GROUP BY session_id
+                ORDER BY last_seen DESC
+                LIMIT ?2
+             )
+             ORDER BY last_seen ASC",
+        )?;
+        let rows = stmt.query_map(params![cutoff_ms, limit as i64], |row| row.get(0))?;
+        rows.collect()
+    }
+
     /// Discover workflow patterns: what capability do agents use AFTER a given capability?
     /// Returns (next_capability, count) pairs ordered by frequency.
     pub fn query_workflow_next(&self, capability: &str, limit: usize) -> rusqlite::Result<Vec<(String, u64)>> {

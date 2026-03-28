@@ -3,6 +3,7 @@ pub mod contracts;
 pub mod context;
 pub mod http;
 pub mod identity;
+pub mod eval;
 pub mod signals;
 pub mod trace;
 pub mod storage;

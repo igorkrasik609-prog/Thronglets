@@ -75,6 +75,14 @@ cat prehook.log | thronglets profile-check
 
 它会基于默认阈值检查 `avg/p95 stdout_bytes`、`avg collective_queries_used` 和 `max-hint saturation`，失败时返回非零退出码。
 
+发布后如果想看“省下来的成本有没有换来真正有效的信号”，可以再跑：
+
+```bash
+thronglets eval-signals --hours 168 --max-sessions 200
+```
+
+这个命令会离线重放最近 session，把更早的历史当训练集、把更晚的 session 当 holdout，输出 `edit silence rate`、`repair coverage`、`repair first-step precision`、`repair exact precision`、`preparation precision` 和 `adjacency precision`。它完全在冷路径运行，不会碰 prehook 热路径预算。
+
 ## 为什么这很重要
 
 没有 Thronglets，你的 AI 对每个文件都是盲的。它不知道：

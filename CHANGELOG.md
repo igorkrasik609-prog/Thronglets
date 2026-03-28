@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Offline signal evaluation** — `thronglets eval-signals` now replays recent sessions as a holdout set and reports edit silence rate plus repair / preparation / adjacency precision without touching prehook latency
+
 ## v0.4.0 — 2026-03-28
 
 ### Hot Path

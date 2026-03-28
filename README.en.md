@@ -75,6 +75,14 @@ cat prehook.log | thronglets profile-check
 
 It checks default thresholds for `avg/p95 stdout_bytes`, `avg collective_queries_used`, and `max-hint saturation`, and exits non-zero on regression.
 
+After release, if you want to know whether the saved budget is buying useful signals, run:
+
+```bash
+thronglets eval-signals --hours 168 --max-sessions 200
+```
+
+This replays recent sessions offline, treats earlier history as training and later sessions as holdout, and reports `edit silence rate`, `repair coverage`, `repair first-step precision`, `repair exact precision`, `preparation precision`, and `adjacency precision`. It stays entirely on the cold path and does not touch prehook latency.
+
 ## Why This Matters
 
 Without Thronglets, your AI approaches every file blind. It doesn't know:
