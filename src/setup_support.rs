@@ -24,6 +24,7 @@ If the `thronglets` MCP server is available in this Codex session:
 <!-- thronglets:codex:end -->
 "#;
 const OPENCLAW_PLUGIN_ID: &str = "thronglets-ai";
+const OPENCLAW_LEGACY_PLUGIN_ID: &str = "openclaw-plugin";
 const OPENCLAW_PLUGIN_MANIFEST: &str =
     include_str!("../assets/openclaw-plugin/openclaw.plugin.json");
 const OPENCLAW_PLUGIN_INDEX: &str = include_str!("../assets/openclaw-plugin/index.mjs");
@@ -294,9 +295,13 @@ pub fn install_openclaw(
     let config_path = openclaw_config_path(home_dir);
     let created_config = !config_path.exists();
     let plugin_dir = data_dir.join(OPENCLAW_PLUGIN_ID);
+    let legacy_plugin_dir = data_dir.join(OPENCLAW_LEGACY_PLUGIN_ID);
     let launcher = ensure_managed_launcher(data_dir, bin_path)?;
 
     write_openclaw_plugin_assets(&plugin_dir)?;
+    if legacy_plugin_dir != plugin_dir && legacy_plugin_dir.exists() {
+        let _ = fs::remove_dir_all(&legacy_plugin_dir);
+    }
 
     let mut config: Value = if config_path.exists() {
         let content = fs::read_to_string(&config_path).unwrap_or_else(|_| "{}".into());
@@ -1050,6 +1055,7 @@ fn configure_openclaw_config(
     launcher_path: &Path,
     data_dir: &Path,
 ) {
+    let legacy_plugin_dir = data_dir.join(OPENCLAW_LEGACY_PLUGIN_ID);
     let root = object_mut(config);
     let plugins = object_mut(root.entry("plugins").or_insert_with(|| json!({})));
     push_unique_string(
@@ -1058,12 +1064,17 @@ fn configure_openclaw_config(
     );
 
     let load = object_mut(plugins.entry("load").or_insert_with(|| json!({})));
+    remove_string(
+        load.entry("paths").or_insert_with(|| json!([])),
+        legacy_plugin_dir.to_string_lossy().as_ref(),
+    );
     push_unique_string(
         load.entry("paths").or_insert_with(|| json!([])),
         plugin_dir.to_string_lossy().as_ref(),
     );
 
     let entries = object_mut(plugins.entry("entries").or_insert_with(|| json!({})));
+    entries.remove(OPENCLAW_LEGACY_PLUGIN_ID);
     let plugin_entry = object_mut(
         entries
             .entry(OPENCLAW_PLUGIN_ID)
@@ -1079,6 +1090,7 @@ fn configure_openclaw_config(
     );
 
     let installs = object_mut(plugins.entry("installs").or_insert_with(|| json!({})));
+    installs.remove(OPENCLAW_LEGACY_PLUGIN_ID);
     installs.insert(
         OPENCLAW_PLUGIN_ID.into(),
         json!({
@@ -1206,6 +1218,15 @@ fn push_unique_string(target: &mut Value, item: &str) {
     }
 }
 
+fn remove_string(target: &mut Value, item: &str) {
+    if !target.is_array() {
+        *target = json!([]);
+    }
+
+    let arr = target.as_array_mut().expect("value was converted to array");
+    arr.retain(|value| value.as_str() != Some(item));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1285,6 +1306,54 @@ mod tests {
             config["plugins"]["load"]["paths"].as_array().unwrap().len(),
             1,
         );
+    }
+
+    #[test]
+    fn install_openclaw_prunes_legacy_plugin_path_and_entries() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let data_dir = temp.path().join("data");
+        let config_dir = home.join(".openclaw");
+        let config_path = config_dir.join("openclaw.json");
+        let legacy_plugin_dir = data_dir.join(OPENCLAW_LEGACY_PLUGIN_ID);
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::create_dir_all(&legacy_plugin_dir).unwrap();
+        fs::write(legacy_plugin_dir.join("openclaw.plugin.json"), "{}").unwrap();
+
+        fs::write(
+            &config_path,
+            json!({
+                "plugins": {
+                    "allow": [OPENCLAW_PLUGIN_ID],
+                    "load": {"paths": [legacy_plugin_dir.to_string_lossy().to_string()]},
+                    "entries": {
+                        OPENCLAW_LEGACY_PLUGIN_ID: {"enabled": true},
+                        OPENCLAW_PLUGIN_ID: {"enabled": true}
+                    },
+                    "installs": {
+                        OPENCLAW_LEGACY_PLUGIN_ID: {"spec": OPENCLAW_LEGACY_PLUGIN_ID}
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        install_openclaw(&home, &data_dir, Path::new("/tmp/thronglets"), false, false)
+            .unwrap()
+            .unwrap();
+
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+        let load_paths = config["plugins"]["load"]["paths"].as_array().unwrap();
+        assert_eq!(load_paths.len(), 1);
+        assert_eq!(
+            load_paths[0].as_str(),
+            Some(data_dir.join(OPENCLAW_PLUGIN_ID).to_string_lossy().as_ref())
+        );
+        assert!(config["plugins"]["entries"][OPENCLAW_LEGACY_PLUGIN_ID].is_null());
+        assert!(config["plugins"]["installs"][OPENCLAW_LEGACY_PLUGIN_ID].is_null());
+        assert!(!legacy_plugin_dir.exists());
     }
 
     #[test]
