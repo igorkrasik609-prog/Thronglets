@@ -196,6 +196,17 @@ struct ConnectionJoinData {
 }
 
 #[derive(Serialize)]
+struct ConnectionInspectData {
+    summary: IdentitySummary,
+    file: String,
+    primary_device_pubkey: String,
+    exported_at: u64,
+    expires_at: u64,
+    ttl_hours: u32,
+    signature_verified: bool,
+}
+
+#[derive(Serialize)]
 struct StatusData {
     summary: IdentitySummary,
     node_id: String,
@@ -373,6 +384,17 @@ enum Commands {
 
     /// Join this device to an existing owner account using a connection file.
     ConnectionJoin {
+        /// Connection file exported from the primary device.
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// Inspect and verify a connection file before joining.
+    ConnectionInspect {
         /// Connection file exported from the primary device.
         #[arg(long)]
         file: PathBuf,
@@ -1618,7 +1640,8 @@ async fn main() {
             ttl_hours,
             json,
         } => {
-            let connection = ConnectionFile::from_binding(&identity_binding, &identity, ttl_hours);
+            let connection = ConnectionFile::from_binding(&identity_binding, &identity, ttl_hours)
+                .expect("failed to create connection file");
             connection
                 .save(&output)
                 .expect("failed to write connection file");
@@ -1641,6 +1664,43 @@ async fn main() {
                 );
                 println!("  Primary device:     {}", identity_binding.device_identity);
                 println!("  Signed by device:   {}", data.signed_by_device);
+                println!("  Expires in:         {}h", data.ttl_hours);
+            }
+        }
+
+        Commands::ConnectionInspect { file, json } => {
+            let connection = ConnectionFile::load(&file).expect("failed to read connection file");
+            let summary = IdentitySummary {
+                status: "valid",
+                owner_account: connection.owner_account.clone(),
+                device_identity: connection.primary_device_identity.clone(),
+                binding_source: "connection_file".into(),
+                joined_from_device: None,
+            };
+            let data = ConnectionInspectData {
+                summary,
+                file: file.display().to_string(),
+                primary_device_pubkey: connection.primary_device_pubkey.clone(),
+                exported_at: connection.exported_at,
+                expires_at: connection.expires_at,
+                ttl_hours: connection.ttl_hours(),
+                signature_verified: true,
+            };
+            if json {
+                print_machine_json_with_schema(
+                    IDENTITY_SCHEMA_VERSION,
+                    "connection-inspect",
+                    &data,
+                );
+            } else {
+                println!("Connection file valid:");
+                println!("  File:               {}", data.file);
+                println!(
+                    "  Owner account:      {}",
+                    data.summary.owner_account.as_deref().unwrap_or("unbound")
+                );
+                println!("  Primary device:     {}", data.summary.device_identity);
+                println!("  Signature verified: yes");
                 println!("  Expires in:         {}h", data.ttl_hours);
             }
         }

@@ -129,12 +129,14 @@ The local primitives for that flow are now in place:
 thronglets id
 thronglets owner-bind --owner-account oasyce1...
 thronglets connection-export --output ./thronglets.connection.json
+thronglets connection-inspect --file ./thronglets.connection.json --json
 thronglets connection-join --file ./thronglets.connection.json
 ```
 
 - `id` shows the current `owner account` and `device identity`
 - `id` / `status` / HTTP `/v1/status` also surface the current `binding source` and `joined from device`
 - `id` / `owner-bind` / `connection-export` / `connection-join` / `status` all support `--json`
+- `connection-export` now requires a locally bound `owner account`
 - `owner-bind` is the manual advanced fallback
 - `connection-export / connection-join` are the primary onboarding path and verify the primary-device signature by default
 - `connection-export` now emits a `24h` connection file by default and supports `--ttl-hours`; `connection-join` verifies both signature and expiry

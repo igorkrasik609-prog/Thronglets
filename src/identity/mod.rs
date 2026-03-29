@@ -203,6 +203,15 @@ impl IdentityBinding {
         self.owner_account.as_deref().unwrap_or("unbound")
     }
 
+    pub fn require_owner_account(&self) -> std::io::Result<&str> {
+        self.owner_account.as_deref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "owner account is not bound; run `thronglets owner-bind --owner-account ...` first",
+            )
+        })
+    }
+
     pub fn binding_source_or_local(&self) -> &str {
         self.binding_source.as_deref().unwrap_or("local")
     }
@@ -237,11 +246,12 @@ impl ConnectionFile {
         binding: &IdentityBinding,
         node_identity: &NodeIdentity,
         ttl_hours: u32,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
+        let owner_account = binding.require_owner_account()?.to_string();
         let exported_at = now_ms();
         let mut file = Self {
             schema_version: CONNECTION_FILE_SCHEMA_VERSION.to_string(),
-            owner_account: binding.owner_account.clone(),
+            owner_account: Some(owner_account),
             primary_device_identity: binding.device_identity.clone(),
             primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
             exported_at,
@@ -249,12 +259,18 @@ impl ConnectionFile {
             signature: String::new(),
         };
         file.sign_with(node_identity);
-        file
+        Ok(file)
     }
 
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let bytes = fs::read(path)?;
         let file: Self = serde_json::from_slice(&bytes).map_err(invalid_data)?;
+        if file.owner_account.as_deref().is_none_or(str::is_empty) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "owner_account cannot be empty in a connection file",
+            ));
+        }
         if file.primary_device_identity.trim().is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -488,7 +504,8 @@ mod tests {
             joined_from_device: None,
             updated_at: 123,
         };
-        let file = ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS);
+        let file = ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
+            .unwrap();
         let path = dir.path().join("device.thronglets.json");
         file.save(&path).unwrap();
         let loaded = ConnectionFile::load(&path).unwrap();
@@ -514,7 +531,8 @@ mod tests {
             updated_at: 123,
         };
         let mut file =
-            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS);
+            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
+                .unwrap();
         file.owner_account = Some("oasyce1other".into());
         let path = dir.path().join("device.thronglets.json");
         file.save(&path).unwrap();
@@ -535,7 +553,8 @@ mod tests {
             updated_at: 123,
         };
         let mut file =
-            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS);
+            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
+                .unwrap();
         file.exported_at = now_ms().saturating_sub(10_000);
         file.expires_at = now_ms().saturating_sub(1_000);
         file.sign_with(&node);
@@ -543,5 +562,15 @@ mod tests {
         file.save(&path).unwrap();
         let error = ConnectionFile::load(&path).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn ownerless_connection_file_cannot_be_created() {
+        let node = NodeIdentity::generate();
+        let binding = IdentityBinding::new(node.device_identity());
+        let error =
+            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
+                .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

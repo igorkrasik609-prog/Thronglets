@@ -129,12 +129,14 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 thronglets id
 thronglets owner-bind --owner-account oasyce1...
 thronglets connection-export --output ./thronglets.connection.json
+thronglets connection-inspect --file ./thronglets.connection.json --json
 thronglets connection-join --file ./thronglets.connection.json
 ```
 
 - `id` 会显示当前 `owner account` 和 `device identity`
 - `id` / `status` / HTTP `/v1/status` 也会显示当前 `binding source` 和 `joined from device`
 - `id` / `owner-bind` / `connection-export` / `connection-join` / `status` 都支持 `--json`
+- `connection-export` 现在要求本地已经有 `owner account`
 - `owner-bind` 是手动高级 fallback
 - `connection-export / connection-join` 是主路径，并且默认验证主设备签名
 - `connection-export` 默认导出 `24h` 有效的 connection file，可用 `--ttl-hours` 调整；`connection-join` 会同时验证签名和过期时间
