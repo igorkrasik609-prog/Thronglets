@@ -1517,7 +1517,8 @@ fn summarize_runtime_ready_results(results: Vec<RuntimeReadyResult>) -> RuntimeR
         .collect();
     let mut next_steps = Vec::new();
     if ready_agents.is_empty() {
-        next_steps.push("Run `thronglets doctor --agent <adapter>` to confirm current status.".into());
+        next_steps
+            .push("Run `thronglets doctor --agent <adapter>` to confirm current status.".into());
     }
 
     RuntimeReadyData {
@@ -1545,7 +1546,7 @@ fn apply_selected_adapters(
     for agent in selected_known_adapters(target) {
         match agent {
             AdapterKind::Claude => {
-                let result = install_claude(home_dir, bin_path)?;
+                let result = install_claude(home_dir, data_dir, bin_path)?;
                 let mut changed = Vec::new();
                 if result.added_post_hook {
                     changed.push("installed PostToolUse hook".into());

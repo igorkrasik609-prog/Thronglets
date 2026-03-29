@@ -25,6 +25,11 @@
         "restart_command": "Restart Codex",
         "checks": [
           {
+            "name": "managed-launcher",
+            "ok": true,
+            "detail": "managed launcher at <DATA>/bin/thronglets-managed"
+          },
+          {
             "name": "mcp-server",
             "ok": true,
             "detail": "[mcp_servers.thronglets] in <HOME>/.codex/config.toml"

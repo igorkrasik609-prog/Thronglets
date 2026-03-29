@@ -58,6 +58,14 @@ cargo run --quiet -- setup
 
 这样 AI 读到的 README、当前 checkout 的代码、实际执行的命令会保持一致，不会因为 PATH 上旧版本 `thronglets` 造成自动化误判。
 
+已知 adapter 现在也不会再直接绑死到当时那一个 binary path。`setup / apply-plan / bootstrap` 会统一写入一个受管 launcher：
+
+- 路径固定在 `~/.thronglets/bin/thronglets-managed`
+- 如果你正在 Thronglets 仓库里工作，它会优先执行 repo-local build
+- 否则再回退到当前安装版 binary
+
+这样你不需要在每次本地迭代后重新跑一遍 `setup`，adapter 会沿着稳定入口继续跟最新本地 build 走。
+
 `setup` 现在也会顺手做一次 bootstrap 健康检查，并直接给出 `restart required / next steps`。
 如果某个 adapter 需要客户端重启，后续 `doctor` 会显式返回 `restart-pending`，重启后再跑一次：
 

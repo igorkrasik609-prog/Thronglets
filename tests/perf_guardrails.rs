@@ -132,11 +132,13 @@ fn setup_keeps_prehook_narrow() {
                 hooks.iter().any(|hook| {
                     hook["command"]
                         .as_str()
-                        .is_some_and(|cmd| cmd.contains("thronglets prehook"))
+                        .is_some_and(|cmd| {
+                            cmd.contains("thronglets-managed") && cmd.contains(" prehook")
+                        })
                 })
             })
         })
-        .expect("thronglets prehook entry");
+        .expect("managed prehook entry");
 
     assert_eq!(thronglets_hook["matcher"], PREHOOK_MATCHER);
 }

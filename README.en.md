@@ -58,6 +58,14 @@ cargo run --quiet -- setup
 
 That keeps the README, the checked-out source, and the binary you are actually executing in sync, which matters for agent automation.
 
+Known adapters also no longer pin themselves directly to whatever binary path happened to run setup once. `setup / apply-plan / bootstrap` now write a managed launcher:
+
+- fixed path: `~/.thronglets/bin/thronglets-managed`
+- if you are working inside the Thronglets repo, it prefers the repo-local build
+- otherwise it falls back to the currently installed binary
+
+That means you do not need to rerun `setup` after every local iteration just to keep adapters pointed at the latest local build.
+
 `setup` now also runs a bootstrap health pass and returns `restart required / next steps` directly.
 If an adapter still needs a client restart, `doctor` now returns `restart-pending`, and after the runtime is restarted you can clear that state with:
 

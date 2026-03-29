@@ -44,7 +44,7 @@
           "<HOME>/.codex/AGENTS.md"
         ],
         "actions": [
-          "Write [mcp_servers.thronglets] in <HOME>/.codex/config.toml pointing to `<BIN>` with `--data-dir <DATA>` and `mcp`",
+          "Write [mcp_servers.thronglets] in <HOME>/.codex/config.toml pointing to managed launcher `<DATA>/bin/thronglets-managed` with `--data-dir <DATA>` and `mcp`",
           "Write or refresh the managed Thronglets block in <HOME>/.codex/AGENTS.md"
         ],
         "apply_command": "thronglets apply-plan --agent codex",
@@ -80,6 +80,11 @@
         "fix_command": null,
         "restart_command": "Restart Codex",
         "checks": [
+          {
+            "name": "managed-launcher",
+            "ok": true,
+            "detail": "managed launcher at <DATA>/bin/thronglets-managed"
+          },
           {
             "name": "mcp-server",
             "ok": true,

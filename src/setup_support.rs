@@ -3,6 +3,8 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use toml::Value as TomlValue;
@@ -26,6 +28,7 @@ const OPENCLAW_PLUGIN_MANIFEST: &str =
     include_str!("../assets/openclaw-plugin/openclaw.plugin.json");
 const OPENCLAW_PLUGIN_INDEX: &str = include_str!("../assets/openclaw-plugin/index.mjs");
 const RESTART_STATE_FILE: &str = "adapter-restart-state.json";
+const MANAGED_LAUNCHER_NAME: &str = "thronglets-managed";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct RestartState {
@@ -56,6 +59,12 @@ pub struct CodexSetupResult {
     pub created_config: bool,
     pub updated_server: bool,
     pub updated_agents_memory: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedLauncher {
+    path: PathBuf,
+    repo_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,9 +233,14 @@ pub fn clear_restart_pending(data_dir: &Path, agent: AdapterKind) -> io::Result<
     Ok(was_pending)
 }
 
-pub fn install_claude(home_dir: &Path, bin_path: &Path) -> io::Result<ClaudeSetupResult> {
+pub fn install_claude(
+    home_dir: &Path,
+    data_dir: &Path,
+    bin_path: &Path,
+) -> io::Result<ClaudeSetupResult> {
     let settings_path = home_dir.join(".claude").join("settings.json");
-    let bin_str = bin_path.to_string_lossy().to_string();
+    let launcher = ensure_managed_launcher(data_dir, bin_path)?;
+    let launcher_cmd = shell_quote_path(&launcher.path);
 
     let mut settings: Value = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".into());
@@ -241,22 +255,22 @@ pub fn install_claude(home_dir: &Path, bin_path: &Path) -> io::Result<ClaudeSetu
 
     let post_hook = json!({
         "matcher": "",
-        "hooks": [{"type": "command", "command": format!("{bin_str} hook")}]
+        "hooks": [{"type": "command", "command": format!("{launcher_cmd} hook")}]
     });
     let added_post_hook = ensure_hook(
         &mut settings["hooks"]["PostToolUse"],
         &post_hook,
-        "thronglets hook",
+        launcher.path.to_string_lossy().as_ref(),
     );
 
     let pre_hook = json!({
         "matcher": PREHOOK_MATCHER,
-        "hooks": [{"type": "command", "command": format!("{bin_str} prehook")}]
+        "hooks": [{"type": "command", "command": format!("{launcher_cmd} prehook")}]
     });
     let added_pre_hook = ensure_hook(
         &mut settings["hooks"]["PreToolUse"],
         &pre_hook,
-        "thronglets prehook",
+        launcher.path.to_string_lossy().as_ref(),
     );
 
     if let Some(parent) = settings_path.parent() {
@@ -286,6 +300,7 @@ pub fn install_openclaw(
     let config_path = openclaw_config_path(home_dir);
     let created_config = !config_path.exists();
     let plugin_dir = data_dir.join(OPENCLAW_PLUGIN_ID);
+    let launcher = ensure_managed_launcher(data_dir, bin_path)?;
 
     write_openclaw_plugin_assets(&plugin_dir)?;
 
@@ -296,7 +311,7 @@ pub fn install_openclaw(
         json!({})
     };
 
-    configure_openclaw_config(&mut config, &plugin_dir, bin_path, data_dir);
+    configure_openclaw_config(&mut config, &plugin_dir, &launcher.path, data_dir);
 
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -332,6 +347,7 @@ pub fn install_codex(
     let config_path = codex_dir.join("config.toml");
     let agents_path = codex_dir.join("AGENTS.md");
     let created_config = !config_path.exists();
+    let launcher = ensure_managed_launcher(data_dir, bin_path)?;
 
     fs::create_dir_all(&codex_dir)?;
 
@@ -341,7 +357,7 @@ pub fn install_codex(
     } else {
         toml::Table::new()
     };
-    let updated_server = configure_codex_config(&mut config, bin_path, data_dir);
+    let updated_server = configure_codex_config(&mut config, &launcher.path, data_dir);
     let formatted =
         toml::to_string_pretty(&config).map_err(|error| io::Error::other(error.to_string()))?;
     fs::write(&config_path, formatted)?;
@@ -433,10 +449,11 @@ pub fn detect_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> A
 pub fn install_plan(
     home_dir: &Path,
     data_dir: &Path,
-    bin_path: &Path,
+    _bin_path: &Path,
     agent: AdapterKind,
 ) -> AdapterPlan {
     let detection = detect_adapter(home_dir, data_dir, agent);
+    let launcher_path = managed_launcher_path(data_dir);
     match agent {
         AdapterKind::Claude => AdapterPlan {
             agent: detection.agent,
@@ -449,13 +466,13 @@ pub fn install_plan(
             paths: detection.paths,
             actions: vec![
                 format!(
-                    "Write PostToolUse hook in {} that runs `{}`",
+                    "Write PostToolUse hook in {} that runs managed launcher `{}`",
                     claude_settings_path(home_dir).display(),
-                    bin_path.display()
+                    launcher_path.display()
                 ) + " hook",
                 format!(
-                    "Write PreToolUse hook with matcher `{PREHOOK_MATCHER}` that runs `{}`",
-                    bin_path.display()
+                    "Write PreToolUse hook with matcher `{PREHOOK_MATCHER}` that runs managed launcher `{}`",
+                    launcher_path.display()
                 ) + " prehook",
             ],
             apply_command: Some("thronglets apply-plan --agent claude".into()),
@@ -473,9 +490,9 @@ pub fn install_plan(
             paths: detection.paths,
             actions: vec![
                 format!(
-                    "Write [mcp_servers.{CODEX_MCP_SERVER_ID}] in {} pointing to `{}` with `--data-dir {}` and `mcp`",
+                    "Write [mcp_servers.{CODEX_MCP_SERVER_ID}] in {} pointing to managed launcher `{}` with `--data-dir {}` and `mcp`",
                     codex_config_path(home_dir).display(),
-                    bin_path.display(),
+                    launcher_path.display(),
                     data_dir.display()
                 ),
                 format!(
@@ -502,9 +519,9 @@ pub fn install_plan(
                     data_dir.join(OPENCLAW_PLUGIN_ID).display()
                 ),
                 format!(
-                    "Enable `{OPENCLAW_PLUGIN_ID}` in {} and point it at `{}`",
+                    "Enable `{OPENCLAW_PLUGIN_ID}` in {} and point it at managed launcher `{}`",
                     openclaw_config_path(home_dir).display(),
-                    bin_path.display()
+                    launcher_path.display()
                 ),
                 "Request `openclaw gateway restart` in the background.".into(),
             ],
@@ -534,7 +551,7 @@ pub fn install_plan(
 
 pub fn doctor_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> AdapterDoctor {
     match agent {
-        AdapterKind::Claude => doctor_claude(home_dir),
+        AdapterKind::Claude => doctor_claude(home_dir, data_dir),
         AdapterKind::Codex => doctor_codex(home_dir, data_dir),
         AdapterKind::OpenClaw => doctor_openclaw(home_dir, data_dir),
         AdapterKind::Generic => AdapterDoctor {
@@ -650,6 +667,93 @@ fn hook_contract_examples() -> HookContractExamples {
     }
 }
 
+fn managed_launcher_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("bin").join(MANAGED_LAUNCHER_NAME)
+}
+
+fn ensure_managed_launcher(data_dir: &Path, bin_path: &Path) -> io::Result<ManagedLauncher> {
+    let launcher = ManagedLauncher {
+        path: managed_launcher_path(data_dir),
+        repo_root: detect_repo_root(),
+    };
+
+    if let Some(parent) = launcher.path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &launcher.path,
+        render_managed_launcher(bin_path, launcher.repo_root.as_deref()),
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&launcher.path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&launcher.path, perms)?;
+    }
+    Ok(launcher)
+}
+
+fn detect_repo_root() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    looks_like_repo_root(&cwd).then_some(cwd)
+}
+
+fn looks_like_repo_root(path: &Path) -> bool {
+    let cargo_toml = path.join("Cargo.toml");
+    if !cargo_toml.exists() || !path.join("src").join("main.rs").exists() {
+        return false;
+    }
+
+    fs::read_to_string(cargo_toml)
+        .ok()
+        .is_some_and(|content| content.contains("name = \"thronglets\""))
+}
+
+fn render_managed_launcher(bin_path: &Path, repo_root: Option<&Path>) -> String {
+    let managed_bin = shell_quote_path(bin_path);
+    let (repo_root, repo_bin) = repo_root
+        .map(|root| {
+            (
+                shell_quote_path(root),
+                shell_quote_path(&root.join("target").join("debug").join("thronglets")),
+            )
+        })
+        .unwrap_or_else(|| ("''".into(), "''".into()));
+
+    format!(
+        r#"#!/usr/bin/env sh
+set -eu
+
+MANAGED_BIN={managed_bin}
+MANAGED_REPO={repo_root}
+MANAGED_REPO_BIN={repo_bin}
+
+if [ -n "${{THRONGLETS_REPO_ROOT:-}}" ]; then
+  REPO_ROOT="$THRONGLETS_REPO_ROOT"
+  REPO_BIN="$REPO_ROOT/target/debug/thronglets"
+else
+  REPO_ROOT="$MANAGED_REPO"
+  REPO_BIN="$MANAGED_REPO_BIN"
+fi
+
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/Cargo.toml" ]; then
+  if [ ! -x "$REPO_BIN" ] && command -v cargo >/dev/null 2>&1; then
+    cargo build --quiet --manifest-path "$REPO_ROOT/Cargo.toml" >/dev/null 2>&1 || true
+  fi
+  if [ -x "$REPO_BIN" ]; then
+    exec "$REPO_BIN" "$@"
+  fi
+fi
+
+exec "$MANAGED_BIN" "$@"
+"#
+    )
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r#"'\''"#))
+}
+
 fn read_json(path: &Path) -> Option<Value> {
     let content = fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
@@ -674,16 +778,31 @@ fn claude_hook_present(settings: &Value, phase: &str, command_fragment: &str) ->
     })
 }
 
-fn doctor_claude(home_dir: &Path) -> AdapterDoctor {
+fn doctor_claude(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
     let settings_path = claude_settings_path(home_dir);
+    let launcher_path = managed_launcher_path(data_dir);
     let settings = read_json(&settings_path);
-    let post_ok = settings
-        .as_ref()
-        .is_some_and(|value| claude_hook_present(value, "PostToolUse", "thronglets hook"));
-    let pre_ok = settings
-        .as_ref()
-        .is_some_and(|value| claude_hook_present(value, "PreToolUse", "thronglets prehook"));
+    let launcher_ok = launcher_path.is_file();
+    let post_ok = settings.as_ref().is_some_and(|value| {
+        claude_hook_present(
+            value,
+            "PostToolUse",
+            launcher_path.to_string_lossy().as_ref(),
+        ) && claude_hook_present(value, "PostToolUse", " hook")
+    });
+    let pre_ok = settings.as_ref().is_some_and(|value| {
+        claude_hook_present(
+            value,
+            "PreToolUse",
+            launcher_path.to_string_lossy().as_ref(),
+        ) && claude_hook_present(value, "PreToolUse", " prehook")
+    });
     let checks = vec![
+        AdapterCheck {
+            name: "managed-launcher".into(),
+            ok: launcher_ok,
+            detail: format!("managed launcher at {}", launcher_path.display()),
+        },
         AdapterCheck {
             name: "post-hook".into(),
             ok: post_ok,
@@ -711,14 +830,17 @@ fn doctor_claude(home_dir: &Path) -> AdapterDoctor {
     }
 }
 
-fn codex_server_present(config: &toml::Table) -> bool {
+fn codex_server_present(config: &toml::Table, launcher_path: &Path) -> bool {
     config
         .get("mcp_servers")
         .and_then(TomlValue::as_table)
         .and_then(|servers| servers.get(CODEX_MCP_SERVER_ID))
         .and_then(TomlValue::as_table)
         .is_some_and(|server| {
-            server.get("command").and_then(TomlValue::as_str).is_some()
+            server
+                .get("command")
+                .and_then(TomlValue::as_str)
+                .is_some_and(|command| command == launcher_path.to_string_lossy())
                 && server.get("args").and_then(TomlValue::as_array).is_some()
         })
 }
@@ -732,10 +854,19 @@ fn codex_agents_block_present(path: &Path) -> bool {
 fn doctor_codex(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
     let config_path = codex_config_path(home_dir);
     let agents_path = codex_agents_path(home_dir);
+    let launcher_path = managed_launcher_path(data_dir);
     let config = read_toml(&config_path);
-    let server_ok = config.as_ref().is_some_and(codex_server_present);
+    let launcher_ok = launcher_path.is_file();
+    let server_ok = config
+        .as_ref()
+        .is_some_and(|value| codex_server_present(value, &launcher_path));
     let agents_ok = codex_agents_block_present(&agents_path);
     let checks = vec![
+        AdapterCheck {
+            name: "managed-launcher".into(),
+            ok: launcher_ok,
+            detail: format!("managed launcher at {}", launcher_path.display()),
+        },
         AdapterCheck {
             name: "mcp-server".into(),
             ok: server_ok,
@@ -792,7 +923,7 @@ fn doctor_codex(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
     }
 }
 
-fn openclaw_plugin_config_present(config: &Value, plugin_dir: &Path) -> bool {
+fn openclaw_plugin_config_present(config: &Value, plugin_dir: &Path, launcher_path: &Path) -> bool {
     let allow_ok = config["plugins"]["allow"].as_array().is_some_and(|values| {
         values
             .iter()
@@ -806,20 +937,30 @@ fn openclaw_plugin_config_present(config: &Value, plugin_dir: &Path) -> bool {
                 .any(|value| value.as_str() == Some(plugin_dir.to_string_lossy().as_ref()))
         });
     let entry_ok = config["plugins"]["entries"][OPENCLAW_PLUGIN_ID]["enabled"] == Value::Bool(true);
+    let binary_ok = config["plugins"]["entries"][OPENCLAW_PLUGIN_ID]["config"]["binaryPath"]
+        .as_str()
+        .is_some_and(|path| path == launcher_path.to_string_lossy());
     let install_ok = !config["plugins"]["installs"][OPENCLAW_PLUGIN_ID].is_null();
-    allow_ok && load_ok && entry_ok && install_ok
+    allow_ok && load_ok && entry_ok && binary_ok && install_ok
 }
 
 fn doctor_openclaw(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
     let config_path = openclaw_config_path(home_dir);
     let plugin_dir = data_dir.join(OPENCLAW_PLUGIN_ID);
+    let launcher_path = managed_launcher_path(data_dir);
     let config = read_json(&config_path);
+    let launcher_ok = launcher_path.is_file();
     let assets_ok =
         plugin_dir.join("openclaw.plugin.json").exists() && plugin_dir.join("index.mjs").exists();
     let config_ok = config
         .as_ref()
-        .is_some_and(|value| openclaw_plugin_config_present(value, &plugin_dir));
+        .is_some_and(|value| openclaw_plugin_config_present(value, &plugin_dir, &launcher_path));
     let checks = vec![
+        AdapterCheck {
+            name: "managed-launcher".into(),
+            ok: launcher_ok,
+            detail: format!("managed launcher at {}", launcher_path.display()),
+        },
         AdapterCheck {
             name: "plugin-assets".into(),
             ok: assets_ok,
@@ -919,7 +1060,7 @@ fn write_openclaw_plugin_assets(plugin_dir: &Path) -> io::Result<()> {
 fn configure_openclaw_config(
     config: &mut Value,
     plugin_dir: &Path,
-    bin_path: &Path,
+    launcher_path: &Path,
     data_dir: &Path,
 ) {
     let root = object_mut(config);
@@ -945,7 +1086,7 @@ fn configure_openclaw_config(
     plugin_entry.insert(
         "config".into(),
         json!({
-            "binaryPath": bin_path.to_string_lossy(),
+            "binaryPath": launcher_path.to_string_lossy(),
             "dataDir": data_dir.to_string_lossy(),
         }),
     );
@@ -991,7 +1132,7 @@ fn executable_on_path(name: &str) -> bool {
         .any(|candidate| candidate.is_file())
 }
 
-fn configure_codex_config(config: &mut toml::Table, bin_path: &Path, data_dir: &Path) -> bool {
+fn configure_codex_config(config: &mut toml::Table, launcher_path: &Path, data_dir: &Path) -> bool {
     let mcp_servers = config
         .entry("mcp_servers")
         .or_insert_with(|| TomlValue::Table(toml::Table::new()));
@@ -1009,7 +1150,7 @@ fn configure_codex_config(config: &mut toml::Table, bin_path: &Path, data_dir: &
 
     server.insert(
         "command".into(),
-        TomlValue::String(bin_path.to_string_lossy().into_owned()),
+        TomlValue::String(launcher_path.to_string_lossy().into_owned()),
     );
     server.insert(
         "args".into(),
@@ -1093,9 +1234,16 @@ mod tests {
         let result = install_openclaw(&home, &data_dir, Path::new("/tmp/thronglets"), false, false)
             .unwrap()
             .unwrap();
+        let launcher = managed_launcher_path(&data_dir);
 
         assert!(result.plugin_dir.join("openclaw.plugin.json").exists());
         assert!(result.plugin_dir.join("index.mjs").exists());
+        assert!(launcher.exists());
+        assert!(
+            fs::read_to_string(&launcher)
+                .unwrap()
+                .contains("/tmp/thronglets")
+        );
 
         let config: Value =
             serde_json::from_str(&fs::read_to_string(&result.config_path).unwrap()).unwrap();
@@ -1105,7 +1253,7 @@ mod tests {
         );
         assert_eq!(
             config["plugins"]["entries"][OPENCLAW_PLUGIN_ID]["config"]["binaryPath"],
-            Value::String("/tmp/thronglets".into())
+            Value::String(launcher.to_string_lossy().into_owned())
         );
         assert!(
             config["plugins"]["load"]["paths"]
@@ -1162,13 +1310,17 @@ mod tests {
         let result = install_codex(&home, &data_dir, Path::new("/tmp/thronglets"), false)
             .unwrap()
             .unwrap();
+        let launcher = managed_launcher_path(&data_dir);
 
         let config: toml::Table =
             toml::from_str(&fs::read_to_string(&result.config_path).unwrap()).unwrap();
         let server = config["mcp_servers"][CODEX_MCP_SERVER_ID]
             .as_table()
             .unwrap();
-        assert_eq!(server["command"].as_str(), Some("/tmp/thronglets"));
+        assert_eq!(
+            server["command"].as_str(),
+            Some(launcher.to_string_lossy().as_ref())
+        );
         assert_eq!(
             server["args"].as_array().unwrap(),
             &vec![
@@ -1176,6 +1328,12 @@ mod tests {
                 TomlValue::String(data_dir.to_string_lossy().into_owned()),
                 TomlValue::String("mcp".into()),
             ]
+        );
+        assert!(launcher.exists());
+        assert!(
+            fs::read_to_string(&launcher)
+                .unwrap()
+                .contains("/tmp/thronglets")
         );
 
         let agents = fs::read_to_string(&result.agents_path).unwrap();
@@ -1224,5 +1382,35 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!second.updated_agents_memory);
+    }
+
+    #[test]
+    fn install_claude_writes_managed_launcher_hooks() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let data_dir = temp.path().join("data");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+
+        let result = install_claude(&home, &data_dir, Path::new("/tmp/thronglets")).unwrap();
+        let launcher = managed_launcher_path(&data_dir);
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&result.settings_path).unwrap()).unwrap();
+
+        assert!(launcher.exists());
+        assert!(
+            fs::read_to_string(&launcher)
+                .unwrap()
+                .contains("/tmp/thronglets")
+        );
+        assert!(claude_hook_present(
+            &settings,
+            "PostToolUse",
+            launcher.to_string_lossy().as_ref()
+        ));
+        assert!(claude_hook_present(
+            &settings,
+            "PreToolUse",
+            launcher.to_string_lossy().as_ref()
+        ));
     }
 }
