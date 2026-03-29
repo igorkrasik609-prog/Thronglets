@@ -7,15 +7,16 @@
 //! Owner / wallet remains a higher-level root account and is modeled as
 //! optional metadata that can be imported or manually bound later.
 
-use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier, Signature};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
-use sha2::{Sha256, Digest};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::Path;
 
 const IDENTITY_BINDING_SCHEMA_VERSION: &str = "thronglets.identity.v1";
 const CONNECTION_FILE_SCHEMA_VERSION: &str = "thronglets.connection.v1";
+const CONNECTION_FILE_SIGNING_DOMAIN: &[u8] = b"thronglets.connection.v1";
 
 /// A node's identity: ed25519 keypair + derived addresses.
 pub struct NodeIdentity {
@@ -42,7 +43,9 @@ pub struct ConnectionFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_account: Option<String>,
     pub primary_device_identity: String,
+    pub primary_device_pubkey: String,
     pub exported_at: u64,
+    pub signature: String,
 }
 
 impl NodeIdentity {
@@ -50,7 +53,10 @@ impl NodeIdentity {
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
-        Self { signing_key, verifying_key }
+        Self {
+            signing_key,
+            verifying_key,
+        }
     }
 
     /// Load from a key file, or generate and save if it doesn't exist.
@@ -65,7 +71,10 @@ impl NodeIdentity {
             }
             let signing_key = SigningKey::from_bytes(&bytes.try_into().unwrap());
             let verifying_key = signing_key.verifying_key();
-            Ok(Self { signing_key, verifying_key })
+            Ok(Self {
+                signing_key,
+                verifying_key,
+            })
         } else {
             let identity = Self::generate();
             if let Some(parent) = path.parent() {
@@ -181,7 +190,11 @@ impl IdentityBinding {
         self
     }
 
-    pub fn joined_via_connection(mut self, owner_account: Option<String>, primary_device: String) -> Self {
+    pub fn joined_via_connection(
+        mut self,
+        owner_account: Option<String>,
+        primary_device: String,
+    ) -> Self {
         self.owner_account = owner_account;
         self.binding_source = Some("connection_file".into());
         self.joined_from_device = Some(primary_device);
@@ -195,13 +208,18 @@ impl IdentityBinding {
 }
 
 impl ConnectionFile {
-    pub fn from_binding(binding: &IdentityBinding) -> Self {
-        Self {
+    pub fn from_binding(binding: &IdentityBinding, node_identity: &NodeIdentity) -> Self {
+        let mut file = Self {
             schema_version: CONNECTION_FILE_SCHEMA_VERSION.to_string(),
             owner_account: binding.owner_account.clone(),
             primary_device_identity: binding.device_identity.clone(),
+            primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
             exported_at: now_ms(),
-        }
+            signature: String::new(),
+        };
+        let signature = node_identity.sign(&file.signable_bytes());
+        file.signature = hex::encode(signature.to_bytes().as_slice());
+        file
     }
 
     pub fn load(path: &Path) -> std::io::Result<Self> {
@@ -213,6 +231,7 @@ impl ConnectionFile {
                 "primary_device_identity cannot be empty",
             ));
         }
+        file.verify()?;
         Ok(file)
     }
 
@@ -223,6 +242,51 @@ impl ConnectionFile {
         let bytes = serde_json::to_vec_pretty(self).map_err(invalid_data)?;
         fs::write(path, bytes)?;
         Ok(())
+    }
+
+    pub fn verify(&self) -> std::io::Result<()> {
+        let public_key_vec = hex::decode(&self.primary_device_pubkey).map_err(invalid_data)?;
+        if public_key_vec.len() != 32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "primary_device_pubkey must be 32 bytes",
+            ));
+        }
+        let mut public_key = [0u8; 32];
+        public_key.copy_from_slice(&public_key_vec);
+        let derived_device = NodeIdentity::device_identity_from_pubkey(&public_key);
+        if derived_device != self.primary_device_identity {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "primary_device_identity does not match signer public key",
+            ));
+        }
+
+        let signature_vec = hex::decode(&self.signature).map_err(invalid_data)?;
+        let signature_bytes: [u8; 64] = signature_vec.try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "signature must be 64 bytes",
+            )
+        })?;
+        let signature = Signature::from_bytes(&signature_bytes);
+        if !NodeIdentity::verify(&public_key, &self.signable_bytes(), &signature) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid connection file signature",
+            ));
+        }
+        Ok(())
+    }
+
+    fn signable_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(192);
+        buf.extend_from_slice(CONNECTION_FILE_SIGNING_DOMAIN);
+        push_optional_bytes(&mut buf, Some(self.owner_account.as_deref().unwrap_or("")));
+        push_optional_bytes(&mut buf, Some(self.primary_device_identity.as_str()));
+        push_optional_bytes(&mut buf, Some(self.primary_device_pubkey.as_str()));
+        buf.extend_from_slice(&self.exported_at.to_le_bytes());
+        buf
     }
 }
 
@@ -241,10 +305,38 @@ fn invalid_data(error: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
 }
 
+fn push_optional_bytes(buf: &mut Vec<u8>, value: Option<&str>) {
+    if let Some(value) = value {
+        let bytes = value.as_bytes();
+        buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(bytes);
+    } else {
+        buf.extend_from_slice(&u32::MAX.to_le_bytes());
+    }
+}
+
 // We need hex encoding but don't want another dep for just this
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    pub fn decode(text: &str) -> Result<Vec<u8>, String> {
+        if !text.len().is_multiple_of(2) {
+            return Err("hex string must have even length".into());
+        }
+        let mut bytes = Vec::with_capacity(text.len() / 2);
+        let chars: Vec<char> = text.chars().collect();
+        for pair in chars.chunks(2) {
+            let hi = pair[0]
+                .to_digit(16)
+                .ok_or_else(|| "invalid hex digit".to_string())?;
+            let lo = pair[1]
+                .to_digit(16)
+                .ok_or_else(|| "invalid hex digit".to_string())?;
+            bytes.push(((hi << 4) | lo) as u8);
+        }
+        Ok(bytes)
     }
 }
 
@@ -265,7 +357,11 @@ mod tests {
     fn verify_rejects_wrong_message() {
         let id = NodeIdentity::generate();
         let sig = id.sign(b"correct");
-        assert!(!NodeIdentity::verify(&id.public_key_bytes(), b"wrong", &sig));
+        assert!(!NodeIdentity::verify(
+            &id.public_key_bytes(),
+            b"wrong",
+            &sig
+        ));
     }
 
     #[test]
@@ -302,9 +398,7 @@ mod tests {
         assert_eq!(binding.device_identity, node.device_identity());
         assert_eq!(binding.owner_account, None);
 
-        let rebound = binding
-            .clone()
-            .bind_owner_account("oasyce1owner".into());
+        let rebound = binding.clone().bind_owner_account("oasyce1owner".into());
         rebound.save(&path).unwrap();
         let loaded = IdentityBinding::load_or_create(&path, &node).unwrap();
         assert_eq!(loaded.owner_account.as_deref(), Some("oasyce1owner"));
@@ -314,19 +408,44 @@ mod tests {
     #[test]
     fn connection_file_round_trip() {
         let dir = TempDir::new().unwrap();
+        let node = NodeIdentity::generate();
         let binding = IdentityBinding {
             schema_version: IDENTITY_BINDING_SCHEMA_VERSION.into(),
             owner_account: Some("oasyce1owner".into()),
-            device_identity: "oasyce1device".into(),
+            device_identity: node.device_identity(),
             binding_source: Some("manual".into()),
             joined_from_device: None,
             updated_at: 123,
         };
-        let file = ConnectionFile::from_binding(&binding);
+        let file = ConnectionFile::from_binding(&binding, &node);
         let path = dir.path().join("device.thronglets.json");
         file.save(&path).unwrap();
         let loaded = ConnectionFile::load(&path).unwrap();
         assert_eq!(loaded.owner_account.as_deref(), Some("oasyce1owner"));
-        assert_eq!(loaded.primary_device_identity, "oasyce1device");
+        assert_eq!(loaded.primary_device_identity, node.device_identity());
+        assert_eq!(
+            loaded.primary_device_pubkey,
+            hex::encode(&node.public_key_bytes())
+        );
+    }
+
+    #[test]
+    fn tampered_connection_file_is_rejected() {
+        let dir = TempDir::new().unwrap();
+        let node = NodeIdentity::generate();
+        let binding = IdentityBinding {
+            schema_version: IDENTITY_BINDING_SCHEMA_VERSION.into(),
+            owner_account: Some("oasyce1owner".into()),
+            device_identity: node.device_identity(),
+            binding_source: Some("manual".into()),
+            joined_from_device: None,
+            updated_at: 123,
+        };
+        let mut file = ConnectionFile::from_binding(&binding, &node);
+        file.owner_account = Some("oasyce1other".into());
+        let path = dir.path().join("device.thronglets.json");
+        file.save(&path).unwrap();
+        let error = ConnectionFile::load(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

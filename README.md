@@ -121,6 +121,7 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 - 主设备导出一份 connection file
 - 次设备用这份文件加入同一个 owner
 - 手动填写 account + signer 只保留给高级 fallback 场景
+- connection file 由主设备签名，次设备加入时会先验签
 
 当前本地 primitive 已经就位：
 
@@ -133,7 +134,7 @@ thronglets connection-join --file ./thronglets.connection.json
 
 - `id` 会显示当前 `owner account` 和 `device identity`
 - `owner-bind` 是手动高级 fallback
-- `connection-export / connection-join` 是主路径
+- `connection-export / connection-join` 是主路径，并且默认验证主设备签名
 
 ## 部署边界
 

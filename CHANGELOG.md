@@ -26,6 +26,7 @@
 - **Oasyce identity V1 docs** — docs and operator memory now freeze the chain-facing model as `owner account -> multiple authorized device identities`, keep `agent/session` as audit labels, and fix the deployment boundary to “VPS for chain/public infrastructure, `oasyce-net` for user-side runtimes”
 - **Multi-device onboarding docs** — the Oasyce / Thronglets docs now lock the primary onboarding path to “primary device exports a connection file, secondary device joins with that file”, while manual `account + signer` entry remains an advanced fallback
 - **Identity V1 local primitives** — added persisted `owner account + device identity` bindings, threaded them through new traces and explicit signals, and exposed `thronglets owner-bind`, `connection-export`, and `connection-join` for local multi-device onboarding without changing the hot path
+- **Signed connection files** — `thronglets connection-export` now signs the multi-device connection file with the primary device identity, and `connection-join` verifies that signature before binding a secondary device
 
 ## v0.4.0 — 2026-03-28
 

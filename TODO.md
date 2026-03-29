@@ -102,7 +102,7 @@ Thronglets 现在的主线已经明确：
 剩余完成标准：
 - 验证 `owner -> device` 授权，不把 `agent / session` 提升成经济主体
 - 继续保持高频行为链下、低频结果上链结算 / 锚定
-- 把 connection file 和后续 Oasyce 授权路径对齐
+- 把已签名 connection file 和后续 Oasyce 授权路径对齐
 
 ## Next
 

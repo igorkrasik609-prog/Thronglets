@@ -19,9 +19,7 @@ use thronglets::eval::{
     EvalBaselineComparison, EvalCheckStatus, EvalCheckThresholds, EvalConfig, EvalFocus,
     LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
 };
-use thronglets::identity::{
-    ConnectionFile, IdentityBinding, NodeIdentity, identity_binding_path,
-};
+use thronglets::identity::{ConnectionFile, IdentityBinding, NodeIdentity, identity_binding_path};
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use thronglets::posts::{
@@ -1472,7 +1470,10 @@ async fn main() {
             println!("Node ID:         {}", identity.short_id());
             println!("Oasyce address:  {}", identity.oasyce_address());
             println!("Device identity: {}", identity_binding.device_identity);
-            println!("Owner account:   {}", identity_binding.owner_account_or_unbound());
+            println!(
+                "Owner account:   {}",
+                identity_binding.owner_account_or_unbound()
+            );
             println!(
                 "Public key:      {}",
                 hex_encode(&identity.public_key_bytes())
@@ -1492,14 +1493,21 @@ async fn main() {
         }
 
         Commands::ConnectionExport { output } => {
-            let connection = ConnectionFile::from_binding(&identity_binding);
+            let connection = ConnectionFile::from_binding(&identity_binding, &identity);
             connection
                 .save(&output)
                 .expect("failed to write connection file");
             println!("Connection file exported:");
             println!("  Output:             {}", output.display());
-            println!("  Owner account:      {}", identity_binding.owner_account_or_unbound());
+            println!(
+                "  Owner account:      {}",
+                identity_binding.owner_account_or_unbound()
+            );
             println!("  Primary device:     {}", identity_binding.device_identity);
+            println!(
+                "  Signed by device:   {}",
+                connection.primary_device_identity
+            );
         }
 
         Commands::ConnectionJoin { file } => {
@@ -1513,9 +1521,16 @@ async fn main() {
                 .expect("failed to save identity binding");
             println!("Connection file joined:");
             println!("  File:               {}", file.display());
-            println!("  Owner account:      {}", binding.owner_account_or_unbound());
+            println!(
+                "  Owner account:      {}",
+                binding.owner_account_or_unbound()
+            );
             println!("  Device identity:    {}", binding.device_identity);
-            println!("  Joined from device: {}", connection.primary_device_identity);
+            println!(
+                "  Joined from device: {}",
+                connection.primary_device_identity
+            );
+            println!("  Signature verified: yes");
         }
 
         Commands::Record {
@@ -1614,14 +1629,13 @@ async fn main() {
             let traces = store
                 .query_signal_traces(&query_hash, kind.map(Into::into), 48, limit)
                 .expect("failed to query signal traces");
-            let results =
-                summarize_signal_traces(
-                    &traces,
-                    &context,
-                    &identity_binding.device_identity,
-                    identity.public_key_bytes(),
-                    limit,
-                );
+            let results = summarize_signal_traces(
+                &traces,
+                &context,
+                &identity_binding.device_identity,
+                identity.public_key_bytes(),
+                limit,
+            );
             render_signal_query_results(&results);
         }
 
@@ -2396,7 +2410,10 @@ async fn main() {
             println!("  Node ID:          {}", identity.short_id());
             println!("  Oasyce address:   {}", identity.oasyce_address());
             println!("  Device identity:  {}", identity_binding.device_identity);
-            println!("  Owner account:    {}", identity_binding.owner_account_or_unbound());
+            println!(
+                "  Owner account:    {}",
+                identity_binding.owner_account_or_unbound()
+            );
             println!("  Data directory:   {}", dir.display());
             println!();
             println!("  Trace count:      {}", trace_count);

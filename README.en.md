@@ -121,6 +121,7 @@ The primary multi-device onboarding path is also fixed:
 - the primary device exports a connection file
 - the secondary device joins with that file
 - manual account + signer entry remains only as an advanced fallback
+- the connection file is signed by the primary device and verified on join
 
 The local primitives for that flow are now in place:
 
@@ -133,7 +134,7 @@ thronglets connection-join --file ./thronglets.connection.json
 
 - `id` shows the current `owner account` and `device identity`
 - `owner-bind` is the manual advanced fallback
-- `connection-export / connection-join` are the primary onboarding path
+- `connection-export / connection-join` are the primary onboarding path and verify the primary-device signature by default
 
 ## Deployment Boundary
 
