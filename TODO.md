@@ -93,12 +93,16 @@ Thronglets 现在的主线已经明确：
   - 主设备导出 connection file
   - 次设备用该文件加入
   - 手动 account + signer 只保留为高级 fallback
+- 本地 primitive 已就位：
+  - `thronglets id`
+  - `thronglets owner-bind`
+  - `thronglets connection-export`
+  - `thronglets connection-join`
 
 剩余完成标准：
-- 在链相关的数据面补清楚 `owner_account` / `device_identity`
-- 把当前本地 node identity 自然映射到 `device identity`
 - 验证 `owner -> device` 授权，不把 `agent / session` 提升成经济主体
 - 继续保持高频行为链下、低频结果上链结算 / 锚定
+- 把 connection file 和后续 Oasyce 授权路径对齐
 
 ## Next
 

@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 
 use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
-use crate::identity::NodeIdentity;
+use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::network::NetworkCommand;
 use crate::posts::{
     DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind, SignalScopeFilter, SignalTraceConfig,
@@ -251,6 +251,7 @@ fn server_info() -> Value {
 /// Shared context for MCP request handling.
 pub struct McpContext {
     pub identity: Arc<NodeIdentity>,
+    pub binding: Arc<IdentityBinding>,
     pub store: Arc<TraceStore>,
     pub network_tx: Option<mpsc::Sender<NetworkCommand>>,
 }
@@ -378,7 +379,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         Some(context_str.to_string())
     };
 
-    let trace = Trace::new(
+    let trace = Trace::new_with_identity(
         capability.clone(),
         outcome,
         latency_ms,
@@ -386,6 +387,8 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         context_hash,
         context_text,
         session_id,
+        ctx.binding.owner_account.clone(),
+        Some(ctx.binding.device_identity.clone()),
         model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
@@ -401,7 +404,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
 
     // Publish to network if connected
     if let Some(tx) = &ctx.network_tx {
-        let _ = tx.send(NetworkCommand::PublishTrace(trace)).await;
+        let _ = tx.send(NetworkCommand::PublishTrace(Box::new(trace))).await;
     }
 
     let response_json = json!({
@@ -466,6 +469,8 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
         SignalTraceConfig {
             model_id,
             session_id,
+            owner_account: ctx.binding.owner_account.clone(),
+            device_identity: Some(ctx.binding.device_identity.clone()),
             ttl_hours,
         },
         ctx.identity.public_key_bytes(),
@@ -822,6 +827,7 @@ fn handle_signals(
         "signals": summarize_signal_traces(
             &traces,
             context_str,
+            &ctx.binding.device_identity,
             ctx.identity.public_key_bytes(),
             limit,
         ),
@@ -871,7 +877,12 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
     };
     let response_json = json!({
         "signals": filter_signal_feed_results(
-            summarize_recent_signal_feed(&traces, ctx.identity.public_key_bytes(), limit),
+            summarize_recent_signal_feed(
+                &traces,
+                &ctx.binding.device_identity,
+                ctx.identity.public_key_bytes(),
+                limit,
+            ),
             scope,
         ),
     });
@@ -1020,11 +1031,13 @@ fn round2(v: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::context::simhash;
+    use crate::identity::IdentityBinding;
 
     fn make_ctx() -> Arc<McpContext> {
         let identity = Arc::new(NodeIdentity::generate());
         let store = Arc::new(TraceStore::in_memory().unwrap());
         Arc::new(McpContext {
+            binding: Arc::new(IdentityBinding::new(identity.device_identity())),
             identity,
             store,
             network_tx: None,
@@ -1040,7 +1053,7 @@ mod tests {
         context: &str,
         latency: u32,
     ) {
-        let trace = Trace::new(
+        let trace = Trace::new_with_identity(
             cap.into(),
             outcome,
             latency,
@@ -1048,6 +1061,8 @@ mod tests {
             simhash(context),
             Some(context.to_string()),
             None,
+            ctx.binding.owner_account.clone(),
+            Some(ctx.binding.device_identity.clone()),
             model.into(),
             ctx.identity.public_key_bytes(),
             |msg| ctx.identity.sign(msg),

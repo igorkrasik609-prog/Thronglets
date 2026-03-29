@@ -66,6 +66,14 @@ pub struct Trace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 
+    /// Optional root ownership account for Identity V1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_account: Option<String>,
+
+    /// Optional executing device identity for Identity V1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_identity: Option<String>,
+
     /// Self-reported model identifier.
     /// e.g., "claude-opus-4-6", "gpt-4o", "gemini-pro"
     pub model_id: String,
@@ -96,6 +104,37 @@ impl Trace {
         node_pubkey: [u8; 32],
         sign_fn: impl FnOnce(&[u8]) -> Signature,
     ) -> Self {
+        Self::new_with_identity(
+            capability,
+            outcome,
+            latency_ms,
+            input_size,
+            context_hash,
+            context_text,
+            session_id,
+            None,
+            None,
+            model_id,
+            node_pubkey,
+            sign_fn,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_identity(
+        capability: String,
+        outcome: Outcome,
+        latency_ms: u32,
+        input_size: u32,
+        context_hash: ContextHash,
+        context_text: Option<String>,
+        session_id: Option<String>,
+        owner_account: Option<String>,
+        device_identity: Option<String>,
+        model_id: String,
+        node_pubkey: [u8; 32],
+        sign_fn: impl FnOnce(&[u8]) -> Signature,
+    ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -104,7 +143,7 @@ impl Trace {
         let signable = Self::signable_bytes(
             &capability, outcome, latency_ms, input_size,
             &context_hash, context_text.as_deref(), session_id.as_deref(),
-            &model_id, timestamp, &node_pubkey,
+            owner_account.as_deref(), device_identity.as_deref(), &model_id, timestamp, &node_pubkey,
         );
 
         let signature = sign_fn(&signable);
@@ -123,6 +162,8 @@ impl Trace {
             context_hash,
             context_text,
             session_id,
+            owner_account,
+            device_identity,
             model_id,
             timestamp,
             node_pubkey,
@@ -135,6 +176,8 @@ impl Trace {
         let signable = Self::signable_bytes(
             &self.capability, self.outcome, self.latency_ms, self.input_size,
             &self.context_hash, self.context_text.as_deref(), self.session_id.as_deref(),
+            self.owner_account.as_deref(),
+            self.device_identity.as_deref(),
             &self.model_id, self.timestamp, &self.node_pubkey,
         );
         crate::identity::NodeIdentity::verify(&self.node_pubkey, &signable, &self.signature)
@@ -145,6 +188,8 @@ impl Trace {
         let signable = Self::signable_bytes(
             &self.capability, self.outcome, self.latency_ms, self.input_size,
             &self.context_hash, self.context_text.as_deref(), self.session_id.as_deref(),
+            self.owner_account.as_deref(),
+            self.device_identity.as_deref(),
             &self.model_id, self.timestamp, &self.node_pubkey,
         );
         let mut hasher = Sha256::new();
@@ -170,6 +215,8 @@ impl Trace {
         context_hash: &ContextHash,
         context_text: Option<&str>,
         session_id: Option<&str>,
+        owner_account: Option<&str>,
+        device_identity: Option<&str>,
         model_id: &str,
         timestamp: u64,
         node_pubkey: &[u8; 32],
@@ -183,26 +230,32 @@ impl Trace {
         buf.extend_from_slice(context_hash);
         // v0.2.1 extension: only present when new fields are used
         let has_v021_fields = context_text.is_some() || session_id.is_some();
-        if has_v021_fields {
+        let has_identity_v1 = owner_account.is_some() || device_identity.is_some();
+        if has_identity_v1 {
+            buf.push(0xFE); // Identity V1 tag
+            push_optional_bytes(&mut buf, context_text);
+            push_optional_bytes(&mut buf, session_id);
+            push_optional_bytes(&mut buf, owner_account);
+            push_optional_bytes(&mut buf, device_identity);
+        } else if has_v021_fields {
             buf.push(0xFF); // version tag — absent in v0.2.0 signing
-            if let Some(ct) = context_text {
-                buf.extend_from_slice(&(ct.len() as u32).to_le_bytes());
-                buf.extend_from_slice(ct.as_bytes());
-            } else {
-                buf.extend_from_slice(&0u32.to_le_bytes());
-            }
-            if let Some(sid) = session_id {
-                buf.extend_from_slice(&(sid.len() as u32).to_le_bytes());
-                buf.extend_from_slice(sid.as_bytes());
-            } else {
-                buf.extend_from_slice(&0u32.to_le_bytes());
-            }
+            push_optional_bytes(&mut buf, context_text);
+            push_optional_bytes(&mut buf, session_id);
         }
         buf.extend_from_slice(model_id.as_bytes());
         buf.push(0);
         buf.extend_from_slice(&timestamp.to_le_bytes());
         buf.extend_from_slice(node_pubkey);
         buf
+    }
+}
+
+fn push_optional_bytes(buf: &mut Vec<u8>, value: Option<&str>) {
+    if let Some(value) = value {
+        buf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        buf.extend_from_slice(value.as_bytes());
+    } else {
+        buf.extend_from_slice(&0u32.to_le_bytes());
     }
 }
 
@@ -253,6 +306,30 @@ mod tests {
         assert!(trace.verify_id(), "content-addressed ID should match");
         assert_eq!(trace.model_id, "claude-opus-4-6");
         assert_eq!(trace.input_size, 5000);
+    }
+
+    #[test]
+    fn identity_metadata_round_trip_verifies() {
+        let id = NodeIdentity::generate();
+        let trace = Trace::new_with_identity(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded,
+            12,
+            42,
+            simhash("fix workspace identity model"),
+            Some("fix workspace identity model".into()),
+            Some("session-1".into()),
+            Some("oasyce1owner".into()),
+            Some(id.device_identity()),
+            "codex".into(),
+            id.public_key_bytes(),
+            |msg| id.sign(msg),
+        );
+
+        assert!(trace.verify());
+        assert!(trace.verify_id());
+        assert_eq!(trace.owner_account.as_deref(), Some("oasyce1owner"));
+        assert_eq!(trace.device_identity.as_deref(), Some(id.device_identity().as_str()));
     }
 
     #[test]

@@ -34,7 +34,7 @@ pub enum NetworkEvent {
     /// A peer disconnected.
     PeerDisconnected(PeerId),
     /// A trace was received from the network (already deserialized).
-    TraceReceived(Trace),
+    TraceReceived(Box<Trace>),
 }
 
 /// A capability summary retrieved from the DHT.
@@ -50,7 +50,7 @@ pub struct DhtCapabilitySummary {
 #[derive(Debug)]
 pub enum NetworkCommand {
     /// Publish a trace to the gossip network.
-    PublishTrace(Trace),
+    PublishTrace(Box<Trace>),
     /// Get the list of connected peers.
     GetPeers(tokio::sync::oneshot::Sender<Vec<PeerId>>),
     /// Publish a capability summary to the DHT.
@@ -184,7 +184,7 @@ pub async fn start(
                                 Ok(trace) => {
                                     if trace.verify() && trace.verify_id() {
                                         debug!(trace_id = ?&trace.id[..4], "Received valid trace from network");
-                                        let _ = event_tx.send(NetworkEvent::TraceReceived(trace)).await;
+                                        let _ = event_tx.send(NetworkEvent::TraceReceived(Box::new(trace))).await;
                                     } else {
                                         warn!("Received invalid trace from network, dropping");
                                     }

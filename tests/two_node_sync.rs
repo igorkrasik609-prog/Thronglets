@@ -97,13 +97,13 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     let trace_id = trace.id;
 
     cmd_tx_a
-        .send(NetworkCommand::PublishTrace(trace))
+        .send(NetworkCommand::PublishTrace(Box::new(trace)))
         .await
         .expect("send publish command");
 
     // --- Node B should receive the trace ---
     let receive_timeout = Duration::from_secs(10);
-    let mut received_trace: Option<Trace> = None;
+    let mut received_trace: Option<Box<Trace>> = None;
 
     let receive_deadline = tokio::time::Instant::now() + receive_timeout;
     while tokio::time::Instant::now() < receive_deadline && received_trace.is_none() {

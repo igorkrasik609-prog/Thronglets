@@ -12,6 +12,8 @@ pub const DEFAULT_SIGNAL_TTL_HOURS: u32 = 72;
 pub struct SignalTraceConfig {
     pub model_id: String,
     pub session_id: Option<String>,
+    pub owner_account: Option<String>,
+    pub device_identity: Option<String>,
     pub ttl_hours: u32,
 }
 
@@ -188,7 +190,7 @@ fn create_signal_trace_at(
         expires_at: expires_at_ms(now_ms, config.ttl_hours),
     };
 
-    let mut trace = Trace::new(
+    let mut trace = Trace::new_with_identity(
         kind.capability(),
         Outcome::Succeeded,
         0,
@@ -196,6 +198,8 @@ fn create_signal_trace_at(
         simhash(context),
         Some(serde_json::to_string(&payload).expect("signal payload should serialize")),
         config.session_id,
+        config.owner_account,
+        config.device_identity,
         config.model_id,
         node_pubkey,
         sign_fn,
@@ -207,6 +211,7 @@ fn create_signal_trace_at(
 pub fn summarize_signal_traces(
     traces: &[Trace],
     query_context: &str,
+    local_device_identity: &str,
     local_node_pubkey: [u8; 32],
     limit: usize,
 ) -> Vec<SignalQueryResult> {
@@ -247,7 +252,7 @@ pub fn summarize_signal_traces(
         let source = source_key(trace);
         entry.sources.insert(source.clone());
         entry.models.insert(trace.model_id.clone());
-        if trace.node_pubkey == local_node_pubkey {
+        if is_local_source(trace, local_device_identity, &local_node_pubkey) {
             entry.local_sources.insert(source);
         } else {
             entry.collective_sources.insert(source);
@@ -303,6 +308,7 @@ pub fn summarize_signal_traces(
 
 pub fn summarize_recent_signal_feed(
     traces: &[Trace],
+    local_device_identity: &str,
     local_node_pubkey: [u8; 32],
     limit: usize,
 ) -> Vec<SignalFeedResult> {
@@ -340,7 +346,7 @@ pub fn summarize_recent_signal_feed(
         let source = source_key(trace);
         entry.sources.insert(source.clone());
         entry.models.insert(trace.model_id.clone());
-        if trace.node_pubkey == local_node_pubkey {
+        if is_local_source(trace, local_device_identity, &local_node_pubkey) {
             entry.local_sources.insert(source);
         } else {
             entry.collective_sources.insert(source);
@@ -424,14 +430,27 @@ pub fn expires_at_ms(now_ms: u64, ttl_hours: u32) -> u64 {
 
 fn source_key(trace: &Trace) -> String {
     let node = trace
-        .node_pubkey
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+        .device_identity
+        .clone()
+        .unwrap_or_else(|| {
+            trace
+                .node_pubkey
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        });
     match trace.session_id.as_deref() {
         Some(session_id) => format!("{node}:{session_id}"),
         None => node,
     }
+}
+
+fn is_local_source(trace: &Trace, local_device_identity: &str, local_node_pubkey: &[u8; 32]) -> bool {
+    trace
+        .device_identity
+        .as_deref()
+        .map(|device_identity| device_identity == local_device_identity)
+        .unwrap_or(trace.node_pubkey == *local_node_pubkey)
 }
 
 fn now_ms() -> u64 {
@@ -509,6 +528,16 @@ mod tests {
     use super::*;
     use crate::identity::NodeIdentity;
 
+    fn signal_config(identity: &NodeIdentity, model: &str, session_id: &str) -> SignalTraceConfig {
+        SignalTraceConfig {
+            model_id: model.into(),
+            session_id: Some(session_id.into()),
+            owner_account: None,
+            device_identity: Some(identity.device_identity()),
+            ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+        }
+    }
+
     #[test]
     fn summarize_signal_posts_groups_by_kind_and_message() {
         let identity = NodeIdentity::generate();
@@ -516,11 +545,7 @@ mod tests {
             SignalPostKind::Avoid,
             "fix flaky ci workflow",
             "skip the generated lockfile",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("session-a".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&identity, "codex", "session-a"),
             identity.public_key_bytes(),
             |msg| identity.sign(msg),
         );
@@ -529,11 +554,7 @@ mod tests {
             SignalPostKind::Avoid,
             "repair flaky ci pipeline",
             "skip the generated lockfile",
-            SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("session-b".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&identity, "openclaw", "session-b"),
             identity.public_key_bytes(),
             |msg| identity.sign(msg),
         );
@@ -542,6 +563,7 @@ mod tests {
         let results = summarize_signal_traces(
             &[trace_a, trace_b],
             "fix flaky ci workflow",
+            &identity.device_identity(),
             identity.public_key_bytes(),
             10,
         );
@@ -569,6 +591,8 @@ mod tests {
             SignalTraceConfig {
                 model_id: "codex".into(),
                 session_id: Some("session-a".into()),
+                owner_account: None,
+                device_identity: Some(identity.device_identity()),
                 ttl_hours: 1,
             },
             base_now.saturating_sub(3 * 60 * 60 * 1000),
@@ -582,6 +606,8 @@ mod tests {
             SignalTraceConfig {
                 model_id: "openclaw".into(),
                 session_id: Some("session-b".into()),
+                owner_account: None,
+                device_identity: Some(identity.device_identity()),
                 ttl_hours: 24,
             },
             base_now,
@@ -592,6 +618,7 @@ mod tests {
         let results = summarize_signal_traces(
             &[expired, fresh],
             "ship the current branch",
+            &identity.device_identity(),
             identity.public_key_bytes(),
             10,
         );
@@ -609,11 +636,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("local-1".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&local_identity, "codex", "local-1"),
             local_identity.public_key_bytes(),
             |msg| local_identity.sign(msg),
         );
@@ -621,11 +644,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("remote-1".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_identity, "openclaw", "remote-1"),
             remote_identity.public_key_bytes(),
             |msg| remote_identity.sign(msg),
         );
@@ -633,6 +652,7 @@ mod tests {
         let results = summarize_signal_traces(
             &[local, remote],
             "repair release flow",
+            &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
         );
@@ -654,11 +674,7 @@ mod tests {
             SignalPostKind::Info,
             "repair release flow",
             "update changelog before tagging",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("local-1".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&local_identity, "codex", "local-1"),
             local_identity.public_key_bytes(),
             |msg| local_identity.sign(msg),
         );
@@ -666,11 +682,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("remote-a".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_a, "openclaw", "remote-a"),
             remote_a.public_key_bytes(),
             |msg| remote_a.sign(msg),
         );
@@ -678,17 +690,14 @@ mod tests {
             SignalPostKind::Recommend,
             "ship the current branch",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "claude".into(),
-                session_id: Some("remote-b".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_b, "claude", "remote-b"),
             remote_b.public_key_bytes(),
             |msg| remote_b.sign(msg),
         );
 
         let results = summarize_recent_signal_feed(
             &[local_signal, collective_a, collective_b],
+            &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
         );
@@ -714,11 +723,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-a".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_a, "codex", "remote-a"),
             base_now,
             remote_a.public_key_bytes(),
             |msg| remote_a.sign(msg),
@@ -727,11 +732,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("remote-b".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_b, "openclaw", "remote-b"),
             base_now,
             remote_b.public_key_bytes(),
             |msg| remote_b.sign(msg),
@@ -740,11 +741,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-c".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_c, "codex", "remote-c"),
             base_now,
             remote_c.public_key_bytes(),
             |msg| remote_c.sign(msg),
@@ -753,11 +750,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-d".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_d, "codex", "remote-d"),
             base_now,
             remote_d.public_key_bytes(),
             |msg| remote_d.sign(msg),
@@ -765,6 +758,7 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[single_model_a, single_model_b, multi_model_a, multi_model_b],
+            &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
         );
@@ -794,11 +788,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-a".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_a, "codex", "remote-a"),
             base_now,
             remote_a.public_key_bytes(),
             |msg| remote_a.sign(msg),
@@ -807,11 +797,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("remote-b".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_b, "openclaw", "remote-b"),
             base_now,
             remote_b.public_key_bytes(),
             |msg| remote_b.sign(msg),
@@ -820,11 +806,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-c".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_c, "codex", "remote-c"),
             base_now,
             remote_c.public_key_bytes(),
             |msg| remote_c.sign(msg),
@@ -833,11 +815,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-d".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_d, "codex", "remote-d"),
             base_now,
             remote_d.public_key_bytes(),
             |msg| remote_d.sign(msg),
@@ -846,11 +824,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("local-1".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&local_identity, "codex", "local-1"),
             base_now,
             local_identity.public_key_bytes(),
             |msg| local_identity.sign(msg),
@@ -864,6 +838,7 @@ mod tests {
                 multi_model_a,
                 multi_model_b,
             ],
+            &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
         );
@@ -890,11 +865,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-a".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_a, "codex", "remote-a"),
             old_now,
             remote_a.public_key_bytes(),
             |msg| remote_a.sign(msg),
@@ -903,11 +874,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("remote-b".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_b, "openclaw", "remote-b"),
             old_now,
             remote_b.public_key_bytes(),
             |msg| remote_b.sign(msg),
@@ -916,11 +883,7 @@ mod tests {
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            SignalTraceConfig {
-                model_id: "claude".into(),
-                session_id: Some("remote-old-c".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_e, "claude", "remote-old-c"),
             old_now,
             remote_e.public_key_bytes(),
             |msg| remote_e.sign(msg),
@@ -930,11 +893,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "codex".into(),
-                session_id: Some("remote-c".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_c, "codex", "remote-c"),
             base_now,
             remote_c.public_key_bytes(),
             |msg| remote_c.sign(msg),
@@ -943,11 +902,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("remote-d".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_d, "openclaw", "remote-d"),
             base_now,
             remote_d.public_key_bytes(),
             |msg| remote_d.sign(msg),
@@ -956,11 +911,7 @@ mod tests {
             SignalPostKind::Watch,
             "repair release flow",
             "rerun the targeted test first",
-            SignalTraceConfig {
-                model_id: "claude".into(),
-                session_id: Some("remote-e".into()),
-                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-            },
+            signal_config(&remote_e, "claude", "remote-e"),
             base_now,
             remote_e.public_key_bytes(),
             |msg| remote_e.sign(msg),
@@ -968,6 +919,7 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[old_a, old_b, old_c, fresh_a, fresh_b, fresh_c],
+            &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
         );

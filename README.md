@@ -122,6 +122,19 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 - 次设备用这份文件加入同一个 owner
 - 手动填写 account + signer 只保留给高级 fallback 场景
 
+当前本地 primitive 已经就位：
+
+```bash
+thronglets id
+thronglets owner-bind --owner-account oasyce1...
+thronglets connection-export --output ./thronglets.connection.json
+thronglets connection-join --file ./thronglets.connection.json
+```
+
+- `id` 会显示当前 `owner account` 和 `device identity`
+- `owner-bind` 是手动高级 fallback
+- `connection-export / connection-join` 是主路径
+
 ## 部署边界
 
 这条边界现在已经冻结：

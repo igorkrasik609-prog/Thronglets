@@ -13,7 +13,7 @@
 //! - GET  /v1/status       — node status
 
 use crate::context::{simhash, similarity};
-use crate::identity::NodeIdentity;
+use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::posts::{
     DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind, SignalScopeFilter, SignalTraceConfig,
     create_signal_trace, filter_signal_feed_results, is_signal_capability,
@@ -30,6 +30,7 @@ use tracing::{debug, info};
 
 pub struct HttpContext {
     pub identity: Arc<NodeIdentity>,
+    pub binding: Arc<IdentityBinding>,
     pub store: Arc<TraceStore>,
 }
 
@@ -135,7 +136,7 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         Some(context_str.to_string())
     };
 
-    let trace = Trace::new(
+    let trace = Trace::new_with_identity(
         capability.clone(),
         outcome,
         latency_ms,
@@ -143,6 +144,8 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         context_hash,
         context_text,
         session_id,
+        ctx.binding.owner_account.clone(),
+        Some(ctx.binding.device_identity.clone()),
         model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
@@ -193,6 +196,8 @@ fn handle_post_signal(ctx: &HttpContext, body: &str) -> String {
         SignalTraceConfig {
             model_id: model,
             session_id,
+            owner_account: ctx.binding.owner_account.clone(),
+            device_identity: Some(ctx.binding.device_identity.clone()),
             ttl_hours,
         },
         ctx.identity.public_key_bytes(),
@@ -349,7 +354,12 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
     };
     json!({
         "signals": filter_signal_feed_results(
-            summarize_recent_signal_feed(&traces, ctx.identity.public_key_bytes(), limit),
+            summarize_recent_signal_feed(
+                &traces,
+                &ctx.binding.device_identity,
+                ctx.identity.public_key_bytes(),
+                limit,
+            ),
             scope,
         ),
     })
@@ -382,6 +392,7 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
         "signals": summarize_signal_traces(
             &traces,
             context_str,
+            &ctx.binding.device_identity,
             ctx.identity.public_key_bytes(),
             limit,
         ),
@@ -424,6 +435,8 @@ fn handle_get_status(ctx: &HttpContext) -> String {
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "node_id": hex_encode(&ctx.identity.public_key_bytes()[..4]),
+        "device_identity": ctx.binding.device_identity.clone(),
+        "owner_account": ctx.binding.owner_account.clone(),
         "trace_count": trace_count,
         "capabilities": cap_count,
     })
@@ -495,6 +508,7 @@ mod tests {
     fn make_ctx() -> HttpContext {
         HttpContext {
             identity: Arc::new(NodeIdentity::generate()),
+            binding: Arc::new(IdentityBinding::new("oasyce1localdevice".into())),
             store: Arc::new(TraceStore::in_memory().unwrap()),
         }
     }

@@ -39,6 +39,8 @@ impl TraceStore {
                 context_hash    BLOB NOT NULL,
                 context_text    TEXT,
                 session_id      TEXT,
+                owner_account   TEXT,
+                device_identity TEXT,
                 model_id        TEXT NOT NULL,
                 timestamp       INTEGER NOT NULL,
                 node_pubkey     BLOB NOT NULL,
@@ -56,6 +58,8 @@ impl TraceStore {
         // Each ALTER is separate — if one fails (column exists), the rest still run
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN context_text TEXT", []);
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN session_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE traces ADD COLUMN owner_account TEXT", []);
+        let _ = conn.execute("ALTER TABLE traces ADD COLUMN device_identity TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE traces ADD COLUMN context_bucket INTEGER NOT NULL DEFAULT 0",
             [],
@@ -87,8 +91,8 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let bucket = context_bucket(&trace.context_hash);
         let result = conn.execute(
-            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, model_id, timestamp, node_pubkey, signature, context_bucket)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature, context_bucket)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 trace.id.as_slice(),
                 trace.capability,
@@ -98,6 +102,8 @@ impl TraceStore {
                 trace.context_hash.as_slice(),
                 trace.context_text,
                 trace.session_id,
+                trace.owner_account,
+                trace.device_identity,
                 trace.model_id,
                 trace.timestamp as i64,
                 trace.node_pubkey.as_slice(),
@@ -113,7 +119,7 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
              FROM traces WHERE capability = ?1 ORDER BY timestamp DESC LIMIT ?2",
         )?;
         Self::collect_traces(&mut stmt, params![capability, limit as i64])
@@ -144,7 +150,7 @@ impl TraceStore {
 
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
              FROM traces
              WHERE context_bucket BETWEEN ?1 AND ?2
              ORDER BY timestamp DESC",
@@ -211,7 +217,7 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
              FROM traces WHERE session_id = ?1 ORDER BY timestamp ASC LIMIT ?2",
         )?;
         Self::collect_traces(&mut stmt, params![session_id, limit as i64])
@@ -287,7 +293,7 @@ impl TraceStore {
         let read_suffix = format!("read file: %/{read_target}");
 
         let count: i64 = conn.query_row(
-            "SELECT COUNT(DISTINCT (hex(t_edit.node_pubkey) || ':' || t_edit.session_id))
+            "SELECT COUNT(DISTINCT (COALESCE(t_edit.device_identity, hex(t_edit.node_pubkey)) || ':' || t_edit.session_id))
              FROM traces t_edit
              JOIN traces t_read ON t_read.session_id = t_edit.session_id
                                AND t_read.node_pubkey = t_edit.node_pubkey
@@ -324,7 +330,7 @@ impl TraceStore {
         let count = if steps.len() == 1 {
             let (step1_cap, step1_exact, step1_suffix) = step_match(&steps[0]);
             conn.query_row(
-                "SELECT COUNT(DISTINCT (hex(t0.node_pubkey) || ':' || t0.session_id))
+                "SELECT COUNT(DISTINCT (COALESCE(t0.device_identity, hex(t0.node_pubkey)) || ':' || t0.session_id))
                  FROM traces t0
                  JOIN traces t1 ON t1.session_id = t0.session_id
                                AND t1.node_pubkey = t0.node_pubkey
@@ -343,7 +349,7 @@ impl TraceStore {
             let (step1_cap, step1_exact, step1_suffix) = step_match(&steps[0]);
             let (step2_cap, step2_exact, step2_suffix) = step_match(&steps[1]);
             conn.query_row(
-                "SELECT COUNT(DISTINCT (hex(t0.node_pubkey) || ':' || t0.session_id))
+                "SELECT COUNT(DISTINCT (COALESCE(t0.device_identity, hex(t0.node_pubkey)) || ':' || t0.session_id))
                  FROM traces t0
                  JOIN traces t1 ON t1.session_id = t0.session_id
                                AND t1.node_pubkey = t0.node_pubkey
@@ -397,7 +403,7 @@ impl TraceStore {
         let companion_suffix_write = format!("write file: %/{companion_target}");
 
         let count: i64 = conn.query_row(
-            "SELECT COUNT(DISTINCT (hex(t1.node_pubkey) || ':' || t1.session_id))
+            "SELECT COUNT(DISTINCT (COALESCE(t1.device_identity, hex(t1.node_pubkey)) || ':' || t1.session_id))
              FROM traces t1
              JOIN traces t2 ON t2.session_id = t1.session_id
                            AND t2.node_pubkey = t1.node_pubkey
@@ -449,7 +455,7 @@ impl TraceStore {
             let capability = kind.capability();
             let mut stmt = conn.prepare(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, model_id, timestamp, node_pubkey, signature
+                        context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
                  FROM traces
                  WHERE context_bucket BETWEEN ?1 AND ?2
                    AND capability = ?3
@@ -464,7 +470,7 @@ impl TraceStore {
             let like = format!("{SIGNAL_CAPABILITY_PREFIX}%");
             let mut stmt = conn.prepare(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, model_id, timestamp, node_pubkey, signature
+                        context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
                  FROM traces
                  WHERE context_bucket BETWEEN ?1 AND ?2
                    AND capability LIKE ?3
@@ -499,7 +505,7 @@ impl TraceStore {
             let capability = kind.capability();
             let mut stmt = conn.prepare(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, model_id, timestamp, node_pubkey, signature
+                        context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
                  FROM traces
                  WHERE capability = ?1
                    AND timestamp >= ?2
@@ -511,7 +517,7 @@ impl TraceStore {
             let like = format!("{SIGNAL_CAPABILITY_PREFIX}%");
             let mut stmt = conn.prepare(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, model_id, timestamp, node_pubkey, signature
+                        context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
                  FROM traces
                  WHERE capability LIKE ?1
                    AND timestamp >= ?2
@@ -558,7 +564,7 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
              FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1",
         )?;
         Self::collect_traces(&mut stmt, params![limit as i64])
@@ -608,7 +614,7 @@ impl TraceStore {
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let mut stmt = conn.prepare(
             "SELECT t.id, t.capability, t.outcome, t.latency_ms, t.input_size, t.context_hash,
-                    t.context_text, t.session_id, t.model_id, t.timestamp, t.node_pubkey, t.signature
+                    t.context_text, t.session_id, t.owner_account, t.device_identity, t.model_id, t.timestamp, t.node_pubkey, t.signature
              FROM traces t
              LEFT JOIN anchored_traces a ON t.id = a.trace_id
              WHERE a.trace_id IS NULL AND t.timestamp >= ?1
@@ -619,8 +625,8 @@ impl TraceStore {
     }
 
     /// Column order: id(0), capability(1), outcome(2), latency_ms(3), input_size(4),
-    /// context_hash(5), context_text(6), session_id(7), model_id(8), timestamp(9),
-    /// node_pubkey(10), signature(11)
+    /// context_hash(5), context_text(6), session_id(7), owner_account(8), device_identity(9),
+    /// model_id(10), timestamp(11), node_pubkey(12), signature(13)
     fn collect_traces(
         stmt: &mut rusqlite::Statement,
         params: impl rusqlite::Params,
@@ -629,8 +635,8 @@ impl TraceStore {
             let id_bytes: Vec<u8> = row.get(0)?;
             let outcome_u8: u8 = row.get(2)?;
             let context_bytes: Vec<u8> = row.get(5)?;
-            let pubkey_bytes: Vec<u8> = row.get(10)?;
-            let sig_bytes: Vec<u8> = row.get(11)?;
+            let pubkey_bytes: Vec<u8> = row.get(12)?;
+            let sig_bytes: Vec<u8> = row.get(13)?;
 
             Ok(Trace {
                 id: id_bytes.try_into().unwrap_or([0u8; 32]),
@@ -646,8 +652,10 @@ impl TraceStore {
                 context_hash: context_bytes.try_into().unwrap_or([0u8; 16]),
                 context_text: row.get(6)?,
                 session_id: row.get(7)?,
-                model_id: row.get(8)?,
-                timestamp: row.get::<_, i64>(9)? as u64,
+                owner_account: row.get(8)?,
+                device_identity: row.get(9)?,
+                model_id: row.get(10)?,
+                timestamp: row.get::<_, i64>(11)? as u64,
                 node_pubkey: pubkey_bytes.try_into().unwrap_or([0u8; 32]),
                 signature: Signature::from_bytes(&sig_bytes.try_into().unwrap_or([0u8; 64])),
             })
@@ -1341,6 +1349,8 @@ mod tests {
             crate::posts::SignalTraceConfig {
                 model_id: "codex".into(),
                 session_id: Some("s1".into()),
+                owner_account: None,
+                device_identity: Some(id.device_identity()),
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_TTL_HOURS,
             },
             id.public_key_bytes(),
@@ -1354,6 +1364,8 @@ mod tests {
             crate::posts::SignalTraceConfig {
                 model_id: "codex".into(),
                 session_id: Some("s2".into()),
+                owner_account: None,
+                device_identity: Some(id.device_identity()),
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_TTL_HOURS,
             },
             id.public_key_bytes(),
@@ -1383,6 +1395,8 @@ mod tests {
             crate::posts::SignalTraceConfig {
                 model_id: "codex".into(),
                 session_id: Some("recent".into()),
+                owner_account: None,
+                device_identity: Some(id.device_identity()),
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_TTL_HOURS,
             },
             id.public_key_bytes(),

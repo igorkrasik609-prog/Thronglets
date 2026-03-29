@@ -19,7 +19,9 @@ use thronglets::eval::{
     EvalBaselineComparison, EvalCheckStatus, EvalCheckThresholds, EvalConfig, EvalFocus,
     LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
 };
-use thronglets::identity::NodeIdentity;
+use thronglets::identity::{
+    ConnectionFile, IdentityBinding, NodeIdentity, identity_binding_path,
+};
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use thronglets::posts::{
@@ -284,6 +286,27 @@ enum Commands {
 
     /// Show node identity
     Id,
+
+    /// Bind this device to an owner account.
+    OwnerBind {
+        /// Root owner account / wallet address.
+        #[arg(long)]
+        owner_account: String,
+    },
+
+    /// Export a connection file from the primary device.
+    ConnectionExport {
+        /// Where to write the connection file.
+        #[arg(long)]
+        output: PathBuf,
+    },
+
+    /// Join this device to an existing owner account using a connection file.
+    ConnectionJoin {
+        /// Connection file exported from the primary device.
+        #[arg(long)]
+        file: PathBuf,
+    },
 
     /// Record a trace manually (for testing/debugging)
     Record {
@@ -602,6 +625,11 @@ fn home_dir() -> PathBuf {
 fn load_identity(data_dir: &std::path::Path) -> NodeIdentity {
     NodeIdentity::load_or_generate(&data_dir.join("node.key"))
         .expect("failed to load or generate node identity")
+}
+
+fn load_identity_binding(data_dir: &std::path::Path, identity: &NodeIdentity) -> IdentityBinding {
+    IdentityBinding::load_or_create(&identity_binding_path(data_dir), identity)
+        .expect("failed to load or create identity binding")
 }
 
 fn open_store(data_dir: &std::path::Path) -> TraceStore {
@@ -1436,17 +1464,58 @@ async fn main() {
     let cli = Cli::parse();
     let dir = data_dir(&cli.data_dir);
     let identity = load_identity(&dir);
+    let identity_binding = load_identity_binding(&dir, &identity);
 
     match cli.command {
         Commands::Id => {
             println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
             println!("Node ID:         {}", identity.short_id());
             println!("Oasyce address:  {}", identity.oasyce_address());
+            println!("Device identity: {}", identity_binding.device_identity);
+            println!("Owner account:   {}", identity_binding.owner_account_or_unbound());
             println!(
                 "Public key:      {}",
                 hex_encode(&identity.public_key_bytes())
             );
             println!("Data directory:  {}", dir.display());
+        }
+
+        Commands::OwnerBind { owner_account } => {
+            let binding = identity_binding.clone().bind_owner_account(owner_account);
+            binding
+                .save(&identity_binding_path(&dir))
+                .expect("failed to save identity binding");
+            println!("Owner binding updated:");
+            println!("  Owner account:   {}", binding.owner_account_or_unbound());
+            println!("  Device identity: {}", binding.device_identity);
+            println!("  Source:          manual");
+        }
+
+        Commands::ConnectionExport { output } => {
+            let connection = ConnectionFile::from_binding(&identity_binding);
+            connection
+                .save(&output)
+                .expect("failed to write connection file");
+            println!("Connection file exported:");
+            println!("  Output:             {}", output.display());
+            println!("  Owner account:      {}", identity_binding.owner_account_or_unbound());
+            println!("  Primary device:     {}", identity_binding.device_identity);
+        }
+
+        Commands::ConnectionJoin { file } => {
+            let connection = ConnectionFile::load(&file).expect("failed to read connection file");
+            let binding = identity_binding.clone().joined_via_connection(
+                connection.owner_account.clone(),
+                connection.primary_device_identity.clone(),
+            );
+            binding
+                .save(&identity_binding_path(&dir))
+                .expect("failed to save identity binding");
+            println!("Connection file joined:");
+            println!("  File:               {}", file.display());
+            println!("  Owner account:      {}", binding.owner_account_or_unbound());
+            println!("  Device identity:    {}", binding.device_identity);
+            println!("  Joined from device: {}", connection.primary_device_identity);
         }
 
         Commands::Record {
@@ -1465,7 +1534,7 @@ async fn main() {
             } else {
                 Some(context.clone())
             };
-            let trace = Trace::new(
+            let trace = Trace::new_with_identity(
                 capability.clone(),
                 outcome,
                 latency,
@@ -1473,6 +1542,8 @@ async fn main() {
                 ctx_hash,
                 ctx_text,
                 None,
+                identity_binding.owner_account.clone(),
+                Some(identity_binding.device_identity.clone()),
                 model,
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -1518,6 +1589,8 @@ async fn main() {
                 SignalTraceConfig {
                     model_id: model,
                     session_id,
+                    owner_account: identity_binding.owner_account.clone(),
+                    device_identity: Some(identity_binding.device_identity.clone()),
                     ttl_hours,
                 },
                 identity.public_key_bytes(),
@@ -1542,7 +1615,13 @@ async fn main() {
                 .query_signal_traces(&query_hash, kind.map(Into::into), 48, limit)
                 .expect("failed to query signal traces");
             let results =
-                summarize_signal_traces(&traces, &context, identity.public_key_bytes(), limit);
+                summarize_signal_traces(
+                    &traces,
+                    &context,
+                    &identity_binding.device_identity,
+                    identity.public_key_bytes(),
+                    limit,
+                );
             render_signal_query_results(&results);
         }
 
@@ -1557,7 +1636,12 @@ async fn main() {
                 .query_recent_signal_traces(hours, kind.map(Into::into), limit)
                 .expect("failed to query recent signal traces");
             let results = filter_signal_feed_results(
-                summarize_recent_signal_feed(&traces, identity.public_key_bytes(), limit),
+                summarize_recent_signal_feed(
+                    &traces,
+                    &identity_binding.device_identity,
+                    identity.public_key_bytes(),
+                    limit,
+                ),
                 scope.into(),
             );
             render_signal_feed_results(&results);
@@ -1659,7 +1743,7 @@ async fn main() {
                             let mut ids: Vec<[u8; 32]> = Vec::new();
                             for trace in traces {
                                 ids.push(trace.id);
-                                let _ = cmd_tx.send(NetworkCommand::PublishTrace(trace)).await;
+                                let _ = cmd_tx.send(NetworkCommand::PublishTrace(Box::new(trace))).await;
                             }
                             let _ = store.mark_published(&ids);
                         }
@@ -1743,6 +1827,7 @@ async fn main() {
 
             let ctx = Arc::new(McpContext {
                 identity: Arc::new(identity),
+                binding: Arc::new(identity_binding),
                 store,
                 network_tx,
             });
@@ -1895,7 +1980,7 @@ async fn main() {
             let store = open_store(&dir);
             let ctx_hash = simhash(&enriched_context);
             let is_error = matches!(outcome, Outcome::Failed);
-            let trace = Trace::new(
+            let trace = Trace::new_with_identity(
                 capability.clone(),
                 outcome,
                 0, // latency not available from hook
@@ -1903,6 +1988,8 @@ async fn main() {
                 ctx_hash,
                 Some(enriched_context),
                 session_id.clone(),
+                identity_binding.owner_account.clone(),
+                Some(identity_binding.device_identity.clone()),
                 model,
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -2261,6 +2348,7 @@ async fn main() {
             let store = open_store(&dir);
             let ctx = Arc::new(thronglets::http::HttpContext {
                 identity: Arc::new(identity),
+                binding: Arc::new(identity_binding),
                 store: Arc::new(store),
             });
             println!("Thronglets HTTP API on http://0.0.0.0:{port}");
@@ -2307,6 +2395,8 @@ async fn main() {
             println!();
             println!("  Node ID:          {}", identity.short_id());
             println!("  Oasyce address:   {}", identity.oasyce_address());
+            println!("  Device identity:  {}", identity_binding.device_identity);
+            println!("  Owner account:    {}", identity_binding.owner_account_or_unbound());
             println!("  Data directory:   {}", dir.display());
             println!();
             println!("  Trace count:      {}", trace_count);

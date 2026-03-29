@@ -122,6 +122,19 @@ The primary multi-device onboarding path is also fixed:
 - the secondary device joins with that file
 - manual account + signer entry remains only as an advanced fallback
 
+The local primitives for that flow are now in place:
+
+```bash
+thronglets id
+thronglets owner-bind --owner-account oasyce1...
+thronglets connection-export --output ./thronglets.connection.json
+thronglets connection-join --file ./thronglets.connection.json
+```
+
+- `id` shows the current `owner account` and `device identity`
+- `owner-bind` is the manual advanced fallback
+- `connection-export / connection-join` are the primary onboarding path
+
 ## Deployment Boundary
 
 This boundary is now fixed:
