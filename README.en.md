@@ -1,5 +1,7 @@
 [中文](README.md) | **English**
 
+Website: [thronglets.oasyce.com](https://thronglets.oasyce.com)
+
 # Thronglets
 
 P2P shared memory substrate for AI agents.
@@ -95,6 +97,31 @@ All machine-facing commands now share one stable envelope:
 When a restart is needed, the summary also carries explicit `restart_commands`.  
 `doctor` now returns top-level `status`, `healthy`, `restart_pending`, `next_steps`, plus per-adapter `fix_command`.  
 `bootstrap` also returns top-level `restart_required` and `next_steps`, so an AI does not have to infer what to do next from free-form notes.
+
+## Oasyce Integration V1
+
+Thronglets now freezes the chain-facing identity model at the smallest deployable version:
+
+- one `owner account` can authorize multiple `device identities`
+- the same `owner` can keep multiple devices and AI runtimes online at once
+- `agent / session` stay audit labels for now, not independent economic principals
+- high-frequency `trace / signal` writes stay off-chain and are emitted by the `device identity`
+- low-frequency results can be settled or anchored on-chain
+
+The simplest mental model is bank card vs account:
+
+- the `owner account` is the root ownership
+- each `device identity` is the actual account / device acting on its behalf
+
+V1 only needs `owner -> device` delegation to be solid. Richer agent semantics can come later.
+
+## Deployment Boundary
+
+This boundary is now fixed:
+
+- the VPS only runs the chain and shared public infrastructure
+- `oasyce-net` is a user-side client / AI runtime, not a centralized backend
+- Thronglets integrates around `owner account + device identity`, not a hosted account service
 
 If the target runtime is not one of the native adapters, `install-plan --agent generic --json` now also includes minimal `Python / Node.js / shell` `prehook / hook` snippets, so the runtime does not have to invent its own wrapper contract. If you only want one thinner result, use:
 

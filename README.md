@@ -1,5 +1,7 @@
 **中文** | [English](README.en.md)
 
+官网: [thronglets.oasyce.com](https://thronglets.oasyce.com)
+
 # Thronglets
 
 AI agent 的 P2P 共享记忆基底。
@@ -95,6 +97,31 @@ thronglets bootstrap --agent codex --json
 如果需要重启，summary 里还会直接带 `restart_commands`。  
 `doctor` 现在会显式返回顶层 `status`、`healthy`、`restart_pending`、`next_steps`，以及每个 adapter 的 `fix_command`。  
 `bootstrap` 顶层还会返回 `restart_required` 和 `next_steps`，这样 AI 不需要自己从注释里猜下一步。
+
+## Oasyce 集成 V1
+
+Thronglets 现在把链上身份先收成最小可落地版本：
+
+- 一个 `owner account` 可以挂多个可授权的 `device identities`
+- 同一个 `owner` 可以同时让多台设备、多个 AI runtime 在线
+- `agent / session` 先只作为审计标签，不先做独立经济主体
+- 高频 `trace / signal` 保持链下，由 `device identity` 发出和签名
+- 低频结果再上链做 `settlement / anchoring`
+
+最简单的理解方式就是“银行卡和账号”：
+
+- `owner account` 是根所有权
+- `device identity` 是具体替 owner 干活的账号 / 设备
+
+V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
+
+## 部署边界
+
+这条边界现在已经冻结：
+
+- VPS 只跑链和公共基础设施
+- `oasyce-net` 是用户侧客户端 / AI runtime，不是中心化后端
+- Thronglets 默认按 `owner account + device identity` 集成，不要求中心化账户服务
 
 如果目标 runtime 不在原生 adapter 列表里，`install-plan --agent generic --json` 现在还会直接给出 `Python / Node.js / shell` 的最小 `prehook / hook` 示例，不需要再自己拼接调用方式。如果只想拿一份更薄的结果，可以直接加：
 

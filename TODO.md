@@ -75,9 +75,29 @@ Thronglets 现在的主线已经明确：
   - 这版更安静了，还是只是更沉默了
   - 这版更准了，还是只是覆盖更低了
 
+### 6. Freeze Identity V1 against Oasyce
+
+目标：在接入链上结算前，先把 `owner -> device` 身份模型固定住。
+
+当前状态：
+- Oasyce 公测已稳定可用
+- 部署边界已冻结：
+  - VPS 只跑链和公共基础设施
+  - `oasyce-net` 是用户侧客户端 / AI runtime
+- Identity V1 已冻结为：
+  - 一个 `owner account`
+  - 多个可授权 `device identities`
+  - `agent / session` 先只做审计标签
+
+剩余完成标准：
+- 在链相关的数据面补清楚 `owner_account` / `device_identity`
+- 把当前本地 node identity 自然映射到 `device identity`
+- 验证 `owner -> device` 授权，不把 `agent / session` 提升成经济主体
+- 继续保持高频行为链下、低频结果上链结算 / 锚定
+
 ## Next
 
-### 6. Native adapters for more AI runtimes
+### 7. Native adapters for more AI runtimes
 
 前提：必须存在稳定本地配置面。没有稳定配置面就继续走 generic contract。
 
@@ -93,7 +113,7 @@ Thronglets 现在的主线已经明确：
 - `doctor`
 全部齐全，不能只补一半
 
-### 7. Installer without cargo
+### 8. Installer without cargo
 
 目标：真正的一行命令安装。
 
@@ -107,7 +127,7 @@ Thronglets 现在的主线已经明确：
 - 默认安装文档切到 shell installer
 - 安装后可以直接跑 `thronglets setup`
 
-### 8. Generic contract examples by runtime
+### 9. Generic contract examples by runtime
 
 目标：未知 AI 也能最快接通。
 
@@ -122,7 +142,7 @@ Thronglets 现在的主线已经明确：
 
 ## Later
 
-### 9. Network-side corroboration quality
+### 10. Network-side corroboration quality
 
 目标：让 collective intelligence 不只是结构上成立，而是结果上成立。
 
@@ -131,7 +151,7 @@ Thronglets 现在的主线已经明确：
 - 评估跨节点 corroboration 对 precision 的真实提升
 - 如果没有提升，就不要继续抬高网络叙事
 
-### 10. Packaging and distribution cleanup
+### 11. Packaging and distribution cleanup
 
 目标：让发布面更像产品。
 
