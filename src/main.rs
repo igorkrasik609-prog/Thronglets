@@ -37,6 +37,7 @@ use thronglets::workspace::{self, WorkspaceState};
 use tracing::info;
 
 const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
+const IDENTITY_SCHEMA_VERSION: &str = "thronglets.identity.v1";
 const RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP: i32 = 50;
 const RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP: i32 = 50;
 const RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS: i64 = 5_000;
@@ -148,6 +149,55 @@ struct ClearRestartResult {
 struct ClearRestartData {
     summary: ClearRestartSummary,
     results: Vec<ClearRestartResult>,
+}
+
+#[derive(Clone, Serialize)]
+struct IdentitySummary {
+    status: &'static str,
+    owner_account: Option<String>,
+    device_identity: String,
+    binding_source: String,
+    joined_from_device: Option<String>,
+}
+
+#[derive(Serialize)]
+struct IdentityIdData {
+    summary: IdentitySummary,
+    node_id: String,
+    oasyce_address: String,
+    public_key: String,
+    data_dir: String,
+}
+
+#[derive(Serialize)]
+struct IdentityMutationData {
+    summary: IdentitySummary,
+}
+
+#[derive(Serialize)]
+struct ConnectionExportData {
+    summary: IdentitySummary,
+    output: String,
+    primary_device_pubkey: String,
+    signed_by_device: String,
+}
+
+#[derive(Serialize)]
+struct ConnectionJoinData {
+    summary: IdentitySummary,
+    file: String,
+    signature_verified: bool,
+}
+
+#[derive(Serialize)]
+struct StatusData {
+    summary: IdentitySummary,
+    node_id: String,
+    oasyce_address: String,
+    data_dir: String,
+    trace_count: u64,
+    capabilities: usize,
+    database_size_bytes: u64,
 }
 
 #[derive(Parser)]
@@ -283,13 +333,21 @@ enum Commands {
     },
 
     /// Show node identity
-    Id,
+    Id {
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 
     /// Bind this device to an owner account.
     OwnerBind {
         /// Root owner account / wallet address.
         #[arg(long)]
         owner_account: String,
+
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 
     /// Export a connection file from the primary device.
@@ -297,6 +355,10 @@ enum Commands {
         /// Where to write the connection file.
         #[arg(long)]
         output: PathBuf,
+
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 
     /// Join this device to an existing owner account using a connection file.
@@ -304,6 +366,10 @@ enum Commands {
         /// Connection file exported from the primary device.
         #[arg(long)]
         file: PathBuf,
+
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 
     /// Record a trace manually (for testing/debugging)
@@ -519,7 +585,11 @@ enum Commands {
     Peers,
 
     /// Show node status and statistics
-    Status,
+    Status {
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 
     /// Summarize stderr lines emitted by THRONGLETS_PROFILE_PREHOOK=1.
     /// Reads log lines from stdin and prints aggregate stats.
@@ -679,11 +749,29 @@ fn print_json<T: serde::Serialize>(value: &T) {
 }
 
 fn print_machine_json<T: serde::Serialize>(command: &'static str, value: &T) {
+    print_machine_json_with_schema(BOOTSTRAP_SCHEMA_VERSION, command, value);
+}
+
+fn print_machine_json_with_schema<T: serde::Serialize>(
+    schema_version: &'static str,
+    command: &'static str,
+    value: &T,
+) {
     print_json(&MachineEnvelope {
-        schema_version: BOOTSTRAP_SCHEMA_VERSION,
+        schema_version,
         command,
         data: value,
     });
+}
+
+fn identity_summary(status: &'static str, binding: &IdentityBinding) -> IdentitySummary {
+    IdentitySummary {
+        status,
+        owner_account: binding.owner_account.clone(),
+        device_identity: binding.device_identity.clone(),
+        binding_source: binding.binding_source_or_local().to_string(),
+        joined_from_device: binding.joined_from_device.clone(),
+    }
 }
 
 fn collect_restart_commands(commands: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
@@ -1465,60 +1553,82 @@ async fn main() {
     let identity_binding = load_identity_binding(&dir, &identity);
 
     match cli.command {
-        Commands::Id => {
-            println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
-            println!("Node ID:         {}", identity.short_id());
-            println!("Oasyce address:  {}", identity.oasyce_address());
-            println!("Device identity: {}", identity_binding.device_identity);
-            println!(
-                "Owner account:   {}",
-                identity_binding.owner_account_or_unbound()
-            );
-            println!(
-                "Public key:      {}",
-                hex_encode(&identity.public_key_bytes())
-            );
-            println!(
-                "Binding source:  {}",
-                identity_binding.binding_source_or_local()
-            );
-            println!(
-                "Joined from:     {}",
-                identity_binding.joined_from_device_or_none()
-            );
-            println!("Data directory:  {}", dir.display());
+        Commands::Id { json } => {
+            let data = IdentityIdData {
+                summary: identity_summary("healthy", &identity_binding),
+                node_id: identity.short_id(),
+                oasyce_address: identity.oasyce_address(),
+                public_key: hex_encode(&identity.public_key_bytes()),
+                data_dir: dir.display().to_string(),
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "id", &data);
+            } else {
+                println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
+                println!("Node ID:         {}", data.node_id);
+                println!("Oasyce address:  {}", data.oasyce_address);
+                println!("Device identity: {}", data.summary.device_identity);
+                println!(
+                    "Owner account:   {}",
+                    identity_binding.owner_account_or_unbound()
+                );
+                println!("Public key:      {}", data.public_key);
+                println!("Binding source:  {}", data.summary.binding_source);
+                println!(
+                    "Joined from:     {}",
+                    identity_binding.joined_from_device_or_none()
+                );
+                println!("Data directory:  {}", data.data_dir);
+            }
         }
 
-        Commands::OwnerBind { owner_account } => {
+        Commands::OwnerBind {
+            owner_account,
+            json,
+        } => {
             let binding = identity_binding.clone().bind_owner_account(owner_account);
             binding
                 .save(&identity_binding_path(&dir))
                 .expect("failed to save identity binding");
-            println!("Owner binding updated:");
-            println!("  Owner account:   {}", binding.owner_account_or_unbound());
-            println!("  Device identity: {}", binding.device_identity);
-            println!("  Source:          {}", binding.binding_source_or_local());
+            let data = IdentityMutationData {
+                summary: identity_summary("updated", &binding),
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "owner-bind", &data);
+            } else {
+                println!("Owner binding updated:");
+                println!("  Owner account:   {}", binding.owner_account_or_unbound());
+                println!("  Device identity: {}", binding.device_identity);
+                println!("  Source:          {}", binding.binding_source_or_local());
+            }
         }
 
-        Commands::ConnectionExport { output } => {
+        Commands::ConnectionExport { output, json } => {
             let connection = ConnectionFile::from_binding(&identity_binding, &identity);
             connection
                 .save(&output)
                 .expect("failed to write connection file");
-            println!("Connection file exported:");
-            println!("  Output:             {}", output.display());
-            println!(
-                "  Owner account:      {}",
-                identity_binding.owner_account_or_unbound()
-            );
-            println!("  Primary device:     {}", identity_binding.device_identity);
-            println!(
-                "  Signed by device:   {}",
-                connection.primary_device_identity
-            );
+            let data = ConnectionExportData {
+                summary: identity_summary("exported", &identity_binding),
+                output: output.display().to_string(),
+                primary_device_pubkey: connection.primary_device_pubkey.clone(),
+                signed_by_device: connection.primary_device_identity.clone(),
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "connection-export", &data);
+            } else {
+                println!("Connection file exported:");
+                println!("  Output:             {}", data.output);
+                println!(
+                    "  Owner account:      {}",
+                    identity_binding.owner_account_or_unbound()
+                );
+                println!("  Primary device:     {}", identity_binding.device_identity);
+                println!("  Signed by device:   {}", data.signed_by_device);
+            }
         }
 
-        Commands::ConnectionJoin { file } => {
+        Commands::ConnectionJoin { file, json } => {
             let connection = ConnectionFile::load(&file).expect("failed to read connection file");
             let binding = identity_binding.clone().joined_via_connection(
                 connection.owner_account.clone(),
@@ -1527,18 +1637,27 @@ async fn main() {
             binding
                 .save(&identity_binding_path(&dir))
                 .expect("failed to save identity binding");
-            println!("Connection file joined:");
-            println!("  File:               {}", file.display());
-            println!(
-                "  Owner account:      {}",
-                binding.owner_account_or_unbound()
-            );
-            println!("  Device identity:    {}", binding.device_identity);
-            println!(
-                "  Joined from device: {}",
-                connection.primary_device_identity
-            );
-            println!("  Signature verified: yes");
+            let data = ConnectionJoinData {
+                summary: identity_summary("joined", &binding),
+                file: file.display().to_string(),
+                signature_verified: true,
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "connection-join", &data);
+            } else {
+                println!("Connection file joined:");
+                println!("  File:               {}", data.file);
+                println!(
+                    "  Owner account:      {}",
+                    binding.owner_account_or_unbound()
+                );
+                println!("  Device identity:    {}", binding.device_identity);
+                println!(
+                    "  Joined from device: {}",
+                    connection.primary_device_identity
+                );
+                println!("  Signature verified: yes");
+            }
         }
 
         Commands::Record {
@@ -2391,7 +2510,7 @@ async fn main() {
             println!("Use 'thronglets run' to start a node, then peers are logged to console.");
         }
 
-        Commands::Status => {
+        Commands::Status { json } => {
             let store = open_store(&dir);
             let trace_count = store.count().unwrap_or(0);
             let cap_count = store
@@ -2412,29 +2531,38 @@ async fn main() {
             } else {
                 format!("{} B", db_size)
             };
-
-            println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
-            println!();
-            println!("  Node ID:          {}", identity.short_id());
-            println!("  Oasyce address:   {}", identity.oasyce_address());
-            println!("  Device identity:  {}", identity_binding.device_identity);
-            println!(
-                "  Owner account:    {}",
-                identity_binding.owner_account_or_unbound()
-            );
-            println!(
-                "  Binding source:   {}",
-                identity_binding.binding_source_or_local()
-            );
-            println!(
-                "  Joined from:      {}",
-                identity_binding.joined_from_device_or_none()
-            );
-            println!("  Data directory:   {}", dir.display());
-            println!();
-            println!("  Trace count:      {}", trace_count);
-            println!("  Capabilities:     {}", cap_count);
-            println!("  Database size:    {}", size_display);
+            let data = StatusData {
+                summary: identity_summary("healthy", &identity_binding),
+                node_id: identity.short_id(),
+                oasyce_address: identity.oasyce_address(),
+                data_dir: dir.display().to_string(),
+                trace_count,
+                capabilities: cap_count,
+                database_size_bytes: db_size,
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "status", &data);
+            } else {
+                println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
+                println!();
+                println!("  Node ID:          {}", data.node_id);
+                println!("  Oasyce address:   {}", data.oasyce_address);
+                println!("  Device identity:  {}", data.summary.device_identity);
+                println!(
+                    "  Owner account:    {}",
+                    identity_binding.owner_account_or_unbound()
+                );
+                println!("  Binding source:   {}", data.summary.binding_source);
+                println!(
+                    "  Joined from:      {}",
+                    identity_binding.joined_from_device_or_none()
+                );
+                println!("  Data directory:   {}", data.data_dir);
+                println!();
+                println!("  Trace count:      {}", data.trace_count);
+                println!("  Capabilities:     {}", data.capabilities);
+                println!("  Database size:    {}", size_display);
+            }
         }
 
         Commands::ProfileSummary => {

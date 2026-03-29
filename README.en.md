@@ -134,6 +134,7 @@ thronglets connection-join --file ./thronglets.connection.json
 
 - `id` shows the current `owner account` and `device identity`
 - `id` / `status` / HTTP `/v1/status` also surface the current `binding source` and `joined from device`
+- `id` / `owner-bind` / `connection-export` / `connection-join` / `status` all support `--json`
 - `owner-bind` is the manual advanced fallback
 - `connection-export / connection-join` are the primary onboarding path and verify the primary-device signature by default
 

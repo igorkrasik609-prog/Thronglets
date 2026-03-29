@@ -134,6 +134,7 @@ thronglets connection-join --file ./thronglets.connection.json
 
 - `id` 会显示当前 `owner account` 和 `device identity`
 - `id` / `status` / HTTP `/v1/status` 也会显示当前 `binding source` 和 `joined from device`
+- `id` / `owner-bind` / `connection-export` / `connection-join` / `status` 都支持 `--json`
 - `owner-bind` 是手动高级 fallback
 - `connection-export / connection-join` 是主路径，并且默认验证主设备签名
 

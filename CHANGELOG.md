@@ -28,6 +28,7 @@
 - **Identity V1 local primitives** — added persisted `owner account + device identity` bindings, threaded them through new traces and explicit signals, and exposed `thronglets owner-bind`, `connection-export`, and `connection-join` for local multi-device onboarding without changing the hot path
 - **Signed connection files** — `thronglets connection-export` now signs the multi-device connection file with the primary device identity, and `connection-join` verifies that signature before binding a secondary device
 - **Binding consistency checks** — local identity bindings are now rejected if they do not match the current device key, and `id` / `status` / HTTP `/v1/status` surface binding provenance (`manual` vs `connection_file`) plus any `joined_from_device` hint
+- **Identity CLI JSON** — `id`, `owner-bind`, `connection-export`, `connection-join`, and `status` now expose summary-first machine JSON under `thronglets.identity.v1`, so multi-device onboarding can be automated without scraping human text
 
 ## v0.4.0 — 2026-03-28
 
