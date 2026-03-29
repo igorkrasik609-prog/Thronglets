@@ -230,6 +230,18 @@ impl Signal {
     }
 }
 
+impl SignalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SignalKind::Danger => "danger",
+            SignalKind::Repair => "repair",
+            SignalKind::Preparation => "preparation",
+            SignalKind::Adjacency => "adjacency",
+            SignalKind::History => "history",
+        }
+    }
+}
+
 pub fn rank(mut signals: Vec<Signal>, max: usize) -> Vec<Signal> {
     signals.sort_by(|a, b| {
         b.score

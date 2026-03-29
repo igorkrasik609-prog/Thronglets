@@ -73,6 +73,20 @@ cargo run --quiet -- setup
 thronglets runtime-ready --agent codex --json
 ```
 
+如果你想区分“Thronglets 正在介入”还是“只是普通权限 / 系统问题”，现在可以直接看 substrate 状态：
+
+```bash
+thronglets status --json
+```
+
+返回里会带：
+- `substrate.activity = active | learning | quiet`
+- `recent_interventions_15m`
+- `last_intervention_tool`
+- `last_intervention_kinds`
+
+也就是说，AI 和操作者都不需要再猜“刚才那次绕路是不是 Thronglets 在起作用”。
+
 底层接入面只有一个统一 contract：
 - `thronglets prehook`：任意 agent 在工具执行前喂入 JSON，拿回稀疏信号
 - `thronglets hook`：任意 agent 在工具执行后喂入 JSON，记录 trace

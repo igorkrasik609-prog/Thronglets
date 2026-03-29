@@ -237,6 +237,7 @@ struct StatusData {
     trace_count: u64,
     capabilities: usize,
     database_size_bytes: u64,
+    substrate: workspace::SubstrateActivity,
 }
 
 #[derive(Serialize)]
@@ -2579,7 +2580,7 @@ async fn main() {
             // Everything else = pheromone (only emitted on anomaly).
 
             let mut signals: Vec<Signal> = Vec::new();
-            let ws = WorkspaceState::load(&dir);
+            let mut ws = WorkspaceState::load(&dir);
             let current_file = workspace::extract_file_path(tool_name, &payload["tool_input"]);
             let hook_context = build_hook_context(tool_name, &payload["tool_input"]);
             let supports_file_guidance =
@@ -2754,6 +2755,16 @@ async fn main() {
 
             // Guardrail: prehook stays short and category-stable.
             let recommendations = select_signals(signals, PREHOOK_MAX_HINTS);
+            if !recommendations.is_empty() {
+                ws.record_intervention(
+                    tool_name,
+                    recommendations
+                        .iter()
+                        .map(|recommendation| recommendation.source_kind.as_str().to_string())
+                        .collect(),
+                );
+                ws.save(&dir);
+            }
             profiler.stage("select");
 
             // Output: only when there's something worth saying
@@ -2892,6 +2903,7 @@ async fn main() {
                 identity: Arc::new(identity),
                 binding: Arc::new(identity_binding),
                 store: Arc::new(store),
+                data_dir: dir.clone(),
             });
             println!("Thronglets HTTP API on http://0.0.0.0:{port}");
             println!("  POST /v1/traces       — record a trace");
@@ -2913,6 +2925,7 @@ async fn main() {
 
         Commands::Status { json } => {
             let store = open_store(&dir);
+            let workspace = WorkspaceState::load(&dir);
             let trace_count = store.count().unwrap_or(0);
             let cap_count = store
                 .distinct_capabilities(1000)
@@ -2940,6 +2953,7 @@ async fn main() {
                 trace_count,
                 capabilities: cap_count,
                 database_size_bytes: db_size,
+                substrate: workspace.substrate_activity(),
             };
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "status", &data);
@@ -2959,6 +2973,21 @@ async fn main() {
                     identity_binding.joined_from_device_or_none()
                 );
                 println!("  Data directory:   {}", data.data_dir);
+                println!();
+                println!("  Substrate:       {}", data.substrate.activity);
+                if let Some(tool) = &data.substrate.last_intervention_tool {
+                    let kinds = if data.substrate.last_intervention_kinds.is_empty() {
+                        "none".to_string()
+                    } else {
+                        data.substrate.last_intervention_kinds.join(", ")
+                    };
+                    let age = data.substrate.last_intervention_age_ms.unwrap_or_default() / 1000;
+                    println!("  Last signal:     {tool} ({kinds}, {age}s ago)");
+                }
+                println!(
+                    "  Interventions:   {} in last 15m",
+                    data.substrate.recent_interventions_15m
+                );
                 println!();
                 println!("  Trace count:      {}", data.trace_count);
                 println!("  Capabilities:     {}", data.capabilities);

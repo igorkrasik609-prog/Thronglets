@@ -24,6 +24,7 @@ use crate::storage::TraceStore;
 use crate::trace::{Outcome, Trace};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -33,6 +34,7 @@ pub struct HttpContext {
     pub identity: Arc<NodeIdentity>,
     pub binding: Arc<IdentityBinding>,
     pub store: Arc<TraceStore>,
+    pub data_dir: PathBuf,
 }
 
 /// Start the HTTP API server on the given port.
@@ -468,6 +470,7 @@ fn handle_get_capabilities(ctx: &HttpContext) -> String {
 
 fn handle_get_status(ctx: &HttpContext) -> String {
     let trace_count = ctx.store.count().unwrap_or(0);
+    let workspace = crate::workspace::WorkspaceState::load(&ctx.data_dir);
     let cap_count = ctx
         .store
         .distinct_capabilities(1000)
@@ -485,6 +488,7 @@ fn handle_get_status(ctx: &HttpContext) -> String {
         "owner_account": ctx.binding.owner_account.clone(),
         "binding_source": ctx.binding.binding_source_or_local(),
         "joined_from_device": ctx.binding.joined_from_device.clone(),
+        "substrate": workspace.substrate_activity(),
         "trace_count": trace_count,
         "capabilities": cap_count,
     })
@@ -558,6 +562,7 @@ mod tests {
             identity: Arc::new(NodeIdentity::generate()),
             binding: Arc::new(IdentityBinding::new("oasyce1localdevice".into())),
             store: Arc::new(TraceStore::in_memory().unwrap()),
+            data_dir: std::env::temp_dir(),
         }
     }
 
@@ -646,6 +651,8 @@ mod tests {
         ));
         assert_eq!(status_response["trace_count"], 2);
         assert_eq!(status_response["capabilities"], 1);
+        assert_eq!(status_response["substrate"]["activity"], "quiet");
+        assert_eq!(status_response["substrate"]["recent_interventions_15m"], 0);
     }
 
     #[test]

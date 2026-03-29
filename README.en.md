@@ -73,6 +73,20 @@ If an adapter still needs a client restart, `doctor` now returns `restart-pendin
 thronglets runtime-ready --agent codex --json
 ```
 
+If you need to tell whether Thronglets actually intervened versus a normal permission or system failure, inspect the substrate state directly:
+
+```bash
+thronglets status --json
+```
+
+The response now includes:
+- `substrate.activity = active | learning | quiet`
+- `recent_interventions_15m`
+- `last_intervention_tool`
+- `last_intervention_kinds`
+
+That gives both operators and other agents a minimal way to tell whether the substrate has been actively shaping recent decisions.
+
 Underneath, there is only one agent contract:
 - `thronglets prehook`: any agent can send tool-intent JSON and get sparse signals back
 - `thronglets hook`: any agent can send tool-result JSON and record a trace

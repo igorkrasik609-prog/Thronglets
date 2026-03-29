@@ -26,6 +26,8 @@ const MAX_RECENT_ACTIONS: usize = 50;
 const MAX_REPAIR_PATTERNS: usize = 20;
 /// Maximum number of pending feedback items.
 const MAX_PENDING_FEEDBACK: usize = 30;
+/// Maximum number of recent prehook interventions to keep.
+const MAX_RECENT_INTERVENTIONS: usize = 20;
 
 /// A file that was recently touched by the AI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +81,23 @@ pub struct RepairPattern {
     pub source_ids: Vec<String>,
     pub count: u32,
     pub last_seen_ms: i64,
+}
+
+/// A recent prehook intervention emitted by Thronglets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentIntervention {
+    pub tool: String,
+    pub kinds: Vec<String>,
+    pub timestamp_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SubstrateActivity {
+    pub activity: String,
+    pub recent_interventions_15m: u32,
+    pub last_intervention_tool: Option<String>,
+    pub last_intervention_kinds: Vec<String>,
+    pub last_intervention_age_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +170,9 @@ pub struct WorkspaceState {
     /// Pending feedback: edits waiting to see if they were committed.
     #[serde(default)]
     pub pending_feedback: VecDeque<PendingFeedback>,
+    /// Recent visible prehook interventions.
+    #[serde(default)]
+    pub recent_interventions: VecDeque<RecentIntervention>,
     /// Last update timestamp.
     pub updated_ms: i64,
 }
@@ -384,6 +406,75 @@ impl WorkspaceState {
             self.sessions.truncate(MAX_SESSIONS);
         }
         self.updated_ms = now;
+    }
+
+    /// Record that prehook surfaced one or more visible signals.
+    pub fn record_intervention(&mut self, tool: &str, kinds: Vec<String>) {
+        if kinds.is_empty() {
+            return;
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some(existing) = self.recent_interventions.front_mut()
+            && existing.tool == tool
+            && existing.kinds == kinds
+            && (now - existing.timestamp_ms) < 5_000
+        {
+            existing.timestamp_ms = now;
+            self.updated_ms = now;
+            return;
+        }
+
+        self.recent_interventions.push_front(RecentIntervention {
+            tool: tool.to_string(),
+            kinds,
+            timestamp_ms: now,
+        });
+        self.recent_interventions.truncate(MAX_RECENT_INTERVENTIONS);
+        self.updated_ms = now;
+    }
+
+    pub fn substrate_activity(&self) -> SubstrateActivity {
+        let now = chrono::Utc::now().timestamp_millis();
+        let recent_interventions_15m = self
+            .recent_interventions
+            .iter()
+            .filter(|entry| (now - entry.timestamp_ms) < 900_000)
+            .count() as u32;
+        let has_recent_learning = self
+            .recent_actions
+            .iter()
+            .any(|action| (now - action.timestamp_ms) < 900_000)
+            || self
+                .recent_errors
+                .iter()
+                .any(|error| (now - error.timestamp_ms) < 900_000);
+        let activity = if recent_interventions_15m > 0 {
+            "active"
+        } else if has_recent_learning {
+            "learning"
+        } else {
+            "quiet"
+        };
+        let (last_intervention_tool, last_intervention_kinds, last_intervention_age_ms) = self
+            .recent_interventions
+            .front()
+            .map(|entry| {
+                (
+                    Some(entry.tool.clone()),
+                    entry.kinds.clone(),
+                    Some(now - entry.timestamp_ms),
+                )
+            })
+            .unwrap_or((None, Vec::new(), None));
+
+        SubstrateActivity {
+            activity: activity.to_string(),
+            recent_interventions_15m,
+            last_intervention_tool,
+            last_intervention_kinds,
+            last_intervention_age_ms,
+        }
     }
 
     /// Add a file edit/write to the pending feedback queue.
@@ -1370,6 +1461,30 @@ mod tests {
             ws.track_session(&format!("s{i}"), "cap", false);
         }
         assert_eq!(ws.sessions.len(), MAX_SESSIONS);
+    }
+
+    #[test]
+    fn substrate_activity_is_active_after_intervention() {
+        let mut ws = make_ws();
+        ws.record_intervention("Edit", vec!["danger".into(), "repair".into()]);
+
+        let activity = ws.substrate_activity();
+        assert_eq!(activity.activity, "active");
+        assert_eq!(activity.recent_interventions_15m, 1);
+        assert_eq!(activity.last_intervention_tool.as_deref(), Some("Edit"));
+        assert_eq!(activity.last_intervention_kinds, vec!["danger", "repair"]);
+        assert!(activity.last_intervention_age_ms.is_some());
+    }
+
+    #[test]
+    fn substrate_activity_is_learning_without_intervention() {
+        let mut ws = make_ws();
+        ws.record_action("Read", Some("/a.rs".into()), "succeeded", None);
+
+        let activity = ws.substrate_activity();
+        assert_eq!(activity.activity, "learning");
+        assert_eq!(activity.recent_interventions_15m, 0);
+        assert!(activity.last_intervention_tool.is_none());
     }
 
     // ── record_action ──

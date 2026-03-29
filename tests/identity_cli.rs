@@ -48,6 +48,18 @@ fn id_json_surfaces_identity_summary() {
 }
 
 #[test]
+fn status_json_surfaces_quiet_substrate_activity() {
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("data");
+
+    let status = run_bin(&["status", "--json"], &data_dir);
+
+    assert_eq!(status["command"], "status");
+    assert_eq!(status["data"]["substrate"]["activity"], "quiet");
+    assert_eq!(status["data"]["substrate"]["recent_interventions_15m"], 0);
+}
+
+#[test]
 fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     let temp = TempDir::new().unwrap();
     let primary_dir = temp.path().join("primary");
