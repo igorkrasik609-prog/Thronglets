@@ -143,12 +143,7 @@ impl IdentityBinding {
         if path.exists() {
             let bytes = fs::read(path)?;
             let binding: Self = serde_json::from_slice(&bytes).map_err(invalid_data)?;
-            if binding.device_identity.trim().is_empty() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "device_identity cannot be empty",
-                ));
-            }
+            binding.verify_for_node(node_identity)?;
             Ok(binding)
         } else {
             let binding = Self::new(node_identity.device_identity());
@@ -204,6 +199,34 @@ impl IdentityBinding {
 
     pub fn owner_account_or_unbound(&self) -> &str {
         self.owner_account.as_deref().unwrap_or("unbound")
+    }
+
+    pub fn binding_source_or_local(&self) -> &str {
+        self.binding_source.as_deref().unwrap_or("local")
+    }
+
+    pub fn joined_from_device_or_none(&self) -> &str {
+        self.joined_from_device.as_deref().unwrap_or("none")
+    }
+
+    pub fn verify_for_node(&self, node_identity: &NodeIdentity) -> std::io::Result<()> {
+        if self.device_identity.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "device_identity cannot be empty",
+            ));
+        }
+        let expected = node_identity.device_identity();
+        if self.device_identity != expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "identity binding belongs to device {} but local node is {}",
+                    self.device_identity, expected
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -403,6 +426,20 @@ mod tests {
         let loaded = IdentityBinding::load_or_create(&path, &node).unwrap();
         assert_eq!(loaded.owner_account.as_deref(), Some("oasyce1owner"));
         assert_eq!(loaded.device_identity, node.device_identity());
+    }
+
+    #[test]
+    fn mismatched_identity_binding_is_rejected() {
+        let dir = TempDir::new().unwrap();
+        let node_a = NodeIdentity::generate();
+        let node_b = NodeIdentity::generate();
+        let path = identity_binding_path(dir.path());
+
+        let binding = IdentityBinding::new(node_a.device_identity());
+        binding.save(&path).unwrap();
+
+        let error = IdentityBinding::load_or_create(&path, &node_b).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]

@@ -1478,6 +1478,14 @@ async fn main() {
                 "Public key:      {}",
                 hex_encode(&identity.public_key_bytes())
             );
+            println!(
+                "Binding source:  {}",
+                identity_binding.binding_source_or_local()
+            );
+            println!(
+                "Joined from:     {}",
+                identity_binding.joined_from_device_or_none()
+            );
             println!("Data directory:  {}", dir.display());
         }
 
@@ -1489,7 +1497,7 @@ async fn main() {
             println!("Owner binding updated:");
             println!("  Owner account:   {}", binding.owner_account_or_unbound());
             println!("  Device identity: {}", binding.device_identity);
-            println!("  Source:          manual");
+            println!("  Source:          {}", binding.binding_source_or_local());
         }
 
         Commands::ConnectionExport { output } => {
@@ -2413,6 +2421,14 @@ async fn main() {
             println!(
                 "  Owner account:    {}",
                 identity_binding.owner_account_or_unbound()
+            );
+            println!(
+                "  Binding source:   {}",
+                identity_binding.binding_source_or_local()
+            );
+            println!(
+                "  Joined from:      {}",
+                identity_binding.joined_from_device_or_none()
             );
             println!("  Data directory:   {}", dir.display());
             println!();

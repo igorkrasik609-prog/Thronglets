@@ -437,6 +437,8 @@ fn handle_get_status(ctx: &HttpContext) -> String {
         "node_id": hex_encode(&ctx.identity.public_key_bytes()[..4]),
         "device_identity": ctx.binding.device_identity.clone(),
         "owner_account": ctx.binding.owner_account.clone(),
+        "binding_source": ctx.binding.binding_source_or_local(),
+        "joined_from_device": ctx.binding.joined_from_device.clone(),
         "trace_count": trace_count,
         "capabilities": cap_count,
     })
