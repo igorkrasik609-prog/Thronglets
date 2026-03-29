@@ -24,6 +24,7 @@
 - **Filtered generic snippets** — `install-plan --agent generic --runtime <python|node|shell> --json` now lets an agent ask for only its own wrapper example, keeping machine output thinner when token budget matters
 - **Explicit short signals** — agents can now leave and query an intentional signal plane through `thronglets signal-post`, `signal-query`, `signal-feed`, MCP `signal_post` / `signal_feed`, and HTTP `/v1/signals`; these signals now decay naturally after `72h` by default, report whether support is local, collective, or mixed, surface lightweight multi-model corroboration plus a machine-readable `corroboration_tier`, prefer `multi_model` over same-model repetition when evidence is otherwise close, let fresher ambient consensus outrank older agreement, and focus the ambient feed on `primary/secondary` signals while normal capability listings and DHT summaries continue to stay sparse and capability-focused
 - **Oasyce identity V1 docs** — docs and operator memory now freeze the chain-facing model as `owner account -> multiple authorized device identities`, keep `agent/session` as audit labels, and fix the deployment boundary to “VPS for chain/public infrastructure, `oasyce-net` for user-side runtimes”
+- **Multi-device onboarding docs** — the Oasyce / Thronglets docs now lock the primary onboarding path to “primary device exports a connection file, secondary device joins with that file”, while manual `account + signer` entry remains an advanced fallback
 
 ## v0.4.0 — 2026-03-28
 

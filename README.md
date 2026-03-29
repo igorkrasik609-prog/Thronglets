@@ -104,6 +104,7 @@ Thronglets 现在把链上身份先收成最小可落地版本：
 
 - 一个 `owner account` 可以挂多个可授权的 `device identities`
 - 同一个 `owner` 可以同时让多台设备、多个 AI runtime 在线
+- `device identity` 是当前的签名边界
 - `agent / session` 先只作为审计标签，不先做独立经济主体
 - 高频 `trace / signal` 保持链下，由 `device identity` 发出和签名
 - 低频结果再上链做 `settlement / anchoring`
@@ -114,6 +115,12 @@ Thronglets 现在把链上身份先收成最小可落地版本：
 - `device identity` 是具体替 owner 干活的账号 / 设备
 
 V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
+
+多设备 onboarding 的主路径也已经确定：
+
+- 主设备导出一份 connection file
+- 次设备用这份文件加入同一个 owner
+- 手动填写 account + signer 只保留给高级 fallback 场景
 
 ## 部署边界
 

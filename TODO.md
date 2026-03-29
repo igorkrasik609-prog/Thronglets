@@ -87,7 +87,12 @@ Thronglets 现在的主线已经明确：
 - Identity V1 已冻结为：
   - 一个 `owner account`
   - 多个可授权 `device identities`
+  - `device identity` 是当前签名边界
   - `agent / session` 先只做审计标签
+- 多设备 onboarding 主路径已冻结：
+  - 主设备导出 connection file
+  - 次设备用该文件加入
+  - 手动 account + signer 只保留为高级 fallback
 
 剩余完成标准：
 - 在链相关的数据面补清楚 `owner_account` / `device_identity`

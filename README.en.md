@@ -104,6 +104,7 @@ Thronglets now freezes the chain-facing identity model at the smallest deployabl
 
 - one `owner account` can authorize multiple `device identities`
 - the same `owner` can keep multiple devices and AI runtimes online at once
+- the `device identity` is the current signing boundary
 - `agent / session` stay audit labels for now, not independent economic principals
 - high-frequency `trace / signal` writes stay off-chain and are emitted by the `device identity`
 - low-frequency results can be settled or anchored on-chain
@@ -114,6 +115,12 @@ The simplest mental model is bank card vs account:
 - each `device identity` is the actual account / device acting on its behalf
 
 V1 only needs `owner -> device` delegation to be solid. Richer agent semantics can come later.
+
+The primary multi-device onboarding path is also fixed:
+
+- the primary device exports a connection file
+- the secondary device joins with that file
+- manual account + signer entry remains only as an advanced fallback
 
 ## Deployment Boundary
 
