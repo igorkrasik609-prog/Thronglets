@@ -4,7 +4,7 @@ Website: [thronglets.oasyce.com](https://thronglets.oasyce.com)
 
 # Thronglets
 
-A local AI substrate. The core product is the `CLI + hook/prehook + HTTP` contract; MCP is only an optional adapter layer.
+A local AI substrate. Current release: `v0.4.2`. The core product is the `CLI + hook/prehook + HTTP` contract; MCP is only an optional adapter layer.
 
 ## What Your AI Sees (real output)
 

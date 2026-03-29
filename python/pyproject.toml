@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "thronglets"
-version = "0.4.1"
-description = "P2P shared memory substrate for AI agents — stigmergic knowledge network via libp2p"
+version = "0.4.2"
+description = "Local AI substrate for agents with sparse signals, hooks, and optional adapters"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
-keywords = ["mcp", "mcp-server", "ai-agents", "p2p", "libp2p", "stigmergy", "collective-intelligence"]
+keywords = ["ai-agents", "hooks", "http", "stigmergy", "collective-intelligence", "substrate", "mcp"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

@@ -1,12 +1,12 @@
 [package]
 name = "thronglets"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
-description = "P2P shared memory substrate for AI agents — stigmergic knowledge network via libp2p"
+description = "Local AI substrate for agents with sparse signals, hooks, and optional adapters"
 license = "MIT"
 repository = "https://github.com/Shangri-la-0428/Thronglets"
 readme = "README.en.md"
-keywords = ["p2p", "ai-agents", "mcp", "libp2p", "stigmergy"]
+keywords = ["ai-agents", "hooks", "http", "stigmergy", "substrate"]
 categories = ["network-programming", "command-line-utilities"]
 
 [dependencies]

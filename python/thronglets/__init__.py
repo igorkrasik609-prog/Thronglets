@@ -1,4 +1,4 @@
-"""Thronglets — P2P shared memory substrate for AI agents."""
+"""Thronglets — local AI substrate for agents."""
 
 import platform
 import stat
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import os
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 VERSION = os.environ.get("THRONGLETS_INSTALL_VERSION", __version__)
 REPO = os.environ.get("THRONGLETS_INSTALL_REPO", "Shangri-la-0428/Thronglets")

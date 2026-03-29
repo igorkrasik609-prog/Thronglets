@@ -1143,7 +1143,10 @@ fn prehook_upgrades_prep_read_with_collective_sources() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(PREHOOK_HEADER));
-    assert!(stdout.contains("do next: Read helper.rs (medium, 2x, 2 sources)"));
+    assert!(
+        stdout.contains("do next: Read helper.rs (medium, 2x, 2 sources)"),
+        "unexpected prehook stdout:\n{stdout}"
+    );
 }
 
 #[test]
