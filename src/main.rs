@@ -3165,7 +3165,7 @@ async fn main() {
                         session_id: session_id.clone(),
                         owner_account: identity_binding.owner_account.clone(),
                         device_identity: Some(identity_binding.device_identity.clone()),
-                        space: current_space,
+                        space: current_space.clone(),
                         mode: current_mode,
                         ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
                     },
@@ -3191,6 +3191,7 @@ async fn main() {
             );
             ws.resolve_recommendation_feedback(
                 session_id.as_deref(),
+                current_space.as_deref(),
                 tool_name,
                 file_path.as_deref(),
                 outcome_str,
@@ -3276,7 +3277,10 @@ async fn main() {
             // Only signal when retention < 50% (anomaly).
             if let Some(retention_warning) = ws.retention_warning(current_file.as_deref()) {
                 let score = retention_warning.score
-                    + ws.recommendation_score_adjustment(SignalKind::Danger);
+                    + ws.recommendation_score_adjustment(
+                        SignalKind::Danger,
+                        current_space.as_deref(),
+                    );
                 signals.push(Signal::danger(retention_warning.body, score));
             }
 
@@ -3295,7 +3299,10 @@ async fn main() {
                     };
                     Signal::danger(
                         format!("  ⚠ recent error: {snippet}"),
-                        360 + ws.recommendation_score_adjustment(SignalKind::Danger),
+                        360 + ws.recommendation_score_adjustment(
+                            SignalKind::Danger,
+                            current_space.as_deref(),
+                        ),
                     )
                 };
                 has_recent_tool_error = true;
@@ -3315,7 +3322,8 @@ async fn main() {
                 )
             {
                 has_explicit_avoid = true;
-                explicit_avoid.score += ws.recommendation_score_adjustment(SignalKind::Danger);
+                explicit_avoid.score += ws
+                    .recommendation_score_adjustment(SignalKind::Danger, current_space.as_deref());
                 signals.push(explicit_avoid);
             }
             profiler.stage_or_skip("explicit_avoid", explicit_avoid_checked);
@@ -3326,7 +3334,8 @@ async fn main() {
                     .or_else(|| ws.repair_hints(tool_name))
             {
                 let mut repair_hint = repair_hint;
-                repair_hint.score += ws.recommendation_score_adjustment(SignalKind::Repair);
+                repair_hint.score += ws
+                    .recommendation_score_adjustment(SignalKind::Repair, current_space.as_deref());
                 if claim_collective_query(&repair_hint.candidate, &mut collective_queries_remaining)
                     && let Some(store) = cached_collective_store(&mut collective_store, &dir)
                     && let Ok(collective_sources) =
@@ -3357,8 +3366,10 @@ async fn main() {
                 && let Some(mut preparation_hint) =
                     ws.preparation_hint(tool_name, current_file.as_deref())
             {
-                preparation_hint.score +=
-                    ws.recommendation_score_adjustment(SignalKind::Preparation);
+                preparation_hint.score += ws.recommendation_score_adjustment(
+                    SignalKind::Preparation,
+                    current_space.as_deref(),
+                );
                 if let (Some(current_file), Some(target)) = (
                     current_file.as_deref(),
                     preparation_hint.candidate.primary_target(),
@@ -3459,6 +3470,7 @@ async fn main() {
             // Guardrail: prehook stays short and category-stable.
             let recommendations = ws.suppress_duplicate_recommendations(
                 current_session_id.as_deref(),
+                current_space.as_deref(),
                 select_signals(signals, PREHOOK_MAX_HINTS),
             );
             if !recommendations.is_empty() {
@@ -3472,6 +3484,7 @@ async fn main() {
                 ws.record_recommendation_emissions(
                     tool_name,
                     current_session_id.as_deref(),
+                    current_space.as_deref(),
                     &recommendations,
                 );
                 ws.save(&dir);

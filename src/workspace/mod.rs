@@ -105,6 +105,8 @@ pub struct RecentIntervention {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentRecommendationEmission {
     pub session_id: String,
+    #[serde(default)]
+    pub space: Option<String>,
     pub fingerprint: String,
     pub timestamp_ms: i64,
 }
@@ -113,6 +115,8 @@ pub struct RecentRecommendationEmission {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingRecommendationFeedback {
     pub session_id: String,
+    #[serde(default)]
+    pub space: Option<String>,
     pub trigger_tool: String,
     pub recommendation_kind: String,
     pub source_kind: String,
@@ -127,6 +131,8 @@ pub struct PendingRecommendationFeedback {
 pub struct RecommendationFeedbackEvent {
     pub recommendation_kind: String,
     pub source_kind: String,
+    #[serde(default)]
+    pub space: Option<String>,
     pub positive: bool,
     pub timestamp_ms: i64,
 }
@@ -357,6 +363,7 @@ impl WorkspaceState {
             .push_front(RecommendationFeedbackEvent {
                 recommendation_kind: recommendation.recommendation_kind.clone(),
                 source_kind: recommendation.source_kind.clone(),
+                space: recommendation.space.clone(),
                 positive,
                 timestamp_ms: now,
             });
@@ -375,12 +382,19 @@ impl WorkspaceState {
         }
     }
 
-    pub fn recommendation_score_adjustment(&self, signal_kind: SignalKind) -> i32 {
+    pub fn recommendation_score_adjustment(
+        &self,
+        signal_kind: SignalKind,
+        space: Option<&str>,
+    ) -> i32 {
         let now = chrono::Utc::now().timestamp_millis();
         let mut positive = 0;
         let mut negative = 0;
         for event in self.recent_recommendation_feedback.iter() {
             if event.source_kind != signal_kind.as_str() {
+                continue;
+            }
+            if event.space.as_deref() != space {
                 continue;
             }
             if (now - event.timestamp_ms) > 86_400_000 {
@@ -400,6 +414,7 @@ impl WorkspaceState {
     pub fn suppress_duplicate_recommendations(
         &self,
         session_id: Option<&str>,
+        space: Option<&str>,
         recommendations: Vec<Recommendation>,
     ) -> Vec<Recommendation> {
         let Some(session_id) = session_id else {
@@ -412,6 +427,7 @@ impl WorkspaceState {
                 let fingerprint = Self::recommendation_fingerprint(recommendation);
                 !self.recent_recommendation_emissions.iter().any(|emission| {
                     emission.session_id == session_id
+                        && emission.space.as_deref() == space
                         && emission.fingerprint == fingerprint
                         && (now - emission.timestamp_ms) < RECOMMENDATION_DEDUPE_WINDOW_MS
                 })
@@ -423,6 +439,7 @@ impl WorkspaceState {
         &mut self,
         trigger_tool: &str,
         session_id: Option<&str>,
+        space: Option<&str>,
         recommendations: &[Recommendation],
     ) {
         let Some(session_id) = session_id else {
@@ -435,6 +452,7 @@ impl WorkspaceState {
             self.recent_recommendation_emissions
                 .push_front(RecentRecommendationEmission {
                     session_id: session_id.to_string(),
+                    space: space.map(ToOwned::to_owned),
                     fingerprint: fingerprint.clone(),
                     timestamp_ms: now,
                 });
@@ -455,6 +473,7 @@ impl WorkspaceState {
             self.pending_recommendation_feedback
                 .push_front(PendingRecommendationFeedback {
                     session_id: session_id.to_string(),
+                    space: space.map(ToOwned::to_owned),
                     trigger_tool: trigger_tool.to_string(),
                     recommendation_kind: recommendation.kind.as_str().to_string(),
                     source_kind: recommendation.source_kind.as_str().to_string(),
@@ -472,6 +491,7 @@ impl WorkspaceState {
     pub fn resolve_recommendation_feedback(
         &mut self,
         session_id: Option<&str>,
+        space: Option<&str>,
         tool: &str,
         file_path: Option<&str>,
         outcome: &str,
@@ -484,6 +504,10 @@ impl WorkspaceState {
 
         while let Some(recommendation) = self.pending_recommendation_feedback.pop_front() {
             if recommendation.session_id != session_id {
+                retained.push_back(recommendation);
+                continue;
+            }
+            if recommendation.space.as_deref() != space {
                 retained.push_back(recommendation);
                 continue;
             }
@@ -1752,11 +1776,16 @@ mod tests {
             )),
         }];
 
-        ws.record_recommendation_emissions("Edit", Some("s1"), &recommendations);
-        let suppressed = ws.suppress_duplicate_recommendations(Some("s1"), recommendations.clone());
+        ws.record_recommendation_emissions("Edit", Some("s1"), Some("psyche"), &recommendations);
+        let suppressed = ws.suppress_duplicate_recommendations(
+            Some("s1"),
+            Some("psyche"),
+            recommendations.clone(),
+        );
         assert!(suppressed.is_empty());
 
-        let other_session = ws.suppress_duplicate_recommendations(Some("s2"), recommendations);
+        let other_session =
+            ws.suppress_duplicate_recommendations(Some("s2"), Some("psyche"), recommendations);
         assert_eq!(other_session.len(), 1);
     }
 
@@ -1776,15 +1805,31 @@ mod tests {
             )),
         }];
 
-        ws.record_recommendation_emissions("Edit", Some("s1"), &recommendations);
-        ws.resolve_recommendation_feedback(Some("s1"), "Edit", Some("/main.rs"), "succeeded");
+        ws.record_recommendation_emissions("Edit", Some("s1"), Some("psyche"), &recommendations);
+        ws.resolve_recommendation_feedback(
+            Some("s1"),
+            Some("psyche"),
+            "Edit",
+            Some("/main.rs"),
+            "succeeded",
+        );
         assert_eq!(
-            ws.recommendation_score_adjustment(SignalKind::Preparation),
+            ws.recommendation_score_adjustment(SignalKind::Preparation, Some("psyche")),
             0
         );
 
-        ws.resolve_recommendation_feedback(Some("s1"), "Read", Some("/tmp/helper.rs"), "succeeded");
-        assert!(ws.recommendation_score_adjustment(SignalKind::Preparation) > 0);
+        ws.resolve_recommendation_feedback(
+            Some("s1"),
+            Some("psyche"),
+            "Read",
+            Some("/tmp/helper.rs"),
+            "succeeded",
+        );
+        assert!(ws.recommendation_score_adjustment(SignalKind::Preparation, Some("psyche")) > 0);
+        assert_eq!(
+            ws.recommendation_score_adjustment(SignalKind::Preparation, Some("other-space")),
+            0
+        );
     }
 
     #[test]
@@ -1797,10 +1842,36 @@ mod tests {
             candidate: None,
         }];
 
-        ws.record_recommendation_emissions("Bash", Some("s1"), &recommendations);
-        ws.resolve_recommendation_feedback(Some("s1"), "Bash", None, "failed");
+        ws.record_recommendation_emissions("Bash", Some("s1"), Some("psyche"), &recommendations);
+        ws.resolve_recommendation_feedback(Some("s1"), Some("psyche"), "Bash", None, "failed");
 
-        assert!(ws.recommendation_score_adjustment(SignalKind::Danger) > 0);
+        assert!(ws.recommendation_score_adjustment(SignalKind::Danger, Some("psyche")) > 0);
+        assert_eq!(
+            ws.recommendation_score_adjustment(SignalKind::Danger, Some("other-space")),
+            0
+        );
+    }
+
+    #[test]
+    fn duplicate_recommendations_are_not_suppressed_across_spaces() {
+        let mut ws = make_ws();
+        let recommendations = vec![Recommendation {
+            kind: RecommendationKind::DoNext,
+            source_kind: SignalKind::Preparation,
+            body: String::new(),
+            candidate: Some(StepCandidate::single(
+                "Read",
+                Some("helper.rs".into()),
+                "medium",
+                2,
+                1,
+            )),
+        }];
+
+        ws.record_recommendation_emissions("Edit", Some("s1"), Some("psyche"), &recommendations);
+        let still_visible =
+            ws.suppress_duplicate_recommendations(Some("s1"), Some("other-space"), recommendations);
+        assert_eq!(still_visible.len(), 1);
     }
 
     // ── record_action ──

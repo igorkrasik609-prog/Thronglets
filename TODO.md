@@ -94,6 +94,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.2`）：
 - promoted 的 explicit `avoid` 已经可以按当前 `space` 进入 prehook
 - 同一 `space` 的其他活跃 session 已经可以作为轻量 context 被 prehook 感知
 - prehook 已开始根据隐式跟随/忽略结果，静默调整 `avoid / do next / maybe also` 的局部权重
+- 这种行为闭环在 payload 带 `space` 时已经局部化到同一个对象 / 议题，不再全局串台
 
 剩余完成标准：
 - hot path 的 `do next / maybe also` 也优先受当前 `space` 的局部共识影响，而不只是 `avoid`
