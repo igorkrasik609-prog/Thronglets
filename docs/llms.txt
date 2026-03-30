@@ -12,7 +12,8 @@ It is optimized for:
 
 ## Install
 
-cargo install thronglets
+curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
+npm install -g thronglets
 thronglets setup
 
 ## Known Local Adapters

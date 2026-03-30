@@ -2,12 +2,13 @@
 
 AI-first decision substrate for coding agents.
 
-This npm package installs the `thronglets` CLI wrapper and downloads a native binary for supported platforms.
+This npm package installs the `thronglets` CLI wrapper and downloads a matching prebuilt native binary from the official GitHub release.
 
 ## Install
 
 ```bash
 npm install -g thronglets
+thronglets version --json
 thronglets setup
 ```
 
@@ -65,7 +66,6 @@ thronglets run --bootstrap /ip4/47.93.32.88/tcp/4001
 ## Links
 
 - [GitHub](https://github.com/Shangri-la-0428/Thronglets)
-- [crates.io](https://crates.io/crates/thronglets)
 
 ## License
 

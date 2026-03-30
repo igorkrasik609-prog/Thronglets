@@ -4,7 +4,7 @@ Website: [thronglets.oasyce.com](https://thronglets.oasyce.com)
 
 # Thronglets
 
-A local AI substrate. Current release: `v0.4.3`. The core product is the `CLI + hook/prehook + HTTP` contract; MCP is only an optional adapter layer.
+A local AI substrate. Current release: `v0.4.4`. The core product is the `CLI + hook/prehook + HTTP` contract; MCP is only an optional adapter layer.
 
 ## What Your AI Sees (real output)
 
@@ -40,10 +40,33 @@ Design constraints:
 - At most 1 collective corroboration lookup on the hot path.
 - Git history is lazy fallback, not a fixed layer on every call.
 
-## Setup (one command)
+## Install (prebuilt first)
+
+The install surface is now intentionally single-sourced:
+- GitHub release assets are the single source of truth
+- `npm`, the shell installer, the PowerShell installer, and the Python wrapper only download matching prebuilt binaries
+- source builds are for Thronglets development, not the default user path
+
+macOS / Linux:
 
 ```bash
-cargo install thronglets
+curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
+thronglets version --json
+thronglets setup
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
+thronglets.exe version --json
+thronglets.exe setup
+```
+
+If Node.js is already present, the cross-platform path is:
+
+```bash
+npm install -g thronglets
 thronglets version --json
 thronglets setup
 ```
@@ -67,6 +90,15 @@ cargo run --quiet -- setup
 ```
 
 That keeps the README, the checked-out source, and the binary you are actually executing in sync, which matters for agent automation.
+
+If you are developing Thronglets itself rather than installing it for normal use, the source path is:
+
+```bash
+cargo run --quiet -- version --json
+cargo run --quiet -- setup
+```
+
+Regular users should no longer treat `cargo install thronglets` as the primary install path, especially on Windows.
 
 Known adapters also no longer pin themselves directly to whatever binary path happened to run setup once. `setup / apply-plan / bootstrap` now write a managed launcher:
 

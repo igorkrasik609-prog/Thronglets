@@ -1,6 +1,6 @@
 # TODO
 
-Thronglets 现在的主线已经明确（当前 release: `v0.4.3`）：
+Thronglets 现在的主线已经明确（当前 release: `v0.4.4`）：
 
 - 产品形态：`AI-first decision substrate`
 - 接入形态：`one-command setup + machine bootstrap contract`
@@ -218,6 +218,21 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.3`）：
 - 验证 `owner -> device` 授权，不把 `agent / session` 提升成经济主体
 - 继续保持高频行为链下、低频结果上链结算 / 锚定
 - 把已签名 connection file 和后续 Oasyce 授权路径对齐
+
+### 10. Keep install surfaces single-sourced
+
+目标：不要再让 README、npm、Python、官网、release assets 各自给出不同的安装答案。
+
+当前状态：
+- GitHub release assets 已重新定义为 canonical install surface
+- shell installer、PowerShell installer、npm、Python wrapper 都应只下载匹配版本的预编译二进制
+- `cargo install` 已从默认用户路径降级为开发者源码路径
+
+剩余完成标准：
+- Windows release 资产进入正式发布矩阵
+- `server.json`、官网、README、npm、Python 文案保持同版本一致
+- 普通用户默认不需要 Rust toolchain
+- 如果某个平台没有预编译资产，installer 也不能把用户静默送进源码编译
 
 ## Next
 

@@ -26,6 +26,9 @@ jobs:
           - runner: macos-14
             asset: thronglets-mcp-darwin-arm64
             binary: target/release/thronglets
+          - runner: windows-latest
+            asset: thronglets-mcp-windows-amd64.exe
+            binary: target/release/thronglets.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -44,13 +47,23 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Package assets
+      - name: Package assets (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p release
           cp "${{ matrix.binary }}" "release/${{ matrix.asset }}"
           chmod +x "release/${{ matrix.asset }}"
           shasum -a 256 "release/${{ matrix.asset }}" > "release/${{ matrix.asset }}.sha256"
+
+      - name: Package assets (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item "${{ matrix.binary }}" "release/${{ matrix.asset }}"
+          $hash = (Get-FileHash "release/${{ matrix.asset }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset }}" | Out-File -FilePath "release/${{ matrix.asset }}.sha256" -Encoding ascii -NoNewline
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2

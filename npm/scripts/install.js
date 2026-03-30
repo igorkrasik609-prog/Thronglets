@@ -14,11 +14,15 @@ const REPO = process.env.THRONGLETS_INSTALL_REPO || "Shangri-la-0428/Thronglets"
 const PLATFORMS = {
   "darwin-arm64": {
     asset: `thronglets-mcp-darwin-arm64`,
-    sha256: "7b0546e9381b8dc9180036afc1cbcd504068b4ac13d92f497a44945fc3faad5e",
+    binName: "thronglets-bin",
   },
   "linux-x64": {
     asset: `thronglets-mcp-linux-amd64`,
-    sha256: "d02883a6eecb861de8c1328ee9f264d4eb2d17635eb8db069bdf66ea7e9f33e6",
+    binName: "thronglets-bin",
+  },
+  "win32-x64": {
+    asset: `thronglets-mcp-windows-amd64.exe`,
+    binName: "thronglets-bin.exe",
   },
 };
 
@@ -28,12 +32,14 @@ const target = PLATFORMS[platform];
 if (!target) {
   console.error(`Unsupported platform: ${platform}`);
   console.error(`Supported: ${Object.keys(PLATFORMS).join(", ")}`);
-  console.error("You can install from source: cargo install thronglets");
+  console.error(
+    "Install from an official release binary. Source builds are for Thronglets development only."
+  );
   process.exit(1);
 }
 
 const binDir = path.join(__dirname, "..", "bin");
-const binPath = path.join(binDir, "thronglets-bin");
+const binPath = path.join(binDir, target.binName);
 const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${target.asset}`;
 
 function download(url, dest) {
@@ -72,7 +78,9 @@ async function main() {
     console.log("Thronglets installed successfully.");
   } catch (err) {
     console.error(`Failed to download: ${err.message}`);
-    console.error("You can install from source: cargo install thronglets");
+    console.error(
+      "Download a matching release asset or see the README for the supported prebuilt install paths."
+    );
     process.exit(1);
   }
 }

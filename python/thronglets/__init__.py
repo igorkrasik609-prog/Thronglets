@@ -9,7 +9,7 @@ from pathlib import Path
 
 import os
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 VERSION = os.environ.get("THRONGLETS_INSTALL_VERSION", __version__)
 REPO = os.environ.get("THRONGLETS_INSTALL_REPO", "Shangri-la-0428/Thronglets")
@@ -17,6 +17,8 @@ REPO = os.environ.get("THRONGLETS_INSTALL_REPO", "Shangri-la-0428/Thronglets")
 PLATFORMS = {
     ("Darwin", "arm64"): "thronglets-mcp-darwin-arm64",
     ("Linux", "x86_64"): "thronglets-mcp-linux-amd64",
+    ("Windows", "AMD64"): "thronglets-mcp-windows-amd64.exe",
+    ("Windows", "x86_64"): "thronglets-mcp-windows-amd64.exe",
 }
 
 
@@ -25,6 +27,8 @@ def _bin_dir() -> Path:
 
 
 def _bin_path() -> Path:
+    if platform.system() == "Windows":
+        return _bin_dir() / "thronglets-bin.exe"
     return _bin_dir() / "thronglets-bin"
 
 
@@ -36,7 +40,10 @@ def _download_binary() -> Path:
     asset = PLATFORMS.get(key)
     if not asset:
         print(f"Unsupported platform: {system}-{machine}", file=sys.stderr)
-        print("Install from source: cargo install thronglets", file=sys.stderr)
+        print(
+            "Install from an official release binary. Source builds are for Thronglets development only.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     url = f"https://github.com/{REPO}/releases/download/v{VERSION}/{asset}"

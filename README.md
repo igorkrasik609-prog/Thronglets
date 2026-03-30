@@ -4,7 +4,7 @@
 
 # Thronglets
 
-AI agent 的本地 substrate。当前 release 是 `v0.4.3`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
+AI agent 的本地 substrate。当前 release 是 `v0.4.4`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
 
 ## 你的 AI 看到了什么（真实输出）
 
@@ -40,10 +40,33 @@ PreToolUse 不再追求“把所有上下文都塞进去”。现在它只输出
 - 群体证据最多只查 1 次，优先最可能改变下一步的那条。
 - Git history 是 fallback，不再是每次都跑的固定层。
 
-## 安装（一条命令）
+## 安装（预编译优先）
+
+官方安装面现在固定成一条主线：
+- GitHub release assets 是单一事实源
+- `npm`、shell installer、PowerShell installer、Python wrapper 都只下载匹配版本的预编译二进制
+- 源码编译只留给开发者，不再是普通用户默认入口
+
+macOS / Linux：
 
 ```bash
-cargo install thronglets
+curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
+thronglets version --json
+thronglets setup
+```
+
+Windows PowerShell：
+
+```powershell
+iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
+thronglets.exe version --json
+thronglets.exe setup
+```
+
+如果本机已经有 Node.js，也可以统一用：
+
+```bash
+npm install -g thronglets
 thronglets version --json
 thronglets setup
 ```
@@ -67,6 +90,15 @@ cargo run --quiet -- setup
 ```
 
 这样 AI 读到的 README、当前 checkout 的代码、实际执行的命令会保持一致，不会因为 PATH 上旧版本 `thronglets` 造成自动化误判。
+
+如果你是在开发 Thronglets 本身，而不是安装它给日常使用，源码路径才是：
+
+```bash
+cargo run --quiet -- version --json
+cargo run --quiet -- setup
+```
+
+普通用户现在不应该再把 `cargo install thronglets` 当成主安装方式，尤其是 Windows。
 
 已知 adapter 现在也不会再直接绑死到当时那一个 binary path。`setup / apply-plan / bootstrap` 会统一写入一个受管 launcher：
 

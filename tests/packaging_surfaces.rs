@@ -42,6 +42,14 @@ fn package_versions_match_current_source_version() {
         npm_package["version"],
         JsonValue::String(cargo_version.clone())
     );
+    assert!(
+        npm_package["os"]
+            .as_array()
+            .expect("npm os list")
+            .iter()
+            .any(|value| value == "win32"),
+        "npm package should support win32"
+    );
 
     let pyproject: TomlValue =
         toml::from_str(&read("python/pyproject.toml")).expect("parse python/pyproject.toml");
@@ -107,6 +115,19 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
     let llms = read("docs/llms.txt");
     assert!(llms.contains("thronglets.bootstrap.v2"));
     assert!(llms.contains("thronglets release-check --eval-scope both --json"));
+
+    for (path, content) in [
+        ("README.md", read("README.md")),
+        ("README.en.md", read("README.en.md")),
+        ("docs/llms.txt", read("docs/llms.txt")),
+    ] {
+        assert!(
+            content.contains("npm install -g thronglets")
+                || content.contains("install.ps1")
+                || content.contains("install.sh"),
+            "{path} should point users at the prebuilt install surface"
+        );
+    }
 }
 
 #[test]
@@ -114,10 +135,13 @@ fn package_installers_read_version_from_a_single_source() {
     let npm_installer = read("npm/scripts/install.js");
     assert!(npm_installer.contains("THRONGLETS_INSTALL_VERSION"));
     assert!(npm_installer.contains("require(\"../package.json\")"));
+    assert!(npm_installer.contains("win32-x64"));
+    assert!(npm_installer.contains("thronglets-mcp-windows-amd64.exe"));
 
     let python_installer = read("python/thronglets/__init__.py");
     assert!(python_installer.contains("THRONGLETS_INSTALL_VERSION"));
     assert!(python_installer.contains("THRONGLETS_INSTALL_REPO"));
+    assert!(python_installer.contains("(\"Windows\", \"AMD64\")"));
 }
 
 #[test]
@@ -126,9 +150,16 @@ fn shell_installer_and_release_workflow_exist_for_one_line_distribution() {
     assert!(install_script.contains("releases/latest/download"));
     assert!(install_script.contains("THRONGLETS_VERSION"));
     assert!(install_script.contains("Next: thronglets setup"));
+    assert!(install_script.contains("scripts/install.ps1"));
+
+    let powershell_installer = read("scripts/install.ps1");
+    assert!(powershell_installer.contains("releases/latest/download"));
+    assert!(powershell_installer.contains("thronglets-mcp-windows-amd64.exe"));
+    assert!(powershell_installer.contains("Next: thronglets setup"));
 
     let release_workflow = read(".github/workflows/release.yml");
     assert!(release_workflow.contains("softprops/action-gh-release"));
     assert!(release_workflow.contains("thronglets-mcp-linux-amd64"));
     assert!(release_workflow.contains("thronglets-mcp-darwin-arm64"));
+    assert!(release_workflow.contains("thronglets-mcp-windows-amd64.exe"));
 }

@@ -19,7 +19,8 @@ platform() {
       ;;
     *)
       echo "Unsupported platform: ${os}-${arch}" >&2
-      echo "Supported platforms: Darwin-arm64, Linux-x86_64" >&2
+      echo "Supported by this shell installer: Darwin-arm64, Linux-x86_64" >&2
+      echo "For Windows, use scripts/install.ps1 or npm install -g thronglets." >&2
       exit 1
       ;;
   esac

@@ -1,6 +1,6 @@
 {
   "name": "thronglets",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Local AI substrate for agents with sparse signals, hooks, and optional adapters",
   "keywords": [
     "ai-agents",
@@ -29,7 +29,7 @@
     "scripts/",
     "README.md"
   ],
-  "os": ["darwin", "linux"],
+  "os": ["darwin", "linux", "win32"],
   "cpu": ["arm64", "x64"],
   "mcpName": "io.github.Shangri-la-0428/thronglets"
 }
