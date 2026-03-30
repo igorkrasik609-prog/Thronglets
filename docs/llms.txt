@@ -13,7 +13,7 @@ It is optimized for:
 
 ## Product Guardrails
 
-- Default user path: `thronglets start`, `thronglets share`, `thronglets join --file ...`, `thronglets status`
+- Default user path: `thronglets start`, `thronglets share`, `thronglets join`, `thronglets status`
 - Do not start normal users with `setup / owner-bind / connection-inspect / net-check / runtime-ready`
 - `Oasyce` is optional for participation and only upgrades ownership / settlement
 - Prefer shared environment primitives over direct AI messaging
@@ -34,11 +34,13 @@ thronglets start
 
 For a second device:
 
-thronglets join --file ./thronglets.connection.json
+thronglets join
 
 From the primary device:
 
 thronglets share
+
+`share` writes to `~/Desktop/thronglets.connection.json`, and `join` looks there by default.
 
 ## Machine Bootstrap
 

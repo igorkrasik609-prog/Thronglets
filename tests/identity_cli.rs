@@ -332,6 +332,46 @@ fn join_json_wraps_setup_and_surfaces_network_path_ready_state() {
 }
 
 #[test]
+fn join_json_defaults_to_desktop_connection_file() {
+    let temp = TempDir::new().unwrap();
+    let primary_home = temp.path().join("primary-home");
+    let secondary_home = temp.path().join("secondary-home");
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
+
+    std::fs::create_dir_all(primary_home.join("Desktop")).unwrap();
+    std::fs::create_dir_all(secondary_home.join("Desktop")).unwrap();
+
+    run_bin_in_home(&["start", "--json"], &primary_home, &primary_dir);
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.observe_peer_address("12D3KooWAlpha", "/ip4/10.0.0.1/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.save(&primary_dir);
+
+    run_bin_in_home(&["share", "--json"], &primary_home, &primary_dir);
+
+    std::fs::copy(
+        primary_home.join("Desktop").join("thronglets.connection.json"),
+        secondary_home.join("Desktop").join("thronglets.connection.json"),
+    )
+    .unwrap();
+
+    let joined = run_bin_in_home(&["join", "--json"], &secondary_home, &secondary_dir);
+
+    assert_eq!(joined["command"], "join");
+    assert_eq!(joined["data"]["summary"]["status"], "network-paths-ready");
+    assert_eq!(
+        joined["data"]["file"],
+        secondary_home
+            .join("Desktop")
+            .join("thronglets.connection.json")
+            .display()
+            .to_string()
+    );
+}
+
+#[test]
 fn connection_export_prefers_trusted_peer_seeds() {
     let temp = TempDir::new().unwrap();
     let primary_dir = temp.path().join("primary");

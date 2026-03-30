@@ -95,7 +95,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 预编译安装已经是默认主路径
 - 高层 `thronglets start`
 - 高层 `thronglets share`
-- 高层 `thronglets join --file ...`
+- 高层 `thronglets join`
 - `status` 已经能返回一个顶层结果和一个 `next_step`
 
 剩余完成标准：
@@ -106,7 +106,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 正常设备配对应该能被压成一句话：
   - 第一台设备：`thronglets start`
   - 主设备：`thronglets share`
-  - 第二台设备：`thronglets join --file ./thronglets.connection.json`
+  - 第二台设备：`thronglets join`
 
 ### 1. Shared space continuity
 
@@ -269,7 +269,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 
 当前状态：
 - 已有高层 `thronglets start`
-- 已有高层 `thronglets join --file ...`
+- 已有高层 `thronglets join`
 - 它们内部复用现有 `setup / connection-* / status` primitives
 - 文档默认路径已切到 `start / join`
 

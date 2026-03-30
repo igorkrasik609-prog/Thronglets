@@ -25,7 +25,7 @@ The normal user path should collapse to just these:
 
 - first device: `thronglets start`
 - primary device shares a connection file: `thronglets share`
-- second device: `thronglets join --file ./thronglets.connection.json`
+- second device: `thronglets join`
 
 Day to day, only check:
 
@@ -92,7 +92,7 @@ The default user entry points are now:
 
 - first device: `thronglets start`
 - primary device shares a connection file: `thronglets share`
-- secondary device: `thronglets join --file ./thronglets.connection.json`
+- secondary device: `thronglets join`
 
 `thronglets start` auto-installs known local adapters:
 - **Claude Code**: writes `PostToolUse / PreToolUse` hooks automatically
@@ -104,7 +104,7 @@ The default user entry points are now:
 - verifies and imports the connection file exported by the primary device
 - returns only the resulting state for this device: `identity-only / network-paths-ready / network-ready`
 
-`thronglets share` writes the connection file to `~/Desktop/thronglets.connection.json` by default and tells you whether that file is still `identity-only`, already carries peer seeds, or has reached `trusted-same-owner-ready`.
+`thronglets share` writes the connection file to `~/Desktop/thronglets.connection.json` by default and tells you whether that file is still `identity-only`, already carries peer seeds, or has reached `trusted-same-owner-ready`. The second device also looks for `~/Desktop/thronglets.connection.json` by default, so normal users do not need to type a file argument on the join path.
 
 Advanced users can still call `setup / connection-export / connection-inspect / connection-join / owner-bind` directly, but normal user onboarding should not require understanding those internal commands first.
 
@@ -298,7 +298,7 @@ thronglets start
 thronglets share
 
 # second device
-thronglets join --file ./thronglets.connection.json
+thronglets join
 ```
 
 That high-level path means:

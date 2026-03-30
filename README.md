@@ -25,7 +25,7 @@ AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出
 
 - 第一台设备：`thronglets start`
 - 主设备分享连接文件：`thronglets share`
-- 第二台设备：`thronglets join --file ./thronglets.connection.json`
+- 第二台设备：`thronglets join`
 
 日常只看：
 
@@ -92,7 +92,7 @@ thronglets start
 
 - 第一台设备：`thronglets start`
 - 主设备分享连接文件：`thronglets share`
-- 第二台设备：`thronglets join --file ./thronglets.connection.json`
+- 第二台设备：`thronglets join`
 
 `thronglets start` 会自动安装本机已知适配器：
 - **Claude Code**：自动写入 `PostToolUse / PreToolUse` hooks
@@ -104,7 +104,7 @@ thronglets start
 - 验签并导入主设备导出的 connection file
 - 最后只返回这台机器当前是 `identity-only / network-paths-ready / network-ready`
 
-`thronglets share` 默认会把连接文件写到 `~/Desktop/thronglets.connection.json`，并直接告诉你这份文件现在只是 `identity-only`、已经带 `peer seeds`，还是已经到了 `trusted-same-owner-ready`。
+`thronglets share` 默认会把连接文件写到 `~/Desktop/thronglets.connection.json`，并直接告诉你这份文件现在只是 `identity-only`、已经带 `peer seeds`，还是已经到了 `trusted-same-owner-ready`。第二台设备默认也会去 `~/Desktop/thronglets.connection.json` 读这份文件，所以正常用户路径不需要再手敲文件参数。
 
 高级用户和调试时仍然可以直接使用 `setup / connection-export / connection-inspect / connection-join / owner-bind`，但默认用户路径不再要求先理解这些内部命令。
 
@@ -297,7 +297,7 @@ thronglets start
 thronglets share
 
 # 第二台设备
-thronglets join --file ./thronglets.connection.json
+thronglets join
 ```
 
 这条高层路径的含义是：

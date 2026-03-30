@@ -564,9 +564,9 @@ enum Commands {
 
     /// One-command join flow for a secondary device.
     Join {
-        /// Connection file exported from the primary device.
+        /// Connection file exported from the primary device. Defaults to ~/Desktop/thronglets.connection.json.
         #[arg(long)]
-        file: PathBuf,
+        file: Option<PathBuf>,
 
         /// Emit machine-readable JSON instead of text.
         #[arg(long, default_value_t = false)]
@@ -1333,18 +1333,18 @@ fn summarize_share_flow(readiness: &ReadinessSummary, output: &Path) -> Onboardi
             status: "share-ready",
             detail: "This device exported a strong same-owner connection file. The next device should inherit identity plus a trusted recovery path.".into(),
             next_step: Some(format!(
-                "Send {} to the second device, then run `thronglets join --file {}` there.",
+                "Send {} to the second device, save it as ~/Desktop/{}, then run `thronglets join` there.",
                 output.display(),
-                output.display()
+                DEFAULT_CONNECTION_FILE_NAME
             )),
         },
         "identity-plus-peer-seeds" => OnboardingSummary {
             status: "share-ready",
             detail: "This device exported a usable connection file with remembered peer paths. The next device should inherit identity plus reusable network paths.".into(),
             next_step: Some(format!(
-                "Send {} to the second device, then run `thronglets join --file {}` there.",
+                "Send {} to the second device, save it as ~/Desktop/{}, then run `thronglets join` there.",
                 output.display(),
-                output.display()
+                DEFAULT_CONNECTION_FILE_NAME
             )),
         },
         _ => OnboardingSummary {
@@ -2945,6 +2945,7 @@ async fn main() {
         }
 
         Commands::Join { file, json } => {
+            let file = file.unwrap_or_else(default_share_output_path);
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
             let home_dir = home_dir();
             let report = bootstrap_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
