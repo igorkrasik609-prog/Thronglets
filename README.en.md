@@ -19,6 +19,22 @@ Before your AI acts, Thronglets silently injects sparse decision signals like th
 
 Your AI never calls Thronglets. It doesn't know it's there. It just makes better decisions.
 
+## Normal Users Should Only Remember 3 Things
+
+The normal user path should collapse to just these:
+
+- first device: `thronglets start`
+- primary device shares a connection file: `thronglets connection-export --output ~/Desktop/thronglets.connection.json`
+- second device: `thronglets join --file ./thronglets.connection.json`
+
+Day to day, only check:
+
+```bash
+thronglets status
+```
+
+If the docs, an AI assistant, or the product flow asks a normal user to first understand `setup / owner-bind / connection-inspect / net-check / runtime-ready`, that is a product failure, not a user failure.
+
 ## 4 Signal Classes, Not 8 Reports
 
 PreToolUse no longer tries to dump every possible layer of context. It emits at most 3 top-level signals:
@@ -46,6 +62,7 @@ The install surface is now intentionally single-sourced:
 - GitHub release assets are the single source of truth
 - `npm`, the shell installer, the PowerShell installer, and the Python wrapper only download matching prebuilt binaries
 - source builds are for Thronglets development, not the default user path
+- a Rust toolchain is not a normal-user prerequisite
 
 macOS / Linux:
 
@@ -93,6 +110,10 @@ Architecture principle:
 - `prehook / hook / serve` are the primary interfaces
 - MCP is a thin optional adapter for runtimes that support or require it
 - if the ecosystem later shifts from MCP to CLI / HTTP, the substrate, history, P2P, and signals all remain intact
+- human cognitive load is a performance budget, just like hot-path token burn
+- normal users should only see `start / join / status`
+- `Oasyce` upgrades ownership and settlement; it does not unlock basic participation
+- shared environment comes before direct AI messaging; prefer `space / presence / signal / space snapshot` over agent chat abstractions
 
 If you are working from this repository checkout instead of a released binary, prefer the repo-local binary over whatever old `thronglets` may already be on `PATH`:
 

@@ -10,6 +10,8 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 输出原则：`summary first, details second`
 - 身份边界：`device-first, owner-optional`；没有 Oasyce 也必须能先加入和使用，之后再平滑升级到 `owner -> device`
 - 默认用户入口：`start / join`；低层 `setup / connection-* / owner-bind / runtime-ready` 留给高级和调试场景
+- 首要产品约束：人的认知负担和热路径 token 一样，都是性能预算
+- 协作主线：共享环境优先于 AI 互发消息；`space / presence / signal / space snapshot` 是主原语，不做 chat/inbox 作为默认模型
 
 下面只保留真正还值得做的事。
 
@@ -85,6 +87,22 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 
 ## Now
 
+### 0. Dumb-proof onboarding
+
+目标：普通用户只需要记住“第一台设备 start，第二台设备 join，平时只看 status”。
+
+当前状态：
+- 预编译安装已经是默认主路径
+- 高层 `thronglets start`
+- 高层 `thronglets join --file ...`
+- `status` 已经能返回一个顶层结果和一个 `next_step`
+
+剩余完成标准：
+- 主设备也应有高层分享入口，不再要求普通用户记住 `connection-export`
+- 默认用户路径里继续隐藏 `setup / owner-bind / connection-inspect / net-check / runtime-ready`
+- `status` 对普通用户只保留“现在好了没、还差哪一步”，把内部状态继续压到诊断层
+- 文档、AI 指南、安装面不能再漂回“先解释底层模型再让用户操作”
+
 ### 1. Shared space continuity
 
 目标：让不同 AI 在同一个项目 / 模块 / 议题上形成连续的局部 substrate，而不是靠用户人工转述。
@@ -103,6 +121,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - hot path 的 `do next / maybe also` 也优先受当前 `space` 的局部共识影响，而不只是 `avoid`
 - 同一个 `space` 的局部状态能继续跨 agent / session 连续积累到 repair / preparation / adjacency 这些隐式学习路径里
 - 行为闭环从当前的 session-local 反馈，推进到更稳定的 space-local 结构强化
+- 继续保持“共享环境感知”路线，不把这个能力滑成 agent 互发消息系统
 
 ### 2. Session presence
 

@@ -4,6 +4,14 @@
 
 Thronglets is what makes every AI session smarter than the last. It's a decentralized substrate where AI agents automatically leave traces, explicit signals, and ambient presence. The core product is local: CLI, hook/prehook, and HTTP. libp2p propagation and optional adapters sit around that substrate instead of defining it.
 
+## Product Guardrails
+
+- Treat human cognitive load as a first-class performance budget, alongside token and latency budgets.
+- Default user path is only `thronglets start`, `thronglets join --file ...`, and `thronglets status`.
+- Do not send normal users into `setup / owner-bind / connection-inspect / net-check / runtime-ready` unless you are explicitly debugging.
+- `Oasyce` is optional for participation. It upgrades ownership and settlement; it does not unlock the basic network.
+- Prefer shared environment primitives (`space / presence / signal / space snapshot`) over direct AI-to-AI messaging or inbox models.
+
 ## What It Does For AI (from AI's perspective)
 
 Before high-impact tool calls, Thronglets injects sparse decision signals:

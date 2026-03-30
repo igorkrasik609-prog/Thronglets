@@ -9,6 +9,14 @@ It is optimized for:
 - silence by default
 - machine-facing bootstrap and health checks
 - local-first learning with optional collective corroboration
+- very low user cognitive load on the normal path
+
+## Product Guardrails
+
+- Default user path: `thronglets start`, `thronglets join --file ...`, `thronglets status`
+- Do not start normal users with `setup / owner-bind / connection-inspect / net-check / runtime-ready`
+- `Oasyce` is optional for participation and only upgrades ownership / settlement
+- Prefer shared environment primitives over direct AI messaging
 
 ## Install
 

@@ -19,6 +19,22 @@ AI agent 的本地 substrate。当前 release 是 `v0.4.5`，核心是 `CLI + ho
 
 AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出了更好的决策。
 
+## 普通用户只记 3 件事
+
+正常用户路径应该只有这 3 件事：
+
+- 第一台设备：`thronglets start`
+- 主设备分享连接文件：`thronglets connection-export --output ~/Desktop/thronglets.connection.json`
+- 第二台设备：`thronglets join --file ./thronglets.connection.json`
+
+日常只看：
+
+```bash
+thronglets status
+```
+
+如果文档、AI 助手、或者产品流程要求你先理解 `setup / owner-bind / connection-inspect / net-check / runtime-ready`，那是产品还没有收干净，不是用户的问题。
+
 ## 4 类信号，不是 8 层报告
 
 PreToolUse 不再追求“把所有上下文都塞进去”。现在它只输出最多 3 条顶层信号：
@@ -46,6 +62,7 @@ PreToolUse 不再追求“把所有上下文都塞进去”。现在它只输出
 - GitHub release assets 是单一事实源
 - `npm`、shell installer、PowerShell installer、Python wrapper 都只下载匹配版本的预编译二进制
 - 源码编译只留给开发者，不再是普通用户默认入口
+- Rust toolchain 不是普通用户前置条件
 
 macOS / Linux：
 
@@ -93,6 +110,10 @@ thronglets start
 - `prehook / hook / serve` 才是主接口
 - MCP 只是给支持 MCP 的 runtime 用的薄适配器
 - 就算外部生态以后从 MCP 转向 CLI / HTTP，核心 substrate、历史数据、P2P、signals 都不用重写
+- 人的认知负担和热路径 token 一样，都是性能预算
+- 默认用户只应看到 `start / join / status`
+- `Oasyce` 只升级 ownership / settlement，不解锁基础参与
+- 共享环境优先于 AI 互发消息；优先做 `space / presence / signal / space snapshot`，不把产品做成 agent chat
 
 如果你是在这个仓库源码目录里工作，而不是在用一个正式发布版二进制，优先用 repo-local binary，不要盲信 PATH 上旧版本：
 
