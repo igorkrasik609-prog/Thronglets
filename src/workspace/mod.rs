@@ -146,6 +146,12 @@ pub struct SubstrateActivity {
     pub last_intervention_age_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SpaceFeedbackSummary {
+    pub positive_24h: u32,
+    pub negative_24h: u32,
+}
+
 #[derive(Debug, Clone)]
 struct RepairTrajectoryPattern {
     weighted_support: f64,
@@ -747,6 +753,30 @@ impl WorkspaceState {
             last_intervention_tool,
             last_intervention_kinds,
             last_intervention_age_ms,
+        }
+    }
+
+    pub fn space_feedback_summary(&self, space: Option<&str>) -> SpaceFeedbackSummary {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut positive_24h = 0;
+        let mut negative_24h = 0;
+        for event in self.recent_recommendation_feedback.iter() {
+            if event.space.as_deref() != space {
+                continue;
+            }
+            if (now - event.timestamp_ms) > 86_400_000 {
+                continue;
+            }
+            if event.positive {
+                positive_24h += 1;
+            } else {
+                negative_24h += 1;
+            }
+        }
+
+        SpaceFeedbackSummary {
+            positive_24h,
+            negative_24h,
         }
     }
 

@@ -93,6 +93,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 显式 signal 已支持 `space`
 - `density / promotion / inhibition / reinforcement` 已经都局部化到 `space`
 - ambient `presence` 已支持 `space + mode`
+- 已有高层 `thronglets space --space <name>` 快照，同一 `space` 的 active sessions、converging signals 和本地学习反馈可以被压成一个 summary-first 环境状态
 - promoted 的 explicit `avoid` 已经可以按当前 `space` 进入 prehook
 - 同一 `space` 的其他活跃 session 已经可以作为轻量 context 被 prehook 感知
 - prehook 已开始根据隐式跟随/忽略结果，静默调整 `avoid / do next / maybe also` 的局部权重

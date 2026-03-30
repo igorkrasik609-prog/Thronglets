@@ -407,6 +407,23 @@ This is a general substrate primitive, not a Psyche-specific patch:
 - it can carry a lightweight mode such as `focus / explore / review / blocked`
 - and it lets another agent feel that “someone is already here” even before any tool traces exist
 
+If you do not want to inspect `presence-feed` and `signal-feed` separately, you can now ask for one high-level ambient snapshot:
+
+```bash
+thronglets space --space psyche --json
+```
+
+It compresses the current local environment in that `space` into one summary-first state:
+- `quiet`
+- `active`
+- `converging`
+- `blocked`
+
+and includes:
+- recent active sessions
+- the most relevant local signals
+- the last-24h local learning feedback for that `space`
+
 The same plane is available over HTTP:
 
 ```bash

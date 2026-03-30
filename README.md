@@ -397,6 +397,23 @@ thronglets presence-feed --space psyche --hours 1 --limit 10
 - 这个活跃是 `focus / explore / review / blocked` 之类的哪种模式
 - 即使没有工具调用，其他 AI 也能感知到“另一个 session 正在这里”
 
+如果你不想分别看 `presence-feed` 和 `signal-feed`，现在也可以直接看一个高层环境快照：
+
+```bash
+thronglets space --space psyche --json
+```
+
+它会直接把同一 `space` 压成一个 summary-first 结果：
+- `quiet`
+- `active`
+- `converging`
+- `blocked`
+
+并附带：
+- 最近活跃 session
+- 当前最值得看的局部 signals
+- 这个 `space` 里最近 24h 的本地学习反馈
+
 现在这条线已经开始向 `Density Substrate` 迈一步：显式 signal 的机器结果里会直接带 `density_score`、`density_tier=sparse|candidate|promoted|dominant` 和 `promotion_state=none|local|collective`，让“局部正在形成共识”不只是排序靠前，而是变成一个可读、可比较、可被 ambient feed 优先呈现的状态。与此同时，`signal-query` / `signal-feed` 自己也会为已经 promoted 的结果留下短 TTL 的 reinforcement trace，让“被读取并复用”开始真的改变 substrate，而不只是改变这一次的展示顺序。现在如果某个上下文里已经有 promoted 的 `avoid`，机器结果还会给竞争性的 `recommend/watch/info` 标出 `inhibition_state`，并在排序上真正把这些“被 stop signal 压制”的建议往后放。
 
 如果你想看的不是精确 query，而是 ambient timeline，可以直接用：

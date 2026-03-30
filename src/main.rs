@@ -48,6 +48,7 @@ const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
 const IDENTITY_SCHEMA_VERSION: &str = "thronglets.identity.v2";
 const NETWORK_SCHEMA_VERSION: &str = "thronglets.network.v1";
 const PRESENCE_SCHEMA_VERSION: &str = "thronglets.presence.v1";
+const SPACE_SCHEMA_VERSION: &str = "thronglets.space.v1";
 const VERSION_SCHEMA_VERSION: &str = "thronglets.version.v1";
 const RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP: i32 = 50;
 const RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP: i32 = 50;
@@ -377,6 +378,25 @@ struct PresencePostData {
 struct PresenceFeedData {
     summary: PresenceSummary,
     sessions: Vec<PresenceFeedResult>,
+}
+
+#[derive(Serialize)]
+struct SpaceSnapshotSummary {
+    status: &'static str,
+    detail: String,
+    active_sessions: usize,
+    signal_count: usize,
+    promoted_signal_count: usize,
+    next_step: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SpaceSnapshotData {
+    summary: SpaceSnapshotSummary,
+    space: String,
+    sessions: Vec<PresenceFeedResult>,
+    signals: Vec<thronglets::posts::SignalFeedResult>,
+    local_feedback: workspace::SpaceFeedbackSummary,
 }
 
 #[derive(Parser)]
@@ -735,6 +755,25 @@ enum Commands {
 
         /// Maximum sessions to return.
         #[arg(long, default_value_t = 10)]
+        limit: usize,
+
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// Show the ambient state of a shared substrate space.
+    Space {
+        /// The explicit substrate space to inspect.
+        #[arg(long)]
+        space: String,
+
+        /// Only include recent activity seen in roughly the last N hours.
+        #[arg(long, default_value_t = 24)]
+        hours: u32,
+
+        /// Maximum sessions and signals to return.
+        #[arg(long, default_value_t = 5)]
         limit: usize,
 
         /// Emit machine-readable JSON instead of text.
@@ -1646,6 +1685,114 @@ fn render_presence_feed_results(results: &[PresenceFeedResult]) {
             result.evidence_scope,
             presence_minutes_remaining(result.expires_at)
         );
+    }
+}
+
+fn summarize_space_snapshot(
+    space: &str,
+    sessions: &[PresenceFeedResult],
+    signals: &[thronglets::posts::SignalFeedResult],
+    local_feedback: &workspace::SpaceFeedbackSummary,
+) -> SpaceSnapshotSummary {
+    let promoted_signal_count = signals
+        .iter()
+        .filter(|signal| signal.promotion_state != "none")
+        .count();
+    let blocked = signals.iter().any(|signal| {
+        signal.kind == "avoid"
+            && (signal.promotion_state != "none" || signal.inhibition_penalty > 0)
+    });
+    if blocked {
+        SpaceSnapshotSummary {
+            status: "blocked",
+            detail: format!(
+                "This space currently has a promoted avoid signal, so the shared environment is steering work away from one path in `{space}`."
+            ),
+            active_sessions: sessions.len(),
+            signal_count: signals.len(),
+            promoted_signal_count,
+            next_step: Some(
+                "Reuse the top avoid signal and pick a different path before pushing more work into this space.".into(),
+            ),
+        }
+    } else if promoted_signal_count > 0
+        || local_feedback.positive_24h + local_feedback.negative_24h > 0
+    {
+        SpaceSnapshotSummary {
+            status: "converging",
+            detail: format!(
+                "This space has active local learning or promoted signals, so shared consensus is starting to form in `{space}`."
+            ),
+            active_sessions: sessions.len(),
+            signal_count: signals.len(),
+            promoted_signal_count,
+            next_step: Some(
+                "Look at the top promoted signal before inventing a new path; this space is already teaching something.".into(),
+            ),
+        }
+    } else if !sessions.is_empty() || !signals.is_empty() {
+        SpaceSnapshotSummary {
+            status: "active",
+            detail: format!(
+                "This space is active, but no strong shared consensus has formed in `{space}` yet."
+            ),
+            active_sessions: sessions.len(),
+            signal_count: signals.len(),
+            promoted_signal_count,
+            next_step: Some(
+                "Keep work in the same space and let presence or signals accumulate before you overfit to one path.".into(),
+            ),
+        }
+    } else {
+        SpaceSnapshotSummary {
+            status: "quiet",
+            detail: format!(
+                "No recent ambient activity or converging signals are visible in `{space}` yet."
+            ),
+            active_sessions: 0,
+            signal_count: 0,
+            promoted_signal_count: 0,
+            next_step: Some(
+                "If you start work here, keep using the same space so future agents inherit a real local environment.".into(),
+            ),
+        }
+    }
+}
+
+fn render_space_snapshot(data: &SpaceSnapshotData) {
+    println!("Space: {}", data.space);
+    println!("  Status:  {}", data.summary.status);
+    println!("  Meaning: {}", data.summary.detail);
+    if let Some(step) = &data.summary.next_step {
+        println!("  Next:    {step}");
+    }
+    println!(
+        "  Ambient: {} active sessions, {} visible signals, {} promoted",
+        data.summary.active_sessions, data.summary.signal_count, data.summary.promoted_signal_count
+    );
+    println!(
+        "  Learning: {} positive / {} negative local follow events (24h)",
+        data.local_feedback.positive_24h, data.local_feedback.negative_24h
+    );
+    if !data.sessions.is_empty() {
+        println!("  Sessions:");
+        for session in &data.sessions {
+            println!(
+                "    {} {} ({})",
+                session.model_id,
+                session.session_id.as_deref().unwrap_or("session"),
+                session.mode.as_deref().unwrap_or("active")
+            );
+        }
+    }
+    if !data.signals.is_empty() {
+        println!("  Signals:");
+        for signal in &data.signals {
+            println!(
+                "    {}: {} [{}]",
+                signal.kind, signal.message, signal.promotion_state
+            );
+        }
     }
 }
 
@@ -3181,6 +3328,65 @@ async fn main() {
                 print_machine_json_with_schema(PRESENCE_SCHEMA_VERSION, "presence-feed", &data);
             } else {
                 render_presence_feed_results(&data.sessions);
+            }
+        }
+
+        Commands::Space {
+            space,
+            hours,
+            limit,
+            json,
+        } => {
+            let store = open_store(&dir);
+            let workspace = WorkspaceState::load(&dir);
+            let fetch_limit = limit.max(1).saturating_mul(10);
+            let presence_traces = store
+                .query_recent_presence_traces(hours, fetch_limit)
+                .expect("failed to query recent presence traces");
+            let sessions = summarize_recent_presence(
+                &presence_traces,
+                Some(&space),
+                &identity_binding.device_identity,
+                identity.public_key_bytes(),
+                limit,
+            );
+            let signal_traces = store
+                .query_recent_signal_traces(hours, None, fetch_limit)
+                .expect("failed to query recent signal traces");
+            let signals = summarize_recent_signal_feed(
+                &signal_traces,
+                Some(&space),
+                &identity_binding.device_identity,
+                identity.public_key_bytes(),
+                limit,
+            );
+            for trace in create_feed_reinforcement_traces(
+                &signals,
+                SignalTraceConfig {
+                    model_id: "thronglets-space".into(),
+                    session_id: None,
+                    owner_account: identity_binding.owner_account.clone(),
+                    device_identity: Some(identity_binding.device_identity.clone()),
+                    space: Some(space.clone()),
+                    ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
+                },
+                identity.public_key_bytes(),
+                |msg| identity.sign(msg),
+            ) {
+                let _ = store.insert(&trace);
+            }
+            let local_feedback = workspace.space_feedback_summary(Some(&space));
+            let data = SpaceSnapshotData {
+                summary: summarize_space_snapshot(&space, &sessions, &signals, &local_feedback),
+                space,
+                sessions,
+                signals,
+                local_feedback,
+            };
+            if json {
+                print_machine_json_with_schema(SPACE_SCHEMA_VERSION, "space", &data);
+            } else {
+                render_space_snapshot(&data);
             }
         }
 
