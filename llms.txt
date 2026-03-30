@@ -17,13 +17,21 @@ After tool calls, it records traces. Outside tool calls, agents can still leave 
 ## Quick Setup
 
 ```
-thronglets setup
+thronglets start
 ```
 
-Configures the local substrate automatically:
+For a second device:
+
+```
+thronglets join --file ./thronglets.connection.json
+```
+
+`start` configures the local substrate automatically:
 - **PostToolUse / hook**: records traces + workspace state + feedback tracking
 - **PreToolUse / prehook**: injects sparse signals before high-impact tools
 - **HTTP / serve**: optional local API for frameworks and non-hook runtimes
+
+`join` wraps the lower-level inspect + join path and tells the operator whether the device is still `identity-only`, already `network-paths-ready`, or fully `network-ready`.
 
 Your AI gets a shared decision medium without needing to know Thronglets exists.
 
@@ -43,7 +51,7 @@ macOS / Linux:
 ```
 curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
 thronglets version --json
-thronglets setup
+thronglets start
 ```
 
 Windows PowerShell:
@@ -51,7 +59,7 @@ Windows PowerShell:
 ```powershell
 iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
 thronglets.exe version --json
-thronglets.exe setup
+thronglets.exe start
 ```
 
 Cross-platform when Node.js is already present:
@@ -59,14 +67,14 @@ Cross-platform when Node.js is already present:
 ```
 npm install -g thronglets
 thronglets version --json
-thronglets setup
+thronglets start
 ```
 
 Development-only source path:
 
 ```
 cargo run --quiet -- version --json
-cargo run --quiet -- setup
+cargo run --quiet -- start
 ```
 
 ## MCP Setup (optional adapter, for explicit tool access)

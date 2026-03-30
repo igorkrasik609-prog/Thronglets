@@ -52,7 +52,7 @@ macOS / Linux:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
 thronglets version --json
-thronglets setup
+thronglets start
 ```
 
 Windows PowerShell:
@@ -60,7 +60,7 @@ Windows PowerShell:
 ```powershell
 iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
 thronglets.exe version --json
-thronglets.exe setup
+thronglets.exe start
 ```
 
 If Node.js is already present, the cross-platform path is:
@@ -68,13 +68,25 @@ If Node.js is already present, the cross-platform path is:
 ```bash
 npm install -g thronglets
 thronglets version --json
-thronglets setup
+thronglets start
 ```
 
-That's it. `thronglets setup` auto-installs known local adapters:
+The default user entry points are now:
+
+- first device: `thronglets start`
+- secondary device: `thronglets join --file ./thronglets.connection.json`
+
+`thronglets start` auto-installs known local adapters:
 - **Claude Code**: writes `PostToolUse / PreToolUse` hooks automatically
 - **Codex**: installs the MCP adapter this runtime currently needs and writes a managed `AGENTS` memory block
 - **OpenClaw**: installs a local path plugin and updates `~/.openclaw/openclaw.json`
+
+`thronglets join` automatically does three things:
+- wires up the current runtime on this device
+- verifies and imports the connection file exported by the primary device
+- returns only the resulting state for this device: `identity-only / network-paths-ready / network-ready`
+
+Advanced users can still call `setup / connection-inspect / connection-join / owner-bind` directly, but normal user onboarding should not require understanding those internal commands first.
 
 Architecture principle:
 - the core product is not an MCP server; it is a local substrate
@@ -86,7 +98,7 @@ If you are working from this repository checkout instead of a released binary, p
 
 ```bash
 cargo run --quiet -- version --json
-cargo run --quiet -- setup
+cargo run --quiet -- start
 ```
 
 That keeps the README, the checked-out source, and the binary you are actually executing in sync, which matters for agent automation.
@@ -95,7 +107,7 @@ If you are developing Thronglets itself rather than installing it for normal use
 
 ```bash
 cargo run --quiet -- version --json
-cargo run --quiet -- setup
+cargo run --quiet -- start
 ```
 
 Regular users should no longer treat `cargo install thronglets` as the primary install path, especially on Windows.
@@ -108,7 +120,7 @@ Known adapters also no longer pin themselves directly to whatever binary path ha
 
 That means you do not need to rerun `setup` after every local iteration just to keep adapters pointed at the latest local build.
 
-`setup` now also runs a bootstrap health pass and returns `restart required / next steps` directly.
+`start` now does the same bootstrap health pass as the lower-level `setup` command and returns `restart required / next steps` directly.
 If an adapter still needs a client restart, `doctor` now returns `restart-pending`, and after the runtime is restarted you can clear that state with:
 
 ```bash
@@ -251,6 +263,23 @@ The primary multi-device onboarding path is also fixed:
 - the connection file is signed by the primary device and verified on join
 - the connection file now also carries a small peer-seed set so the secondary device can try known peers before falling back to bootstrap
 - once the secondary device has actually proven a live same-owner direct connection, that path is automatically promoted into a trusted peer seed; future connection files then upgrade themselves into a stronger recovery path
+
+The default user path should now be:
+
+```bash
+# first device
+thronglets start
+
+# export from the primary device
+thronglets connection-export --output ./thronglets.connection.json
+
+# second device
+thronglets join --file ./thronglets.connection.json
+```
+
+That high-level path means:
+- `start` = get this machine usable first
+- `join` = attach this machine to an existing device and tell me only whether it is actually ready yet
 
 The local primitives for that flow are now in place:
 

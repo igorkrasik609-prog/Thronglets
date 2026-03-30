@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Same-owner trust promotion** — when a secondary device proves a direct live connection to its joined primary, or when a node receives a same-owner trace directly from the authoring peer, Thronglets now promotes that peer address into `trusted peer seeds` automatically; future connection files can graduate from `identity-plus-peer-seeds` to `trusted-same-owner-ready` without a manual trust step
+- **High-level onboarding flows** — added `thronglets start` for first-device setup and `thronglets join --file ...` for second-device onboarding; both commands wrap the lower-level bootstrap / connection primitives and return one top-level status plus one next step instead of forcing users to understand internal commands first
 
 ## v0.4.5 — 2026-03-31
 

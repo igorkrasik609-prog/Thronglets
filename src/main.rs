@@ -60,7 +60,7 @@ struct MachineEnvelope<T> {
     data: T,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct BootstrapSummary {
     status: &'static str,
     healthy: bool,
@@ -77,6 +77,31 @@ struct BootstrapData {
     plans: Vec<AdapterPlan>,
     results: Vec<AdapterApplyResult>,
     reports: Vec<AdapterDoctor>,
+}
+
+#[derive(Serialize)]
+struct OnboardingSummary {
+    status: &'static str,
+    detail: String,
+    next_step: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StartData {
+    summary: OnboardingSummary,
+    setup: BootstrapSummary,
+    readiness: ReadinessSummary,
+    identity: IdentitySummary,
+}
+
+#[derive(Serialize)]
+struct JoinFlowData {
+    summary: OnboardingSummary,
+    setup: BootstrapSummary,
+    inspect: ReadinessSummary,
+    readiness: ReadinessSummary,
+    identity: IdentitySummary,
+    file: String,
 }
 
 #[derive(Serialize)]
@@ -477,6 +502,24 @@ impl From<SignalScopeArg> for SignalScopeFilter {
 enum Commands {
     /// Show the running binary version and machine-facing schema versions.
     Version {
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// One-command first-device setup.
+    Start {
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// One-command join flow for a secondary device.
+    Join {
+        /// Connection file exported from the primary device.
+        #[arg(long)]
+        file: PathBuf,
+
         /// Emit machine-readable JSON instead of text.
         #[arg(long, default_value_t = false)]
         json: bool,
@@ -1146,6 +1189,142 @@ fn status_readiness_summary(
             ),
         }
     }
+}
+
+fn onboarding_next_step(setup: &BootstrapSummary, readiness: &ReadinessSummary) -> Option<String> {
+    if let Some(command) = setup.restart_commands.first() {
+        Some(format!("Restart your AI runtime once: {command}"))
+    } else if let Some(step) = setup.next_steps.first() {
+        Some(step.clone())
+    } else {
+        readiness.next_step.clone()
+    }
+}
+
+fn summarize_start_flow(
+    setup: &BootstrapSummary,
+    readiness: &ReadinessSummary,
+) -> OnboardingSummary {
+    if !setup.healthy {
+        OnboardingSummary {
+            status: "needs-fix",
+            detail: "Thronglets could not finish wiring this device into the local AI runtime yet."
+                .into(),
+            next_step: onboarding_next_step(setup, readiness),
+        }
+    } else if setup.restart_required || setup.restart_pending {
+        OnboardingSummary {
+            status: "restart-required",
+            detail: "Thronglets is installed on this device, but the AI runtime still needs one restart before the integration is live.".into(),
+            next_step: onboarding_next_step(setup, readiness),
+        }
+    } else if readiness.status == "local-only" {
+        OnboardingSummary {
+            status: "local-ready",
+            detail: "This device is ready to use Thronglets locally. You can keep working now and add another device later if you want.".into(),
+            next_step: Some(
+                "Optional: when you want to add another device, export a connection file from this device.".into(),
+            ),
+        }
+    } else {
+        OnboardingSummary {
+            status: readiness.status,
+            detail: readiness.detail.clone(),
+            next_step: readiness.next_step.clone(),
+        }
+    }
+}
+
+fn summarize_join_flow(
+    setup: &BootstrapSummary,
+    readiness: &ReadinessSummary,
+) -> OnboardingSummary {
+    if !setup.healthy {
+        OnboardingSummary {
+            status: "needs-fix",
+            detail: "This device joined the identity flow, but the local AI runtime integration still needs fixing before the device is fully usable.".into(),
+            next_step: onboarding_next_step(setup, readiness),
+        }
+    } else if setup.restart_required || setup.restart_pending {
+        OnboardingSummary {
+            status: "restart-required",
+            detail: "This device joined successfully, but the local AI runtime still needs one restart before Thronglets is fully loaded.".into(),
+            next_step: onboarding_next_step(setup, readiness),
+        }
+    } else {
+        OnboardingSummary {
+            status: readiness.status,
+            detail: readiness.detail.clone(),
+            next_step: readiness.next_step.clone(),
+        }
+    }
+}
+
+fn collect_status_data(
+    dir: &Path,
+    identity: &NodeIdentity,
+    binding: &IdentityBinding,
+) -> StatusData {
+    let store = open_store(dir);
+    let workspace = WorkspaceState::load(dir);
+    let network = thronglets::network_state::NetworkSnapshot::load(dir).to_status();
+    let trace_count = store.count().unwrap_or(0);
+    let cap_count = store
+        .distinct_capabilities(1000)
+        .map(|caps| {
+            caps.into_iter()
+                .filter(|capability| {
+                    !is_signal_capability(capability) && !is_presence_capability(capability)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let db_path = dir.join("traces.db");
+    let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let readiness = status_readiness_summary(binding, &network);
+
+    StatusData {
+        summary: readiness,
+        identity: identity_summary("healthy", binding),
+        node_id: identity.short_id(),
+        oasyce_address: identity.oasyce_address(),
+        data_dir: dir.display().to_string(),
+        trace_count,
+        capabilities: cap_count,
+        database_size_bytes: db_size,
+        substrate: workspace.substrate_activity(),
+        network,
+    }
+}
+
+fn render_start_report(data: &StartData) {
+    println!("Thronglets start: {}", data.summary.status);
+    println!("  Meaning: {}", data.summary.detail);
+    if let Some(step) = &data.summary.next_step {
+        println!("  Next:    {step}");
+    }
+    println!(
+        "  Runtime: {}",
+        if data.setup.restart_required || data.setup.restart_pending {
+            "restart-required"
+        } else {
+            data.setup.status
+        }
+    );
+    println!("  Device:  {}", data.identity.device_identity);
+    println!("  Ready:   {}", data.readiness.status);
+}
+
+fn render_join_flow_report(data: &JoinFlowData) {
+    println!("Thronglets join: {}", data.summary.status);
+    println!("  Meaning: {}", data.summary.detail);
+    if let Some(step) = &data.summary.next_step {
+        println!("  Next:    {step}");
+    }
+    println!("  File:    {}", data.file);
+    println!("  Inspect: {}", data.inspect.status);
+    println!("  Ready:   {}", data.readiness.status);
+    println!("  Device:  {}", data.identity.device_identity);
 }
 
 #[cfg(test)]
@@ -2412,6 +2591,78 @@ async fn main() {
                 print_machine_json_with_schema(VERSION_SCHEMA_VERSION, "version", &data);
             } else {
                 render_version_report(&data);
+            }
+        }
+
+        Commands::Start { json } => {
+            let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            let home_dir = home_dir();
+            let report = bootstrap_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
+                .expect("failed to bootstrap adapter plan");
+            let status = collect_status_data(&dir, &identity, &identity_binding);
+            let data = StartData {
+                summary: summarize_start_flow(&report.summary, &status.summary),
+                setup: report.summary.clone(),
+                readiness: status.summary.clone(),
+                identity: status.identity.clone(),
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "start", &data);
+            } else {
+                render_start_report(&data);
+            }
+            if !report.summary.healthy {
+                std::process::exit(1);
+            }
+        }
+
+        Commands::Join { file, json } => {
+            let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            let home_dir = home_dir();
+            let report = bootstrap_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
+                .expect("failed to bootstrap adapter plan");
+            let connection = ConnectionFile::load(&file).expect("failed to read connection file");
+            let inspect_readiness = connection_readiness_summary(
+                connection.peer_seed_scope.clone(),
+                connection.peer_seeds.len(),
+                "export",
+            );
+            let binding = identity_binding
+                .clone()
+                .joined_via_connection(
+                    connection.owner_account.clone(),
+                    connection.primary_device_identity.clone(),
+                )
+                .expect("failed to update identity binding");
+            binding
+                .save(&identity_binding_path(&dir))
+                .expect("failed to save identity binding");
+            let mut network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
+            match connection.peer_seed_scope {
+                ConnectionSeedScope::Trusted => {
+                    network_snapshot.merge_trusted_peer_seeds(connection.peer_seeds.clone());
+                }
+                ConnectionSeedScope::Remembered => {
+                    network_snapshot.merge_peer_seeds(connection.peer_seeds.clone());
+                }
+            }
+            network_snapshot.save(&dir);
+            let status = collect_status_data(&dir, &identity, &binding);
+            let data = JoinFlowData {
+                summary: summarize_join_flow(&report.summary, &status.summary),
+                setup: report.summary.clone(),
+                inspect: inspect_readiness,
+                readiness: status.summary.clone(),
+                identity: status.identity.clone(),
+                file: file.display().to_string(),
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "join", &data);
+            } else {
+                render_join_flow_report(&data);
+            }
+            if !report.summary.healthy {
+                std::process::exit(1);
             }
         }
 
@@ -3996,42 +4247,14 @@ async fn main() {
         }
 
         Commands::Status { json } => {
-            let store = open_store(&dir);
-            let workspace = WorkspaceState::load(&dir);
-            let network = thronglets::network_state::NetworkSnapshot::load(&dir).to_status();
-            let trace_count = store.count().unwrap_or(0);
-            let cap_count = store
-                .distinct_capabilities(1000)
-                .map(|caps| {
-                    caps.into_iter()
-                        .filter(|capability| {
-                            !is_signal_capability(capability) && !is_presence_capability(capability)
-                        })
-                        .count()
-                })
-                .unwrap_or(0);
-            let db_path = dir.join("traces.db");
-            let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+            let data = collect_status_data(&dir, &identity, &identity_binding);
 
-            let size_display = if db_size >= 1_048_576 {
-                format!("{:.1} MB", db_size as f64 / 1_048_576.0)
-            } else if db_size >= 1024 {
-                format!("{:.1} KB", db_size as f64 / 1024.0)
+            let size_display = if data.database_size_bytes >= 1_048_576 {
+                format!("{:.1} MB", data.database_size_bytes as f64 / 1_048_576.0)
+            } else if data.database_size_bytes >= 1024 {
+                format!("{:.1} KB", data.database_size_bytes as f64 / 1024.0)
             } else {
-                format!("{} B", db_size)
-            };
-            let readiness = status_readiness_summary(&identity_binding, &network);
-            let data = StatusData {
-                summary: readiness,
-                identity: identity_summary("healthy", &identity_binding),
-                node_id: identity.short_id(),
-                oasyce_address: identity.oasyce_address(),
-                data_dir: dir.display().to_string(),
-                trace_count,
-                capabilities: cap_count,
-                database_size_bytes: db_size,
-                substrate: workspace.substrate_activity(),
-                network,
+                format!("{} B", data.database_size_bytes)
             };
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "status", &data);

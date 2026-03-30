@@ -19,6 +19,23 @@ fn run_bin(args: &[&str], data_dir: &Path) -> Value {
     serde_json::from_slice(&output.stdout).expect("stdout should be valid json")
 }
 
+fn run_bin_in_home(args: &[&str], home: &Path, data_dir: &Path) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args(["--data-dir", data_dir.to_str().unwrap()])
+        .args(args)
+        .env("HOME", home)
+        .env("PATH", "")
+        .output()
+        .expect("failed to run thronglets");
+    assert!(
+        output.status.success(),
+        "command failed: {}\nstderr={}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("stdout should be valid json")
+}
+
 fn run_bin_raw(args: &[&str], data_dir: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_thronglets"))
         .args(["--data-dir", data_dir.to_str().unwrap()])
@@ -66,6 +83,21 @@ fn status_json_surfaces_quiet_substrate_activity() {
 }
 
 #[test]
+fn start_json_surfaces_local_ready_for_first_device() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+
+    let data = run_bin_in_home(&["start", "--json"], &home, &data_dir);
+
+    assert_eq!(data["schema_version"], "thronglets.identity.v2");
+    assert_eq!(data["command"], "start");
+    assert_eq!(data["data"]["summary"]["status"], "local-ready");
+    assert_eq!(data["data"]["readiness"]["status"], "local-only");
+    assert_eq!(data["data"]["setup"]["healthy"], true);
+}
+
+#[test]
 fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     let temp = TempDir::new().unwrap();
     let primary_dir = temp.path().join("primary");
@@ -92,7 +124,10 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
         .unwrap()
         .to_string();
     assert_eq!(exported["command"], "connection-export");
-    assert_eq!(exported["data"]["identity"]["owner_account"], "oasyce1owner");
+    assert_eq!(
+        exported["data"]["identity"]["owner_account"],
+        "oasyce1owner"
+    );
     assert_eq!(exported["data"]["signed_by_device"], primary_device);
     assert_eq!(exported["data"]["peer_seed_scope"], "remembered");
     assert_eq!(exported["data"]["trusted_peer_seed_count"], 0);
@@ -189,7 +224,10 @@ fn connection_join_imports_peer_seeds_into_local_snapshot() {
         ],
         &secondary_dir,
     );
-    assert_eq!(joined["data"]["summary"]["status"], "identity-plus-peer-seeds");
+    assert_eq!(
+        joined["data"]["summary"]["status"],
+        "identity-plus-peer-seeds"
+    );
     assert_eq!(joined["data"]["summary"]["network_path_ready"], true);
     assert_eq!(joined["data"]["peer_seed_scope"], "remembered");
     assert_eq!(joined["data"]["imported_trusted_peer_seed_count"], 0);
@@ -199,6 +237,53 @@ fn connection_join_imports_peer_seeds_into_local_snapshot() {
     assert_eq!(status["data"]["summary"]["status"], "network-paths-ready");
     assert_eq!(status["data"]["network"]["trusted_peer_seed_count"], 0);
     assert_eq!(status["data"]["network"]["peer_seed_count"], 2);
+}
+
+#[test]
+fn join_json_wraps_setup_and_surfaces_network_path_ready_state() {
+    let temp = TempDir::new().unwrap();
+    let primary_home = temp.path().join("primary-home");
+    let secondary_home = temp.path().join("secondary-home");
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
+    let connection_file = temp.path().join("device.connection.json");
+
+    run_bin_in_home(&["start", "--json"], &primary_home, &primary_dir);
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.observe_peer_address("12D3KooWAlpha", "/ip4/10.0.0.1/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.save(&primary_dir);
+
+    run_bin(
+        &[
+            "connection-export",
+            "--output",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &primary_dir,
+    );
+
+    let joined = run_bin_in_home(
+        &[
+            "join",
+            "--file",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &secondary_home,
+        &secondary_dir,
+    );
+
+    assert_eq!(joined["command"], "join");
+    assert_eq!(joined["data"]["summary"]["status"], "network-paths-ready");
+    assert_eq!(
+        joined["data"]["inspect"]["status"],
+        "identity-plus-peer-seeds"
+    );
+    assert_eq!(joined["data"]["readiness"]["status"], "network-paths-ready");
+    assert_eq!(joined["data"]["setup"]["healthy"], true);
 }
 
 #[test]
@@ -240,7 +325,10 @@ fn connection_export_prefers_trusted_peer_seeds() {
         ],
         &primary_dir,
     );
-    assert_eq!(inspected["data"]["summary"]["status"], "trusted-same-owner-ready");
+    assert_eq!(
+        inspected["data"]["summary"]["status"],
+        "trusted-same-owner-ready"
+    );
     assert_eq!(inspected["data"]["peer_seed_scope"], "trusted");
     assert_eq!(inspected["data"]["trusted_peer_seed_count"], 1);
     assert_eq!(inspected["data"]["peer_seed_count"], 1);
@@ -370,12 +458,7 @@ fn owner_bind_after_ownerless_connection_join_preserves_join_origin() {
         .to_string();
 
     let bound = run_bin(
-        &[
-            "owner-bind",
-            "--owner-account",
-            "oasyce1owner",
-            "--json",
-        ],
+        &["owner-bind", "--owner-account", "oasyce1owner", "--json"],
         &secondary_dir,
     );
     assert_eq!(bound["data"]["summary"]["owner_account"], "oasyce1owner");

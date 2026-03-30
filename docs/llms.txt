@@ -14,7 +14,7 @@ It is optimized for:
 
 curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
 npm install -g thronglets
-thronglets setup
+thronglets start
 
 ## Known Local Adapters
 
@@ -22,7 +22,11 @@ thronglets setup
 - Codex
 - OpenClaw
 
-`thronglets setup` configures known adapters, runs a bootstrap health pass, and reports restart / next-step guidance.
+`thronglets start` configures known adapters, runs a bootstrap health pass, and reports one next step.
+
+For a second device:
+
+thronglets join --file ./thronglets.connection.json
 
 ## Machine Bootstrap
 

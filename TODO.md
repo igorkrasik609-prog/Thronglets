@@ -9,6 +9,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 协议形态：`thronglets.bootstrap.v2`
 - 输出原则：`summary first, details second`
 - 身份边界：`device-first, owner-optional`；没有 Oasyce 也必须能先加入和使用，之后再平滑升级到 `owner -> device`
+- 默认用户入口：`start / join`；低层 `setup / connection-* / owner-bind / runtime-ready` 留给高级和调试场景
 
 下面只保留真正还值得做的事。
 
@@ -236,6 +237,20 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - `server.json`、官网、README、npm、Python 文案保持同版本一致
 - 普通用户默认不需要 Rust toolchain
 - 如果某个平台没有预编译资产，installer 也不能把用户静默送进源码编译
+
+### 11. Keep onboarding surfaces dumb-proof
+
+目标：普通用户只需要记住“第一台设备 start，第二台设备 join”。
+
+当前状态：
+- 已有高层 `thronglets start`
+- 已有高层 `thronglets join --file ...`
+- 它们内部复用现有 `setup / connection-* / status` primitives
+- 文档默认路径已切到 `start / join`
+
+剩余完成标准：
+- 把更多“等待 live connection / trusted same-owner recovery”的细节继续留在 summary 和 next_step 里
+- 低层命令继续保留给高级用户，但不再出现在默认路径的第一层
 
 ## Next
 

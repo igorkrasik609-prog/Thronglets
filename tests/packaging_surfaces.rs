@@ -100,8 +100,8 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
             "{path} regressed to the old 8-layer framing"
         );
         assert!(
-            content.contains("thronglets setup"),
-            "{path} should include the setup path"
+            content.contains("thronglets start") || content.contains("thronglets setup"),
+            "{path} should include the default onboarding path"
         );
     }
 
@@ -135,6 +135,21 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
         assert!(
             !install_regressed,
             "{path} should not present cargo install as the default user install path"
+        );
+    }
+
+    for (path, content) in [
+        ("README.md", read("README.md")),
+        ("README.en.md", read("README.en.md")),
+        ("llms.txt", read("llms.txt")),
+    ] {
+        assert!(
+            content.contains("thronglets start"),
+            "{path} should teach the high-level first-device flow"
+        );
+        assert!(
+            content.contains("thronglets join"),
+            "{path} should teach the high-level second-device flow"
         );
     }
 }

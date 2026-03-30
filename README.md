@@ -52,7 +52,7 @@ macOS / Linux：
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
 thronglets version --json
-thronglets setup
+thronglets start
 ```
 
 Windows PowerShell：
@@ -60,7 +60,7 @@ Windows PowerShell：
 ```powershell
 iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
 thronglets.exe version --json
-thronglets.exe setup
+thronglets.exe start
 ```
 
 如果本机已经有 Node.js，也可以统一用：
@@ -68,13 +68,25 @@ thronglets.exe setup
 ```bash
 npm install -g thronglets
 thronglets version --json
-thronglets setup
+thronglets start
 ```
 
-完成。`thronglets setup` 会自动安装本机已知适配器：
+完成。默认用户入口现在是：
+
+- 第一台设备：`thronglets start`
+- 第二台设备：`thronglets join --file ./thronglets.connection.json`
+
+`thronglets start` 会自动安装本机已知适配器：
 - **Claude Code**：自动写入 `PostToolUse / PreToolUse` hooks
 - **Codex**：自动安装当前 runtime 需要的 MCP 适配，并写入一段受管 `AGENTS` 记忆
 - **OpenClaw**：自动安装本地 path plugin，并写入 `~/.openclaw/openclaw.json`
+
+`thronglets join` 会自动做三件事：
+- 接好这台机器当前的 runtime
+- 验签并导入主设备导出的 connection file
+- 最后只返回这台机器当前是 `identity-only / network-paths-ready / network-ready`
+
+高级用户和调试时仍然可以直接使用 `setup / connection-inspect / connection-join / owner-bind`，但默认用户路径不再要求先理解这些内部命令。
 
 架构原则是：
 - 核心产品不是 MCP server，而是本地 substrate
@@ -86,7 +98,7 @@ thronglets setup
 
 ```bash
 cargo run --quiet -- version --json
-cargo run --quiet -- setup
+cargo run --quiet -- start
 ```
 
 这样 AI 读到的 README、当前 checkout 的代码、实际执行的命令会保持一致，不会因为 PATH 上旧版本 `thronglets` 造成自动化误判。
@@ -95,7 +107,7 @@ cargo run --quiet -- setup
 
 ```bash
 cargo run --quiet -- version --json
-cargo run --quiet -- setup
+cargo run --quiet -- start
 ```
 
 普通用户现在不应该再把 `cargo install thronglets` 当成主安装方式，尤其是 Windows。
@@ -108,7 +120,7 @@ cargo run --quiet -- setup
 
 这样你不需要在每次本地迭代后重新跑一遍 `setup`，adapter 会沿着稳定入口继续跟最新本地 build 走。
 
-`setup` 现在也会顺手做一次 bootstrap 健康检查，并直接给出 `restart required / next steps`。
+`start` 和底层 `setup` 一样，都会顺手做一次 bootstrap 健康检查，并直接给出 `restart required / next steps`。
 如果某个 adapter 需要客户端重启，后续 `doctor` 会显式返回 `restart-pending`，重启后再跑一次：
 
 ```bash
@@ -250,6 +262,23 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 - connection file 由主设备签名，次设备加入时会先验签
 - connection file 现在还会携带一小份 peer seeds，次设备加入后会先尝试这些已知 peer，再回退 bootstrap
 - 一旦次设备和主设备真正建立过 same-owner 的 live direct connection，这条路径会自动升格成 trusted peer seed；之后再导出的 connection file 就会自然升级成更稳的恢复路径
+
+默认用户路径现在建议直接用：
+
+```bash
+# 第一台设备
+thronglets start
+
+# 主设备导出文件
+thronglets connection-export --output ./thronglets.connection.json
+
+# 第二台设备
+thronglets join --file ./thronglets.connection.json
+```
+
+这条高层路径的含义是：
+- `start` = “这台机器先用起来”
+- `join` = “这台机器加入已有设备，并只告诉我现在好了没”
 
 当前本地 primitive 已经就位：
 
