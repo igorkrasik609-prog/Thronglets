@@ -98,6 +98,51 @@ fn start_json_surfaces_local_ready_for_first_device() {
 }
 
 #[test]
+fn share_json_defaults_to_desktop_connection_file_for_primary_device() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join("Desktop")).unwrap();
+    let data_dir = temp.path().join("data");
+
+    let shared = run_bin_in_home(&["share", "--json"], &home, &data_dir);
+
+    assert_eq!(shared["schema_version"], "thronglets.identity.v2");
+    assert_eq!(shared["command"], "share");
+    assert_eq!(shared["data"]["summary"]["status"], "share-limited");
+    assert_eq!(shared["data"]["readiness"]["status"], "identity-only");
+    assert_eq!(
+        shared["data"]["output"],
+        home.join("Desktop")
+            .join("thronglets.connection.json")
+            .display()
+            .to_string()
+    );
+}
+
+#[test]
+fn share_json_surfaces_peer_seed_ready_state() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join("Desktop")).unwrap();
+    let data_dir = temp.path().join("data");
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.observe_peer_address("12D3KooWAlpha", "/ip4/10.0.0.1/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.save(&data_dir);
+
+    let shared = run_bin_in_home(&["share", "--json"], &home, &data_dir);
+
+    assert_eq!(shared["data"]["summary"]["status"], "share-ready");
+    assert_eq!(
+        shared["data"]["readiness"]["status"],
+        "identity-plus-peer-seeds"
+    );
+    assert_eq!(shared["data"]["peer_seed_scope"], "remembered");
+    assert_eq!(shared["data"]["peer_seed_count"], 2);
+}
+
+#[test]
 fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     let temp = TempDir::new().unwrap();
     let primary_dir = temp.path().join("primary");

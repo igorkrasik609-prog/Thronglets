@@ -24,7 +24,7 @@ Your AI never calls Thronglets. It doesn't know it's there. It just makes better
 The normal user path should collapse to just these:
 
 - first device: `thronglets start`
-- primary device shares a connection file: `thronglets connection-export --output ~/Desktop/thronglets.connection.json`
+- primary device shares a connection file: `thronglets share`
 - second device: `thronglets join --file ./thronglets.connection.json`
 
 Day to day, only check:
@@ -91,6 +91,7 @@ thronglets start
 The default user entry points are now:
 
 - first device: `thronglets start`
+- primary device shares a connection file: `thronglets share`
 - secondary device: `thronglets join --file ./thronglets.connection.json`
 
 `thronglets start` auto-installs known local adapters:
@@ -103,7 +104,9 @@ The default user entry points are now:
 - verifies and imports the connection file exported by the primary device
 - returns only the resulting state for this device: `identity-only / network-paths-ready / network-ready`
 
-Advanced users can still call `setup / connection-inspect / connection-join / owner-bind` directly, but normal user onboarding should not require understanding those internal commands first.
+`thronglets share` writes the connection file to `~/Desktop/thronglets.connection.json` by default and tells you whether that file is still `identity-only`, already carries peer seeds, or has reached `trusted-same-owner-ready`.
+
+Advanced users can still call `setup / connection-export / connection-inspect / connection-join / owner-bind` directly, but normal user onboarding should not require understanding those internal commands first.
 
 Architecture principle:
 - the core product is not an MCP server; it is a local substrate
@@ -292,7 +295,7 @@ The default user path should now be:
 thronglets start
 
 # export from the primary device
-thronglets connection-export --output ./thronglets.connection.json
+thronglets share
 
 # second device
 thronglets join --file ./thronglets.connection.json
@@ -307,7 +310,7 @@ The local primitives for that flow are now in place:
 ```bash
 thronglets id
 thronglets owner-bind --owner-account oasyce1...
-thronglets connection-export --output ./thronglets.connection.json
+thronglets share
 thronglets connection-inspect --file ./thronglets.connection.json --json
 thronglets connection-join --file ./thronglets.connection.json
 ```

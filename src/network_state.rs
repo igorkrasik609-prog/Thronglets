@@ -89,6 +89,7 @@ impl NetworkSnapshot {
 
     pub fn save(&self, data_dir: &Path) {
         let path = Self::status_path(data_dir);
+        let _ = std::fs::create_dir_all(data_dir);
         if let Ok(raw) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, raw);
         }

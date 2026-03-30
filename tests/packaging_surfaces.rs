@@ -151,6 +151,10 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
             content.contains("thronglets join"),
             "{path} should teach the high-level second-device flow"
         );
+        assert!(
+            content.contains("thronglets share"),
+            "{path} should teach the high-level primary-device sharing flow"
+        );
     }
 }
 

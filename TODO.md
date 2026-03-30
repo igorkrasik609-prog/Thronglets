@@ -9,7 +9,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 协议形态：`thronglets.bootstrap.v2`
 - 输出原则：`summary first, details second`
 - 身份边界：`device-first, owner-optional`；没有 Oasyce 也必须能先加入和使用，之后再平滑升级到 `owner -> device`
-- 默认用户入口：`start / join`；低层 `setup / connection-* / owner-bind / runtime-ready` 留给高级和调试场景
+- 默认用户入口：`start / share / join / status`；低层 `setup / connection-* / owner-bind / runtime-ready` 留给高级和调试场景
 - 首要产品约束：人的认知负担和热路径 token 一样，都是性能预算
 - 协作主线：共享环境优先于 AI 互发消息；`space / presence / signal / space snapshot` 是主原语，不做 chat/inbox 作为默认模型
 
@@ -89,19 +89,24 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 
 ### 0. Dumb-proof onboarding
 
-目标：普通用户只需要记住“第一台设备 start，第二台设备 join，平时只看 status”。
+目标：普通用户只需要记住“第一台设备 start，主设备 share，第二台设备 join，平时只看 status”。
 
 当前状态：
 - 预编译安装已经是默认主路径
 - 高层 `thronglets start`
+- 高层 `thronglets share`
 - 高层 `thronglets join --file ...`
 - `status` 已经能返回一个顶层结果和一个 `next_step`
 
 剩余完成标准：
-- 主设备也应有高层分享入口，不再要求普通用户记住 `connection-export`
+- 主设备分享入口默认落到明确的标准文件路径，不要求普通用户自己决定输出文件名
 - 默认用户路径里继续隐藏 `setup / owner-bind / connection-inspect / net-check / runtime-ready`
 - `status` 对普通用户只保留“现在好了没、还差哪一步”，把内部状态继续压到诊断层
 - 文档、AI 指南、安装面不能再漂回“先解释底层模型再让用户操作”
+- 正常设备配对应该能被压成一句话：
+  - 第一台设备：`thronglets start`
+  - 主设备：`thronglets share`
+  - 第二台设备：`thronglets join --file ./thronglets.connection.json`
 
 ### 1. Shared space continuity
 

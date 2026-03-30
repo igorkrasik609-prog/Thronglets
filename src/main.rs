@@ -50,6 +50,7 @@ const NETWORK_SCHEMA_VERSION: &str = "thronglets.network.v1";
 const PRESENCE_SCHEMA_VERSION: &str = "thronglets.presence.v1";
 const SPACE_SCHEMA_VERSION: &str = "thronglets.space.v1";
 const VERSION_SCHEMA_VERSION: &str = "thronglets.version.v1";
+const DEFAULT_CONNECTION_FILE_NAME: &str = "thronglets.connection.json";
 const RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP: i32 = 50;
 const RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP: i32 = 50;
 const RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS: i64 = 5_000;
@@ -103,6 +104,18 @@ struct JoinFlowData {
     readiness: ReadinessSummary,
     identity: IdentitySummary,
     file: String,
+}
+
+#[derive(Serialize)]
+struct ShareFlowData {
+    summary: OnboardingSummary,
+    readiness: ReadinessSummary,
+    identity: IdentitySummary,
+    output: String,
+    peer_seed_scope: &'static str,
+    trusted_peer_seed_count: usize,
+    peer_seed_count: usize,
+    ttl_hours: u32,
 }
 
 #[derive(Serialize)]
@@ -529,6 +542,21 @@ enum Commands {
 
     /// One-command first-device setup.
     Start {
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// One-command primary-device share flow.
+    Share {
+        /// Where to write the connection file. Defaults to ~/Desktop/thronglets.connection.json.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// How long the exported connection file should remain valid.
+        #[arg(long, default_value_t = DEFAULT_CONNECTION_FILE_TTL_HOURS)]
+        ttl_hours: u32,
+
         /// Emit machine-readable JSON instead of text.
         #[arg(long, default_value_t = false)]
         json: bool,
@@ -1299,6 +1327,36 @@ fn summarize_join_flow(
     }
 }
 
+fn summarize_share_flow(readiness: &ReadinessSummary, output: &Path) -> OnboardingSummary {
+    match readiness.status {
+        "trusted-same-owner-ready" => OnboardingSummary {
+            status: "share-ready",
+            detail: "This device exported a strong same-owner connection file. The next device should inherit identity plus a trusted recovery path.".into(),
+            next_step: Some(format!(
+                "Send {} to the second device, then run `thronglets join --file {}` there.",
+                output.display(),
+                output.display()
+            )),
+        },
+        "identity-plus-peer-seeds" => OnboardingSummary {
+            status: "share-ready",
+            detail: "This device exported a usable connection file with remembered peer paths. The next device should inherit identity plus reusable network paths.".into(),
+            next_step: Some(format!(
+                "Send {} to the second device, then run `thronglets join --file {}` there.",
+                output.display(),
+                output.display()
+            )),
+        },
+        _ => OnboardingSummary {
+            status: "share-limited",
+            detail: "This device exported a connection file, but it only carries identity right now. A second device can join the same identity, but may still start offline.".into(),
+            next_step: Some(
+                "Keep this device online until it learns peers, then run `thronglets share` again before onboarding the second device.".into(),
+            ),
+        },
+    }
+}
+
 fn collect_status_data(
     dir: &Path,
     identity: &NodeIdentity,
@@ -1364,6 +1422,87 @@ fn render_join_flow_report(data: &JoinFlowData) {
     println!("  Inspect: {}", data.inspect.status);
     println!("  Ready:   {}", data.readiness.status);
     println!("  Device:  {}", data.identity.device_identity);
+}
+
+fn render_share_flow_report(data: &ShareFlowData) {
+    println!("Thronglets share: {}", data.summary.status);
+    println!("  Meaning: {}", data.summary.detail);
+    println!("  Output:  {}", data.output);
+    println!("  Ready:   {}", data.readiness.status);
+    println!("  Seeds:   {}", data.peer_seed_scope);
+    println!(
+        "  Count:   {} trusted / {} total",
+        data.trusted_peer_seed_count, data.peer_seed_count
+    );
+    if let Some(step) = &data.summary.next_step {
+        println!("  Next:    {step}");
+    }
+}
+
+fn default_share_output_path() -> PathBuf {
+    let desktop = home_dir().join("Desktop");
+    if desktop.exists() {
+        desktop.join(DEFAULT_CONNECTION_FILE_NAME)
+    } else {
+        PathBuf::from(DEFAULT_CONNECTION_FILE_NAME)
+    }
+}
+
+fn export_connection_file(
+    output: &Path,
+    ttl_hours: u32,
+    identity_binding: &IdentityBinding,
+    identity: &NodeIdentity,
+    dir: &Path,
+) -> ConnectionExportData {
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).expect("failed to create connection file directory");
+    }
+    let network_snapshot = thronglets::network_state::NetworkSnapshot::load(dir);
+    let trusted_peer_seeds = network_snapshot.trusted_peer_seed_addresses(16);
+    let (peer_seed_scope, peer_seeds) = if trusted_peer_seeds.is_empty() {
+        (
+            ConnectionSeedScope::Remembered,
+            network_snapshot.peer_seed_addresses(16),
+        )
+    } else {
+        (ConnectionSeedScope::Trusted, trusted_peer_seeds)
+    };
+    let connection = ConnectionFile::from_binding(
+        identity_binding,
+        identity,
+        ttl_hours,
+        peer_seed_scope,
+        peer_seeds,
+    )
+    .expect("failed to create connection file");
+    connection
+        .save(output)
+        .expect("failed to write connection file");
+    let exported_trusted_peer_seed_count = match connection.peer_seed_scope {
+        ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
+        ConnectionSeedScope::Remembered => 0,
+    };
+    let peer_seed_scope = connection.peer_seed_scope_label();
+    let readiness = connection_readiness_summary(
+        connection.peer_seed_scope.clone(),
+        connection.peer_seeds.len(),
+        "export",
+    );
+    ConnectionExportData {
+        summary: readiness,
+        identity: identity_summary("exported", identity_binding),
+        output: output.display().to_string(),
+        primary_device_pubkey: connection.primary_device_pubkey.clone(),
+        signed_by_device: connection.primary_device_identity.clone(),
+        peer_seed_scope,
+        trusted_peer_seed_count: exported_trusted_peer_seed_count,
+        peer_seed_count: connection.peer_seeds.len(),
+        ttl_hours: connection.ttl_hours(),
+        expires_at: connection.expires_at,
+    }
 }
 
 #[cfg(test)]
@@ -2763,6 +2902,31 @@ async fn main() {
             }
         }
 
+        Commands::Share {
+            output,
+            ttl_hours,
+            json,
+        } => {
+            let output = output.unwrap_or_else(default_share_output_path);
+            let exported =
+                export_connection_file(&output, ttl_hours, &identity_binding, &identity, &dir);
+            let data = ShareFlowData {
+                summary: summarize_share_flow(&exported.summary, &output),
+                readiness: exported.summary,
+                identity: exported.identity,
+                output: exported.output,
+                peer_seed_scope: exported.peer_seed_scope,
+                trusted_peer_seed_count: exported.trusted_peer_seed_count,
+                peer_seed_count: exported.peer_seed_count,
+                ttl_hours: exported.ttl_hours,
+            };
+            if json {
+                print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "share", &data);
+            } else {
+                render_share_flow_report(&data);
+            }
+        }
+
         Commands::Join { file, json } => {
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
             let home_dir = home_dir();
@@ -2871,49 +3035,8 @@ async fn main() {
             ttl_hours,
             json,
         } => {
-            let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
-            let trusted_peer_seeds = network_snapshot.trusted_peer_seed_addresses(16);
-            let (peer_seed_scope, peer_seeds) = if trusted_peer_seeds.is_empty() {
-                (
-                    ConnectionSeedScope::Remembered,
-                    network_snapshot.peer_seed_addresses(16),
-                )
-            } else {
-                (ConnectionSeedScope::Trusted, trusted_peer_seeds)
-            };
-            let connection = ConnectionFile::from_binding(
-                &identity_binding,
-                &identity,
-                ttl_hours,
-                peer_seed_scope,
-                peer_seeds,
-            )
-            .expect("failed to create connection file");
-            connection
-                .save(&output)
-                .expect("failed to write connection file");
-            let exported_trusted_peer_seed_count = match connection.peer_seed_scope {
-                ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
-                ConnectionSeedScope::Remembered => 0,
-            };
-            let peer_seed_scope = connection.peer_seed_scope_label();
-            let readiness = connection_readiness_summary(
-                connection.peer_seed_scope.clone(),
-                connection.peer_seeds.len(),
-                "export",
-            );
-            let data = ConnectionExportData {
-                summary: readiness,
-                identity: identity_summary("exported", &identity_binding),
-                output: output.display().to_string(),
-                primary_device_pubkey: connection.primary_device_pubkey.clone(),
-                signed_by_device: connection.primary_device_identity.clone(),
-                peer_seed_scope,
-                trusted_peer_seed_count: exported_trusted_peer_seed_count,
-                peer_seed_count: connection.peer_seeds.len(),
-                ttl_hours: connection.ttl_hours(),
-                expires_at: connection.expires_at,
-            };
+            let data =
+                export_connection_file(&output, ttl_hours, &identity_binding, &identity, &dir);
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "connection-export", &data);
             } else {

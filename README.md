@@ -24,7 +24,7 @@ AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出
 正常用户路径应该只有这 3 件事：
 
 - 第一台设备：`thronglets start`
-- 主设备分享连接文件：`thronglets connection-export --output ~/Desktop/thronglets.connection.json`
+- 主设备分享连接文件：`thronglets share`
 - 第二台设备：`thronglets join --file ./thronglets.connection.json`
 
 日常只看：
@@ -91,6 +91,7 @@ thronglets start
 完成。默认用户入口现在是：
 
 - 第一台设备：`thronglets start`
+- 主设备分享连接文件：`thronglets share`
 - 第二台设备：`thronglets join --file ./thronglets.connection.json`
 
 `thronglets start` 会自动安装本机已知适配器：
@@ -103,7 +104,9 @@ thronglets start
 - 验签并导入主设备导出的 connection file
 - 最后只返回这台机器当前是 `identity-only / network-paths-ready / network-ready`
 
-高级用户和调试时仍然可以直接使用 `setup / connection-inspect / connection-join / owner-bind`，但默认用户路径不再要求先理解这些内部命令。
+`thronglets share` 默认会把连接文件写到 `~/Desktop/thronglets.connection.json`，并直接告诉你这份文件现在只是 `identity-only`、已经带 `peer seeds`，还是已经到了 `trusted-same-owner-ready`。
+
+高级用户和调试时仍然可以直接使用 `setup / connection-export / connection-inspect / connection-join / owner-bind`，但默认用户路径不再要求先理解这些内部命令。
 
 架构原则是：
 - 核心产品不是 MCP server，而是本地 substrate
@@ -291,7 +294,7 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 thronglets start
 
 # 主设备导出文件
-thronglets connection-export --output ./thronglets.connection.json
+thronglets share
 
 # 第二台设备
 thronglets join --file ./thronglets.connection.json
@@ -306,7 +309,7 @@ thronglets join --file ./thronglets.connection.json
 ```bash
 thronglets id
 thronglets owner-bind --owner-account oasyce1...
-thronglets connection-export --output ./thronglets.connection.json
+thronglets share
 thronglets connection-inspect --file ./thronglets.connection.json --json
 thronglets connection-join --file ./thronglets.connection.json
 ```
