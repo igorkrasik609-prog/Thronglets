@@ -208,6 +208,7 @@ thronglets connection-join --file ./thronglets.connection.json
 - `connection-export / connection-join` 是主路径，并且默认验证主设备签名
 - `connection-export` 默认导出 `24h` 有效的 connection file，可用 `--ttl-hours` 调整；`connection-join` 会同时验证签名和过期时间
 - `connection-export` 会把最近观察到的 peer 地址一起写进 connection file；`connection-join` 会把这些 seeds 当作 `trusted peer seeds` 合并进本地 network snapshot，并在启动时优先于普通 peer seeds 拨号
+- 当本地已经记住 peers 时，`run / mcp` 会先尝试这些 remembered peers，只在短暂 grace period 后才回退到 bootstrap；VPS 不再是每次启动的默认第一跳
 - `owner-bind` 和 `connection-join` 默认都不会静默覆盖成另一个 `owner account`
 - OpenClaw 插件现在会在成功加载后自动执行 `runtime-ready`，所以用户通常只需要 `bootstrap -> 重启一次 OpenClaw`
 

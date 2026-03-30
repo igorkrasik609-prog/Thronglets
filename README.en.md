@@ -208,6 +208,7 @@ thronglets connection-join --file ./thronglets.connection.json
 - `connection-export / connection-join` are the primary onboarding path and verify the primary-device signature by default
 - `connection-export` now emits a `24h` connection file by default and supports `--ttl-hours`; `connection-join` verifies both signature and expiry
 - `connection-export` now includes recently observed peer addresses, and `connection-join` imports those addresses as `trusted peer seeds` so startup dials them before generic peer seeds
+- when remembered peers already exist, `run / mcp` now try those peers first and only fall back to bootstrap after a short grace period; VPS is no longer the unconditional first touch on every startup
 - `owner-bind` and `connection-join` both refuse to silently overwrite an existing different `owner account`
 - the OpenClaw plugin now auto-runs `runtime-ready` after a successful load, so users usually only need `bootstrap -> restart OpenClaw once`
 

@@ -14,6 +14,24 @@ fn free_loopback_port() -> u16 {
     listener.local_addr().expect("local addr").port()
 }
 
+async fn wait_for_peer_connection(
+    event_rx: &mut tokio::sync::mpsc::Receiver<NetworkEvent>,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        tokio::select! {
+            Some(event) = event_rx.recv() => {
+                if matches!(event, NetworkEvent::PeerConnected { .. }) {
+                    return true;
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+    false
+}
+
 #[tokio::test]
 async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     // Initialize tracing for test output
@@ -28,10 +46,13 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     // --- Node A ---
     let id_a = NodeIdentity::generate();
     let mut secret_a = id_a.secret_key_bytes();
-    let keypair_a = libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_a)
-        .expect("keypair A");
+    let keypair_a =
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_a).expect("keypair A");
     let peer_id_a = libp2p::PeerId::from(keypair_a.public());
-    let config_a = NetworkConfig { listen_port: port_a, ..Default::default() };
+    let config_a = NetworkConfig {
+        listen_port: port_a,
+        ..Default::default()
+    };
     let (cmd_tx_a, mut event_rx_a) = thronglets::network::start(keypair_a, config_a)
         .await
         .expect("start node A");
@@ -39,12 +60,11 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     // --- Node B ---
     let id_b = NodeIdentity::generate();
     let mut secret_b = id_b.secret_key_bytes();
-    let keypair_b = libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_b)
-        .expect("keypair B");
-    let bootstrap_a: libp2p::Multiaddr =
-        format!("/ip4/127.0.0.1/tcp/{port_a}/p2p/{peer_id_a}")
-            .parse()
-            .expect("bootstrap addr");
+    let keypair_b =
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_b).expect("keypair B");
+    let bootstrap_a: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_a}/p2p/{peer_id_a}")
+        .parse()
+        .expect("bootstrap addr");
     let config_b = NetworkConfig {
         listen_port: port_b,
         bootstrap_peers: vec![bootstrap_a],
@@ -76,7 +96,10 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
         }
     }
 
-    assert!(a_found_b, "Node A should observe the bootstrap connection from Node B");
+    assert!(
+        a_found_b,
+        "Node A should observe the bootstrap connection from Node B"
+    );
     assert!(b_found_a, "Node B should connect to Node A via bootstrap");
 
     // Give gossipsub mesh time to form
@@ -127,7 +150,10 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     assert_eq!(received.latency_ms, 42);
     assert_eq!(received.input_size, 1000);
     assert_eq!(received.model_id, "test-model");
-    assert!(received.verify(), "Received trace signature should be valid");
+    assert!(
+        received.verify(),
+        "Received trace signature should be valid"
+    );
     assert!(received.verify_id(), "Received trace ID should be valid");
 
     // Store it and check aggregation
@@ -140,4 +166,78 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     // Cleanup
     drop(cmd_tx_a);
     drop(cmd_tx_b);
+}
+
+#[tokio::test]
+async fn node_reconnects_via_known_peer_without_bootstrap() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("thronglets=debug")
+        .with_test_writer()
+        .try_init();
+
+    let port_a = free_loopback_port();
+    let port_b = free_loopback_port();
+
+    let id_a = NodeIdentity::generate();
+    let mut secret_a = id_a.secret_key_bytes();
+    let keypair_a =
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_a).expect("keypair A");
+    let peer_id_a = libp2p::PeerId::from(keypair_a.public());
+    let config_a = NetworkConfig {
+        listen_port: port_a,
+        ..Default::default()
+    };
+    let (cmd_tx_a, mut event_rx_a) = thronglets::network::start(keypair_a, config_a)
+        .await
+        .expect("start node A");
+
+    let id_b = NodeIdentity::generate();
+    let mut secret_b = id_b.secret_key_bytes();
+    let keypair_b =
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_b).expect("keypair B");
+    let bootstrap_a: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_a}/p2p/{peer_id_a}")
+        .parse()
+        .expect("bootstrap addr");
+    let config_b = NetworkConfig {
+        listen_port: port_b,
+        bootstrap_peers: vec![bootstrap_a.clone()],
+        known_peers: Vec::new(),
+    };
+    let (cmd_tx_b, mut event_rx_b) = thronglets::network::start(keypair_b, config_b)
+        .await
+        .expect("start node B");
+
+    assert!(
+        wait_for_peer_connection(&mut event_rx_a, Duration::from_secs(10)).await,
+        "Node A should observe the bootstrap connection from Node B"
+    );
+    assert!(
+        wait_for_peer_connection(&mut event_rx_b, Duration::from_secs(10)).await,
+        "Node B should connect to Node A via bootstrap"
+    );
+
+    drop(cmd_tx_b);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let id_b_restarted = NodeIdentity::generate();
+    let mut secret_b_restarted = id_b_restarted.secret_key_bytes();
+    let keypair_b_restarted =
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_b_restarted)
+            .expect("keypair B restarted");
+    let config_b_restarted = NetworkConfig {
+        listen_port: port_b,
+        bootstrap_peers: Vec::new(),
+        known_peers: vec![bootstrap_a],
+    };
+    let (_cmd_tx_b_restarted, mut event_rx_b_restarted) =
+        thronglets::network::start(keypair_b_restarted, config_b_restarted)
+            .await
+            .expect("restart node B");
+
+    assert!(
+        wait_for_peer_connection(&mut event_rx_b_restarted, Duration::from_secs(10)).await,
+        "Restarted node B should reconnect to Node A using known peers without bootstrap"
+    );
+
+    drop(cmd_tx_a);
 }

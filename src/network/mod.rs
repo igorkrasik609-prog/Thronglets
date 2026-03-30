@@ -5,17 +5,17 @@
 //! - Propagates traces via gossipsub
 //! - Stores received traces locally after verification
 
-use libp2p::{
-    gossipsub, identify, kad, mdns, noise,
-    swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
-};
 use libp2p::futures::StreamExt;
-use std::collections::{hash_map::DefaultHasher, HashSet};
+use libp2p::{
+    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, kad, mdns, noise,
+    swarm::{NetworkBehaviour, SwarmEvent},
+    tcp, yamux,
+};
+use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::storage::AggregateStats;
 use crate::trace::Trace;
@@ -25,6 +25,7 @@ const TRACE_TOPIC: &str = "thronglets/traces/v1";
 
 /// DHT key prefix for capability summaries.
 const DHT_CAP_PREFIX: &str = "/thronglets/cap/v1/";
+const BOOTSTRAP_FALLBACK_DELAY: Duration = Duration::from_secs(5);
 
 /// Events emitted by the network layer to the node runtime.
 #[derive(Debug)]
@@ -35,10 +36,7 @@ pub enum NetworkEvent {
         address: Option<Multiaddr>,
     },
     /// A peer address was observed and can be reused as a future seed.
-    PeerObserved {
-        peer_id: PeerId,
-        address: Multiaddr,
-    },
+    PeerObserved { peer_id: PeerId, address: Multiaddr },
     /// A peer disconnected.
     PeerDisconnected(PeerId),
     /// A trace was received from the network (already deserialized).
@@ -100,10 +98,8 @@ pub struct NetworkConfig {
 pub async fn start(
     keypair: libp2p::identity::Keypair,
     config: NetworkConfig,
-) -> Result<
-    (mpsc::Sender<NetworkCommand>, mpsc::Receiver<NetworkEvent>),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(mpsc::Sender<NetworkCommand>, mpsc::Receiver<NetworkEvent>), Box<dyn std::error::Error>>
+{
     let local_peer_id = PeerId::from(keypair.public());
     info!(%local_peer_id, "Starting Thronglets network node");
 
@@ -119,9 +115,11 @@ pub async fn start(
         .message_id_fn(message_id_fn)
         .build()
         .map_err(|e| format!("gossipsub config error: {e}"))?;
-    let mut gossipsub_behaviour =
-        gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(keypair.clone()), gossipsub_config)
-            .map_err(|e| format!("gossipsub behaviour error: {e}"))?;
+    let mut gossipsub_behaviour = gossipsub::Behaviour::new(
+        gossipsub::MessageAuthenticity::Signed(keypair.clone()),
+        gossipsub_config,
+    )
+    .map_err(|e| format!("gossipsub behaviour error: {e}"))?;
 
     // Subscribe to the trace topic
     let topic = gossipsub::IdentTopic::new(TRACE_TOPIC);
@@ -161,20 +159,8 @@ pub async fn start(
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", config.listen_port).parse()?;
     swarm.listen_on(listen_addr)?;
 
-    // Connect to remembered peers first, then bootstrap peers.
-    for addr in &config.known_peers {
-        info!(%addr, "Dialing known peer");
-        if let Err(e) = swarm.dial(addr.clone()) {
-            warn!(%addr, %e, "Failed to dial known peer");
-        }
-    }
-
-    for addr in &config.bootstrap_peers {
-        info!(%addr, "Dialing bootstrap peer");
-        if let Err(e) = swarm.dial(addr.clone()) {
-            warn!(%addr, %e, "Failed to dial bootstrap peer");
-        }
-    }
+    let mut bootstrap_fallback_at =
+        dial_peer_first(&mut swarm, &config.known_peers, &config.bootstrap_peers);
 
     // Channels
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(256);
@@ -183,7 +169,10 @@ pub async fn start(
     // Pending DHT query replies
     let mut pending_dht_queries: std::collections::HashMap<
         kad::QueryId,
-        (String, tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>),
+        (
+            String,
+            tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>,
+        ),
     > = std::collections::HashMap::new();
     let mut connected_peers: HashSet<PeerId> = HashSet::new();
 
@@ -192,6 +181,18 @@ pub async fn start(
         loop {
             tokio::select! {
                 // Handle swarm events
+                _ = async {
+                    if let Some(deadline) = bootstrap_fallback_at {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    if connected_peers.is_empty() && !config.bootstrap_peers.is_empty() {
+                        dial_bootstrap_peers(&mut swarm, &config.bootstrap_peers);
+                    }
+                    bootstrap_fallback_at = None;
+                }
                 event = swarm.select_next_some() => {
                     match event {
                         SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Gossipsub(
@@ -240,6 +241,7 @@ pub async fn start(
                             ..
                         } => {
                             if connected_peers.insert(peer_id) {
+                                bootstrap_fallback_at = None;
                                 debug!(%peer_id, "Connection established");
                                 let remote_address = endpoint.get_remote_address().clone();
                                 let _ = event_tx
@@ -259,6 +261,13 @@ pub async fn start(
                         SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
                             if num_established == 0 && connected_peers.remove(&peer_id) {
                                 debug!(%peer_id, "Connection closed");
+                                if connected_peers.is_empty() {
+                                    bootstrap_fallback_at = dial_peer_first(
+                                        &mut swarm,
+                                        &config.known_peers,
+                                        &config.bootstrap_peers,
+                                    );
+                                }
                                 let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
                             }
                         }
@@ -368,4 +377,78 @@ pub async fn start(
     });
 
     Ok((cmd_tx, event_rx))
+}
+
+fn dial_peer_first(
+    swarm: &mut libp2p::Swarm<ThrongletsNetworkBehaviour>,
+    known_peers: &[Multiaddr],
+    bootstrap_peers: &[Multiaddr],
+) -> Option<tokio::time::Instant> {
+    dial_known_peers(swarm, known_peers);
+    bootstrap_fallback_delay(known_peers.len(), bootstrap_peers.len()).and_then(|delay| {
+        if delay.is_zero() {
+            dial_bootstrap_peers(swarm, bootstrap_peers);
+            None
+        } else {
+            Some(tokio::time::Instant::now() + delay)
+        }
+    })
+}
+
+fn dial_known_peers(
+    swarm: &mut libp2p::Swarm<ThrongletsNetworkBehaviour>,
+    known_peers: &[Multiaddr],
+) {
+    for addr in known_peers {
+        info!(%addr, "Dialing known peer");
+        if let Err(e) = swarm.dial(addr.clone()) {
+            warn!(%addr, %e, "Failed to dial known peer");
+        }
+    }
+}
+
+fn dial_bootstrap_peers(
+    swarm: &mut libp2p::Swarm<ThrongletsNetworkBehaviour>,
+    bootstrap_peers: &[Multiaddr],
+) {
+    for addr in bootstrap_peers {
+        info!(%addr, "Dialing bootstrap peer");
+        if let Err(e) = swarm.dial(addr.clone()) {
+            warn!(%addr, %e, "Failed to dial bootstrap peer");
+        }
+    }
+}
+
+fn bootstrap_fallback_delay(
+    known_peer_count: usize,
+    bootstrap_peer_count: usize,
+) -> Option<Duration> {
+    if bootstrap_peer_count == 0 {
+        None
+    } else if known_peer_count == 0 {
+        Some(Duration::ZERO)
+    } else {
+        Some(BOOTSTRAP_FALLBACK_DELAY)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bootstrap_fallback_delay;
+    use std::time::Duration;
+
+    #[test]
+    fn bootstrap_is_immediate_without_known_peers() {
+        assert_eq!(bootstrap_fallback_delay(0, 1), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn bootstrap_is_delayed_when_known_peers_exist() {
+        assert_eq!(bootstrap_fallback_delay(2, 1), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn bootstrap_is_disabled_without_targets() {
+        assert_eq!(bootstrap_fallback_delay(2, 0), None);
+    }
 }
