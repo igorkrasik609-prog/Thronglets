@@ -4,7 +4,7 @@
 
 # Thronglets
 
-AI agent 的本地 substrate。当前 release 是 `v0.4.4`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
+AI agent 的本地 substrate。当前 release 是 `v0.4.5`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
 
 ## 你的 AI 看到了什么（真实输出）
 

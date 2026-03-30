@@ -1,6 +1,6 @@
 # TODO
 
-Thronglets 现在的主线已经明确（当前 release: `v0.4.4`）：
+Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 
 - 产品形态：`AI-first decision substrate`
 - 接入形态：`one-command setup + machine bootstrap contract`
