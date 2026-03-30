@@ -279,6 +279,7 @@ struct NetCheckItem {
 
 #[derive(Serialize)]
 struct NetCheckSummary {
+    scenario: &'static str,
     status: &'static str,
     peer_first_ready: bool,
     bootstrap_offline_ready: bool,
@@ -822,6 +823,10 @@ enum Commands {
         /// Emit machine-readable JSON instead of text.
         #[arg(long, default_value_t = false)]
         json: bool,
+
+        /// Evaluate the node as if bootstrap / VPS were unavailable right now.
+        #[arg(long, default_value_t = false)]
+        bootstrap_offline: bool,
     },
 
     /// Show node status and statistics
@@ -1280,23 +1285,47 @@ fn render_presence_feed_results(results: &[PresenceFeedResult]) {
     }
 }
 
-fn summarize_net_check(status: &thronglets::network_state::NetworkStatus) -> NetCheckData {
+fn summarize_net_check_for_scenario(
+    status: &thronglets::network_state::NetworkStatus,
+    bootstrap_offline: bool,
+) -> NetCheckData {
+    let scenario = if bootstrap_offline {
+        "bootstrap-offline"
+    } else {
+        "live"
+    };
+    let bootstrap_targets = if bootstrap_offline {
+        0
+    } else {
+        status.bootstrap_targets
+    };
+    let bootstrap_fallback_mode = if bootstrap_offline {
+        "disabled"
+    } else {
+        status.bootstrap_fallback_mode
+    };
+    let vps_dependency_level = if bootstrap_offline {
+        if status.peer_count > 0 {
+            "peer-native"
+        } else {
+            "offline"
+        }
+    } else {
+        status.vps_dependency_level
+    };
     let direct_connectivity = matches!(status.transport_mode, "direct" | "mixed");
     let remembered_peers = status.known_peer_count > 0 || status.peer_seed_count > 0;
     let trusted_path = status.trusted_peer_seed_count > 0;
-    let bootstrap_offline_ready = status.bootstrap_targets == 0
-        || (remembered_peers && matches!(status.bootstrap_fallback_mode, "delayed" | "disabled"));
-    let low_vps_dependence = matches!(
-        status.vps_dependency_level,
-        "peer-native" | "low" | "medium"
-    );
+    let bootstrap_offline_ready = bootstrap_targets == 0
+        || (remembered_peers && matches!(bootstrap_fallback_mode, "delayed" | "disabled"));
+    let low_vps_dependence = matches!(vps_dependency_level, "peer-native" | "low" | "medium");
     let peer_first_ready = status.peer_count > 0 && direct_connectivity && low_vps_dependence;
 
     let status_label = if peer_first_ready {
         "peer-first"
-    } else if status.peer_count == 0 && status.bootstrap_targets > 0 {
+    } else if status.peer_count == 0 && bootstrap_targets > 0 {
         "bootstrap-only"
-    } else if status.peer_count == 0 && !remembered_peers && status.bootstrap_targets == 0 {
+    } else if status.peer_count == 0 && !remembered_peers && bootstrap_targets == 0 {
         "offline"
     } else {
         "degraded"
@@ -1341,7 +1370,7 @@ fn summarize_net_check(status: &thronglets::network_state::NetworkStatus) -> Net
             detail: if bootstrap_offline_ready {
                 format!(
                     "Current bootstrap fallback mode is {}; this node has a non-bootstrap reconnect path.",
-                    status.bootstrap_fallback_mode
+                    bootstrap_fallback_mode
                 )
             } else {
                 "If bootstrap vanished now, this node would still start from bootstrap immediately because it lacks remembered peer paths.".into()
@@ -1350,10 +1379,7 @@ fn summarize_net_check(status: &thronglets::network_state::NetworkStatus) -> Net
         NetCheckItem {
             name: "vps-dependence",
             ok: low_vps_dependence,
-            detail: format!(
-                "Current VPS dependency level is {}.",
-                status.vps_dependency_level
-            ),
+            detail: format!("Current VPS dependency level is {}.", vps_dependency_level),
         },
     ];
 
@@ -1373,7 +1399,7 @@ fn summarize_net_check(status: &thronglets::network_state::NetworkStatus) -> Net
             "For same-owner devices, refresh a connection file so this node learns trusted peer seeds before falling back to generic discovery.".into(),
         );
     }
-    if status.peer_count == 0 && status.bootstrap_targets == 0 {
+    if status.peer_count == 0 && bootstrap_targets == 0 {
         next_steps.push(
             "Add at least one bootstrap target or join an existing owner/device network before expecting peer discovery.".into(),
         );
@@ -1387,7 +1413,7 @@ fn summarize_net_check(status: &thronglets::network_state::NetworkStatus) -> Net
             "Current traffic is relayed; prefer same-owner connection files or local peers to establish direct links.".into(),
         );
     }
-    if matches!(status.vps_dependency_level, "high" | "bootstrap-only") {
+    if matches!(vps_dependency_level, "high" | "bootstrap-only") {
         next_steps.push(
             "The network is still VPS-heavy; grow remembered peers so startup can reconnect directly before using bootstrap.".into(),
         );
@@ -1397,16 +1423,17 @@ fn summarize_net_check(status: &thronglets::network_state::NetworkStatus) -> Net
 
     NetCheckData {
         summary: NetCheckSummary {
+            scenario,
             status: status_label,
             peer_first_ready,
             bootstrap_offline_ready,
             transport_mode: status.transport_mode,
-            vps_dependency_level: status.vps_dependency_level,
-            bootstrap_fallback_mode: status.bootstrap_fallback_mode,
+            vps_dependency_level,
+            bootstrap_fallback_mode,
             peer_count: status.peer_count,
             trusted_peer_seed_count: status.trusted_peer_seed_count,
             peer_seed_count: status.peer_seed_count,
-            bootstrap_targets: status.bootstrap_targets,
+            bootstrap_targets,
         },
         checks,
         next_steps,
@@ -1414,7 +1441,10 @@ fn summarize_net_check(status: &thronglets::network_state::NetworkStatus) -> Net
 }
 
 fn render_net_check(data: &NetCheckData) {
-    println!("Network check: {}", data.summary.status);
+    println!(
+        "Network check: {} ({})",
+        data.summary.status, data.summary.scenario
+    );
     println!(
         "Peer-first ready: {}",
         if data.summary.peer_first_ready {
@@ -3540,9 +3570,12 @@ async fn main() {
             }
         }
 
-        Commands::NetCheck { json } => {
+        Commands::NetCheck {
+            json,
+            bootstrap_offline,
+        } => {
             let status = thronglets::network_state::NetworkSnapshot::load(&dir).to_status();
-            let data = summarize_net_check(&status);
+            let data = summarize_net_check_for_scenario(&status, bootstrap_offline);
             if json {
                 print_machine_json_with_schema(NETWORK_SCHEMA_VERSION, "net-check", &data);
             } else {

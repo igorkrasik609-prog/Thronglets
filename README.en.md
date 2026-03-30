@@ -106,6 +106,12 @@ If you want that judgment collapsed into one direct answer, run:
 thronglets net-check --json
 ```
 
+If you want to see the same node as if bootstrap / VPS disappeared right now, run:
+
+```bash
+thronglets net-check --bootstrap-offline --json
+```
+
 It classifies the node as:
 - `peer-first`
 - `degraded`

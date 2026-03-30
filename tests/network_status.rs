@@ -137,3 +137,24 @@ fn net_check_json_accepts_peer_first_state() {
     assert_eq!(check["data"]["summary"]["peer_seed_count"], 1);
     assert!(check["data"]["next_steps"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn net_check_json_can_simulate_bootstrap_offline() {
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let mut snapshot = NetworkSnapshot::begin(2);
+    snapshot.merge_trusted_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.save(&data_dir);
+
+    let check = run_bin(&["net-check", "--json", "--bootstrap-offline"], &data_dir);
+    assert_eq!(check["data"]["summary"]["scenario"], "bootstrap-offline");
+    assert_eq!(check["data"]["summary"]["bootstrap_targets"], 0);
+    assert_eq!(
+        check["data"]["summary"]["bootstrap_fallback_mode"],
+        "disabled"
+    );
+    assert_eq!(check["data"]["summary"]["bootstrap_offline_ready"], true);
+    assert_eq!(check["data"]["summary"]["vps_dependency_level"], "offline");
+}

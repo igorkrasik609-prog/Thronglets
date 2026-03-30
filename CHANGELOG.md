@@ -7,6 +7,7 @@
 - **Trusted same-owner seeds** — peer seeds imported through owner-bound `connection-join` are now treated as `trusted peer seeds`, surfaced in `status / peers / net-check`, and dialed before generic remembered peers so same-owner devices reconnect directly before leaning on VPS bootstrap
 - **Delayed bootstrap fallback** — when remembered peers exist, the network now dials them first and only falls back to bootstrap after a short grace period; bootstrap stops being the unconditional first touch on every startup
 - **Bootstrap-offline readiness** — `status --json` now surfaces `network.bootstrap_fallback_mode`, and `thronglets net-check --json` now reports `bootstrap_offline_ready`, making it explicit whether a node can still reconnect from remembered peers if VPS / bootstrap disappears
+- **Bootstrap-offline drill** — `thronglets net-check --bootstrap-offline --json` now evaluates the current node as if bootstrap were gone, so operators can inspect the outage scenario directly instead of inferring it from live status
 
 ## v0.4.2 — 2026-03-30
 

@@ -106,6 +106,12 @@ thronglets status --json
 thronglets net-check --json
 ```
 
+如果你想直接看“假设 VPS / bootstrap 现在消失”会发生什么，可以跑：
+
+```bash
+thronglets net-check --bootstrap-offline --json
+```
+
 它会直接告诉你这个节点当前是：
 - `peer-first`
 - `degraded`
