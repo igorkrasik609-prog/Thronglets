@@ -6,6 +6,7 @@ const RECENT_BOOTSTRAP_WINDOW_MS: i64 = 15 * 60 * 1000;
 const MAX_KNOWN_PEERS: usize = 64;
 const MAX_PEER_ADDRESSES: usize = 8;
 const MAX_PEER_SEEDS: usize = 64;
+const MAX_TRUSTED_PEER_SEEDS: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservedPeer {
@@ -178,7 +179,7 @@ impl NetworkSnapshot {
             push_unique_front(
                 &mut self.trusted_peer_seeds,
                 trimmed.to_string(),
-                MAX_PEER_SEEDS,
+                MAX_TRUSTED_PEER_SEEDS,
             );
         }
     }
@@ -192,6 +193,23 @@ impl NetworkSnapshot {
         }
         for seed in self.trusted_peer_seeds.iter().rev() {
             push_unique_front(&mut seeds, seed.clone(), MAX_PEER_SEEDS.max(limit));
+        }
+        seeds.truncate(limit);
+        seeds
+    }
+
+    pub fn trusted_peer_seed_addresses(&self, limit: usize) -> Vec<String> {
+        let mut seeds = self.trusted_peer_seeds.clone();
+        seeds.truncate(limit);
+        seeds
+    }
+
+    pub fn remembered_peer_addresses(&self, limit: usize) -> Vec<String> {
+        let mut seeds = self.peer_seeds.clone();
+        for peer in &self.peers {
+            for address in peer.addresses.iter().rev() {
+                push_unique_front(&mut seeds, address.clone(), MAX_PEER_SEEDS.max(limit));
+            }
         }
         seeds.truncate(limit);
         seeds
@@ -409,5 +427,24 @@ mod tests {
         let seeds = snapshot.peer_seed_addresses(4);
         assert_eq!(seeds[0], "/ip4/10.0.0.8/tcp/4001");
         assert_eq!(seeds[1], "/ip4/10.0.0.9/tcp/4001");
+    }
+
+    #[test]
+    fn trusted_and_generic_peer_addresses_can_be_split() {
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.merge_peer_seeds([
+            "/ip4/10.0.0.1/tcp/4001".to_string(),
+            "/ip4/10.0.0.2/tcp/4001".to_string(),
+        ]);
+        snapshot.merge_trusted_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+        snapshot.observe_peer_address("peer-a", "/ip4/10.0.0.3/tcp/4001");
+
+        let trusted = snapshot.trusted_peer_seed_addresses(4);
+        let remembered = snapshot.remembered_peer_addresses(4);
+
+        assert_eq!(trusted, vec!["/ip4/10.0.0.9/tcp/4001".to_string()]);
+        assert_eq!(remembered[0], "/ip4/10.0.0.3/tcp/4001");
+        assert!(remembered.contains(&"/ip4/10.0.0.1/tcp/4001".to_string()));
+        assert!(!remembered.contains(&"/ip4/10.0.0.9/tcp/4001".to_string()));
     }
 }

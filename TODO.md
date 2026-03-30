@@ -280,6 +280,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.2`）：
 - `net-check --json` 现在还能直接给出 `bootstrap_offline_ready`，判断 VPS / bootstrap 突然消失时节点是否还有 remembered-peer 重连路径
 - `net-check --bootstrap-offline --json` 现在能直接演练 outage 场景，而不需要 operator 自己推演 live 状态
 - `bootstrap_contacted_recently` 已收紧成“最近真的拨过 bootstrap”，不再把“只是配置了 bootstrap 地址”误算成 VPS 接触
+- `trusted peer seeds` 现在不只排序更靠前，还会拿到更长的 bootstrap 回退宽限期，优先给同 owner 多设备直连恢复机会
 
 剩余完成标准：
 - 把 relay 继续降级成兜底而不是默认路径

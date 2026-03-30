@@ -2670,8 +2670,13 @@ async fn main() {
 
             let bootstrap_addrs: Vec<libp2p::Multiaddr> =
                 bootstrap.iter().filter_map(|s| s.parse().ok()).collect();
+            let trusted_peer_addrs: Vec<libp2p::Multiaddr> = network_snapshot
+                .trusted_peer_seed_addresses(8)
+                .into_iter()
+                .filter_map(|address| address.parse().ok())
+                .collect();
             let known_peer_addrs: Vec<libp2p::Multiaddr> = network_snapshot
-                .peer_seed_addresses(16)
+                .remembered_peer_addresses(16)
                 .into_iter()
                 .filter_map(|address| address.parse().ok())
                 .collect();
@@ -2679,6 +2684,7 @@ async fn main() {
             let config = NetworkConfig {
                 listen_port: port,
                 bootstrap_peers: bootstrap_addrs,
+                trusted_peers: trusted_peer_addrs,
                 known_peers: known_peer_addrs,
             };
 
@@ -2821,8 +2827,13 @@ async fn main() {
 
                 let bootstrap_addrs: Vec<libp2p::Multiaddr> =
                     bootstrap.iter().filter_map(|s| s.parse().ok()).collect();
+                let trusted_peer_addrs: Vec<libp2p::Multiaddr> = network_snapshot
+                    .trusted_peer_seed_addresses(8)
+                    .into_iter()
+                    .filter_map(|address| address.parse().ok())
+                    .collect();
                 let known_peer_addrs: Vec<libp2p::Multiaddr> = network_snapshot
-                    .peer_seed_addresses(16)
+                    .remembered_peer_addresses(16)
                     .into_iter()
                     .filter_map(|address| address.parse().ok())
                     .collect();
@@ -2830,6 +2841,7 @@ async fn main() {
                 let config = NetworkConfig {
                     listen_port: p,
                     bootstrap_peers: bootstrap_addrs,
+                    trusted_peers: trusted_peer_addrs,
                     known_peers: known_peer_addrs,
                 };
 

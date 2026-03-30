@@ -68,6 +68,7 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     let config_b = NetworkConfig {
         listen_port: port_b,
         bootstrap_peers: vec![bootstrap_a],
+        trusted_peers: Vec::new(),
         known_peers: Vec::new(),
     };
     let (cmd_tx_b, mut event_rx_b) = thronglets::network::start(keypair_b, config_b)
@@ -201,6 +202,7 @@ async fn node_reconnects_via_known_peer_without_bootstrap() {
     let config_b = NetworkConfig {
         listen_port: port_b,
         bootstrap_peers: vec![bootstrap_a.clone()],
+        trusted_peers: Vec::new(),
         known_peers: Vec::new(),
     };
     let (cmd_tx_b, mut event_rx_b) = thronglets::network::start(keypair_b, config_b)
@@ -227,6 +229,7 @@ async fn node_reconnects_via_known_peer_without_bootstrap() {
     let config_b_restarted = NetworkConfig {
         listen_port: port_b,
         bootstrap_peers: Vec::new(),
+        trusted_peers: Vec::new(),
         known_peers: vec![bootstrap_a],
     };
     let (_cmd_tx_b_restarted, mut event_rx_b_restarted) =

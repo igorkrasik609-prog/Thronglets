@@ -99,6 +99,8 @@ thronglets status --json
 
 其中 `network.bootstrap_contacted_recently` 表示这个节点最近真的拨过 bootstrap，
 不是“只是配置里存在 bootstrap 地址”。
+通过 `connection-join` 导入的 `trusted peer seeds` 现在也会比普通 remembered peers
+拿到更长的 bootstrap 回退宽限期，优先给同 owner 设备直连恢复机会。
 
 也就是说，AI 和操作者都不需要再猜“刚才那次绕路是不是 Thronglets 在起作用”。
 同时也能直接看到当前网络是不是还在实质依赖 VPS。

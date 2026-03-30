@@ -99,6 +99,9 @@ The response now includes:
 
 `network.bootstrap_contacted_recently` only flips on an actual bootstrap dial,
 not merely because bootstrap addresses are configured.
+`trusted peer seeds` imported through `connection-join` also get a longer
+bootstrap fallback grace period than generic remembered peers, so same-owner
+devices get more time to reconnect directly before leaning on VPS.
 
 That gives both operators and other agents a minimal way to tell whether the substrate has been actively shaping recent decisions.
 It also makes current VPS dependence visible instead of implicit.

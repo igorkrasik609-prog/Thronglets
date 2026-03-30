@@ -9,6 +9,7 @@
 - **Bootstrap-offline readiness** — `status --json` now surfaces `network.bootstrap_fallback_mode`, and `thronglets net-check --json` now reports `bootstrap_offline_ready`, making it explicit whether a node can still reconnect from remembered peers if VPS / bootstrap disappears
 - **Bootstrap-offline drill** — `thronglets net-check --bootstrap-offline --json` now evaluates the current node as if bootstrap were gone, so operators can inspect the outage scenario directly instead of inferring it from live status
 - **Actual bootstrap contact tracking** — `network.bootstrap_contacted_recently` now only turns on after a real bootstrap dial attempt; simply configuring bootstrap peers no longer makes a node look like it already touched VPS
+- **Trusted peer-first grace** — same-owner `trusted peer seeds` now dial before generic remembered peers and get a longer bootstrap fallback grace period, so multi-device reconnects have more time to recover directly before touching VPS
 
 ## v0.4.2 — 2026-03-30
 

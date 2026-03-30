@@ -25,7 +25,8 @@ const TRACE_TOPIC: &str = "thronglets/traces/v1";
 
 /// DHT key prefix for capability summaries.
 const DHT_CAP_PREFIX: &str = "/thronglets/cap/v1/";
-const BOOTSTRAP_FALLBACK_DELAY: Duration = Duration::from_secs(5);
+const KNOWN_PEER_BOOTSTRAP_FALLBACK_DELAY: Duration = Duration::from_secs(5);
+const TRUSTED_PEER_BOOTSTRAP_FALLBACK_DELAY: Duration = Duration::from_secs(15);
 
 /// Events emitted by the network layer to the node runtime.
 #[derive(Debug)]
@@ -89,6 +90,8 @@ pub struct NetworkConfig {
     pub listen_port: u16,
     /// Bootstrap peer addresses.
     pub bootstrap_peers: Vec<Multiaddr>,
+    /// Same-owner / trusted peer addresses to try before generic remembered peers.
+    pub trusted_peers: Vec<Multiaddr>,
     /// Previously observed peer addresses to try before bootstrap fallback.
     pub known_peers: Vec<Multiaddr>,
 }
@@ -166,7 +169,12 @@ pub async fn start(
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<NetworkCommand>(256);
 
     let (mut bootstrap_fallback_at, contacted_bootstrap) =
-        dial_peer_first(&mut swarm, &config.known_peers, &config.bootstrap_peers);
+        dial_peer_first(
+            &mut swarm,
+            &config.trusted_peers,
+            &config.known_peers,
+            &config.bootstrap_peers,
+        );
     if contacted_bootstrap {
         let _ = event_tx.try_send(NetworkEvent::BootstrapContacted {
             targets: config.bootstrap_peers.len(),
@@ -276,6 +284,7 @@ pub async fn start(
                                 if connected_peers.is_empty() {
                                     let (next_fallback_at, contacted_bootstrap) = dial_peer_first(
                                         &mut swarm,
+                                        &config.trusted_peers,
                                         &config.known_peers,
                                         &config.bootstrap_peers,
                                     );
@@ -401,20 +410,23 @@ pub async fn start(
 
 fn dial_peer_first(
     swarm: &mut libp2p::Swarm<ThrongletsNetworkBehaviour>,
+    trusted_peers: &[Multiaddr],
     known_peers: &[Multiaddr],
     bootstrap_peers: &[Multiaddr],
 ) -> (Option<tokio::time::Instant>, bool) {
+    dial_trusted_peers(swarm, trusted_peers);
     dial_known_peers(swarm, known_peers);
-    let contacted_bootstrap = bootstrap_fallback_delay(known_peers.len(), bootstrap_peers.len())
-        .is_some_and(|delay| {
-            if delay.is_zero() {
-                dial_bootstrap_peers(swarm, bootstrap_peers);
-                true
-            } else {
-                false
-            }
-        });
-    let fallback_at = bootstrap_fallback_delay(known_peers.len(), bootstrap_peers.len()).and_then(|delay| {
+    let fallback_delay =
+        bootstrap_fallback_delay(trusted_peers.len(), known_peers.len(), bootstrap_peers.len());
+    let contacted_bootstrap = fallback_delay.is_some_and(|delay| {
+        if delay.is_zero() {
+            dial_bootstrap_peers(swarm, bootstrap_peers);
+            true
+        } else {
+            false
+        }
+    });
+    let fallback_at = fallback_delay.and_then(|delay| {
         if delay.is_zero() {
             None
         } else {
@@ -422,6 +434,18 @@ fn dial_peer_first(
         }
     });
     (fallback_at, contacted_bootstrap)
+}
+
+fn dial_trusted_peers(
+    swarm: &mut libp2p::Swarm<ThrongletsNetworkBehaviour>,
+    trusted_peers: &[Multiaddr],
+) {
+    for addr in trusted_peers {
+        info!(%addr, "Dialing trusted peer");
+        if let Err(e) = swarm.dial(addr.clone()) {
+            warn!(%addr, %e, "Failed to dial trusted peer");
+        }
+    }
 }
 
 fn dial_known_peers(
@@ -449,15 +473,18 @@ fn dial_bootstrap_peers(
 }
 
 fn bootstrap_fallback_delay(
+    trusted_peer_count: usize,
     known_peer_count: usize,
     bootstrap_peer_count: usize,
 ) -> Option<Duration> {
     if bootstrap_peer_count == 0 {
         None
-    } else if known_peer_count == 0 {
-        Some(Duration::ZERO)
+    } else if trusted_peer_count > 0 {
+        Some(TRUSTED_PEER_BOOTSTRAP_FALLBACK_DELAY)
+    } else if known_peer_count > 0 {
+        Some(KNOWN_PEER_BOOTSTRAP_FALLBACK_DELAY)
     } else {
-        Some(BOOTSTRAP_FALLBACK_DELAY)
+        Some(Duration::ZERO)
     }
 }
 
@@ -468,16 +495,27 @@ mod tests {
 
     #[test]
     fn bootstrap_is_immediate_without_known_peers() {
-        assert_eq!(bootstrap_fallback_delay(0, 1), Some(Duration::ZERO));
+        assert_eq!(bootstrap_fallback_delay(0, 0, 1), Some(Duration::ZERO));
     }
 
     #[test]
     fn bootstrap_is_delayed_when_known_peers_exist() {
-        assert_eq!(bootstrap_fallback_delay(2, 1), Some(Duration::from_secs(5)));
+        assert_eq!(
+            bootstrap_fallback_delay(0, 2, 1),
+            Some(Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn bootstrap_is_more_delayed_when_trusted_peers_exist() {
+        assert_eq!(
+            bootstrap_fallback_delay(2, 2, 1),
+            Some(Duration::from_secs(15))
+        );
     }
 
     #[test]
     fn bootstrap_is_disabled_without_targets() {
-        assert_eq!(bootstrap_fallback_delay(2, 0), None);
+        assert_eq!(bootstrap_fallback_delay(2, 0, 0), None);
     }
 }
