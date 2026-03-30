@@ -250,6 +250,7 @@ The primary multi-device onboarding path is also fixed:
 - manual account + signer entry remains only as an advanced fallback
 - the connection file is signed by the primary device and verified on join
 - the connection file now also carries a small peer-seed set so the secondary device can try known peers before falling back to bootstrap
+- once the secondary device has actually proven a live same-owner direct connection, that path is automatically promoted into a trusted peer seed; future connection files then upgrade themselves into a stronger recovery path
 
 The local primitives for that flow are now in place:
 
@@ -275,8 +276,9 @@ thronglets connection-join --file ./thronglets.connection.json
   - `trusted-same-owner-ready`
 - These mean:
   - `identity-only` = transfers identity only, with no reusable peer paths
-  - `identity-plus-peer-seeds` = transfers remembered peer paths, but not a trusted same-owner direct path yet
-  - `trusted-same-owner-ready` = carries trusted same-owner peer seeds and is suitable for multi-device direct recovery
+- `identity-plus-peer-seeds` = transfers remembered peer paths, but not a trusted same-owner direct path yet
+- `trusted-same-owner-ready` = carries trusted same-owner peer seeds and is suitable for multi-device direct recovery
+- after an `identity-plus-peer-seeds` file gets a second device onto the network, later same-owner live direct connections are learned automatically as trusted paths; there is no separate manual trust step
 - when remembered peers already exist, `run / mcp` now try those peers first and only fall back to bootstrap after a short grace period; VPS is no longer the unconditional first touch on every startup
 - `owner-bind` and `connection-join` both refuse to silently overwrite an existing different `owner account`
 - the OpenClaw plugin now auto-runs `runtime-ready` after a successful load, so users usually only need `bootstrap -> restart OpenClaw once`

@@ -1148,6 +1148,62 @@ fn status_readiness_summary(
     }
 }
 
+#[cfg(test)]
+fn peer_device_identity_from_public_key(
+    public_key: &libp2p::identity::PublicKey,
+) -> Option<String> {
+    let public_key = public_key.clone().try_into_ed25519().ok()?;
+    Some(NodeIdentity::device_identity_from_pubkey(
+        &public_key.to_bytes(),
+    ))
+}
+
+fn trace_author_peer_id(trace: &Trace) -> Option<libp2p::PeerId> {
+    let public_key =
+        libp2p::identity::ed25519::PublicKey::try_from_bytes(&trace.node_pubkey).ok()?;
+    let public_key: libp2p::identity::PublicKey = public_key.into();
+    Some(public_key.to_peer_id())
+}
+
+fn maybe_promote_joined_primary_peer(
+    network_snapshot: &mut thronglets::network_state::NetworkSnapshot,
+    binding: &IdentityBinding,
+    peer_id: &libp2p::PeerId,
+    remote_device_identity: Option<&str>,
+) -> usize {
+    let Some(joined_from_device) = binding.joined_from_device.as_deref() else {
+        return 0;
+    };
+    if remote_device_identity != Some(joined_from_device) {
+        return 0;
+    }
+    network_snapshot.promote_peer_to_trusted(&peer_id.to_string())
+}
+
+fn maybe_promote_same_owner_trace_source(
+    network_snapshot: &mut thronglets::network_state::NetworkSnapshot,
+    binding: &IdentityBinding,
+    trace: &Trace,
+    source_peer: &libp2p::PeerId,
+) -> usize {
+    let Some(local_owner) = binding.owner_account.as_deref() else {
+        return 0;
+    };
+    let Some(remote_owner) = trace.owner_account.as_deref() else {
+        return 0;
+    };
+    let Some(remote_device_identity) = trace.device_identity.as_deref() else {
+        return 0;
+    };
+    if remote_owner != local_owner || remote_device_identity == binding.device_identity {
+        return 0;
+    }
+    if trace_author_peer_id(trace).as_ref() != Some(source_peer) {
+        return 0;
+    }
+    network_snapshot.promote_peer_to_trusted(&source_peer.to_string())
+}
+
 fn collect_restart_commands(commands: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
     let mut values: Vec<_> = commands.into_iter().flatten().collect();
     values.sort();
@@ -2942,6 +2998,32 @@ async fn main() {
                                 );
                                 network_snapshot.save(&dir);
                             }
+                            NetworkEvent::PeerIdentified {
+                                peer_id,
+                                device_identity,
+                                listen_addrs,
+                            } => {
+                                for address in listen_addrs {
+                                    network_snapshot.observe_peer_address(
+                                        peer_id.to_string(),
+                                        address.to_string(),
+                                    );
+                                }
+                                let promoted = maybe_promote_joined_primary_peer(
+                                    &mut network_snapshot,
+                                    &identity_binding,
+                                    &peer_id,
+                                    device_identity.as_deref(),
+                                );
+                                if promoted > 0 {
+                                    info!(
+                                        peer=%peer_id,
+                                        promoted,
+                                        "Promoted joined primary peer into trusted same-owner seeds"
+                                    );
+                                }
+                                network_snapshot.save(&dir);
+                            }
                             NetworkEvent::PeerConnected { peer_id, address } => {
                                 info!(peer=%peer_id, "Peer connected");
                                 if let Some(address) = address {
@@ -2964,8 +3046,21 @@ async fn main() {
                                 );
                                 network_snapshot.save(&dir);
                             }
-                            NetworkEvent::TraceReceived(trace) => {
+                            NetworkEvent::TraceReceived { trace, source_peer } => {
                                 network_snapshot.mark_trace_received();
+                                let promoted = maybe_promote_same_owner_trace_source(
+                                    &mut network_snapshot,
+                                    &identity_binding,
+                                    &trace,
+                                    &source_peer,
+                                );
+                                if promoted > 0 {
+                                    info!(
+                                        peer=%source_peer,
+                                        promoted,
+                                        "Promoted live same-owner peer into trusted recovery seeds"
+                                    );
+                                }
                                 network_snapshot.save(&dir);
                                 let tid = trace.id;
                                 match store.insert(&trace) {
@@ -3070,6 +3165,7 @@ async fn main() {
 
                 let store_bg = Arc::clone(&store);
                 let data_dir = dir.clone();
+                let identity_binding_bg = identity_binding.clone();
                 tokio::spawn(async move {
                     let mut evaporation_interval =
                         tokio::time::interval(std::time::Duration::from_secs(3600));
@@ -3088,6 +3184,32 @@ async fn main() {
                                             peer_id.to_string(),
                                             address.to_string(),
                                         );
+                                        network_snapshot.save(&data_dir);
+                                    }
+                                    Some(NetworkEvent::PeerIdentified {
+                                        peer_id,
+                                        device_identity,
+                                        listen_addrs,
+                                    }) => {
+                                        for address in listen_addrs {
+                                            network_snapshot.observe_peer_address(
+                                                peer_id.to_string(),
+                                                address.to_string(),
+                                            );
+                                        }
+                                        let promoted = maybe_promote_joined_primary_peer(
+                                            &mut network_snapshot,
+                                            &identity_binding_bg,
+                                            &peer_id,
+                                            device_identity.as_deref(),
+                                        );
+                                        if promoted > 0 {
+                                            info!(
+                                                peer=%peer_id,
+                                                promoted,
+                                                "Promoted joined primary peer into trusted same-owner seeds"
+                                            );
+                                        }
                                         network_snapshot.save(&data_dir);
                                     }
                                     Some(NetworkEvent::PeerConnected { peer_id, address }) => {
@@ -3112,8 +3234,21 @@ async fn main() {
                                         );
                                         network_snapshot.save(&data_dir);
                                     }
-                                    Some(NetworkEvent::TraceReceived(trace)) => {
+                                    Some(NetworkEvent::TraceReceived { trace, source_peer }) => {
                                         network_snapshot.mark_trace_received();
+                                        let promoted = maybe_promote_same_owner_trace_source(
+                                            &mut network_snapshot,
+                                            &identity_binding_bg,
+                                            &trace,
+                                            &source_peer,
+                                        );
+                                        if promoted > 0 {
+                                            info!(
+                                                peer=%source_peer,
+                                                promoted,
+                                                "Promoted live same-owner peer into trusted recovery seeds"
+                                            );
+                                        }
                                         network_snapshot.save(&data_dir);
                                         match store_bg.insert(&trace) {
                                             Ok(true) => {
@@ -4940,6 +5075,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use thronglets::identity::NodeIdentity;
+    use thronglets::network_state::NetworkSnapshot;
     use thronglets::posts::{DEFAULT_SIGNAL_TTL_HOURS, SignalTraceConfig, create_signal_trace};
     use thronglets::storage::TraceStore;
 
@@ -5161,5 +5297,90 @@ mod tests {
         )
         .expect("space-matching promoted avoid should surface");
         assert!(signal.body.contains("skip the generated lockfile"));
+    }
+
+    #[test]
+    fn joined_primary_live_peer_is_promoted_to_trusted_seed() {
+        let local_identity = NodeIdentity::generate();
+        let remote_identity = NodeIdentity::generate();
+        let binding = IdentityBinding::new(local_identity.device_identity())
+            .joined_via_connection(
+                Some("oasyce1owner".into()),
+                remote_identity.device_identity(),
+            )
+            .unwrap();
+        let mut remote_secret = remote_identity.secret_key_bytes();
+        let remote_keypair =
+            libp2p::identity::Keypair::ed25519_from_bytes(&mut remote_secret).unwrap();
+        let remote_peer_id = remote_keypair.public().to_peer_id();
+        let remote_device_identity =
+            peer_device_identity_from_public_key(&remote_keypair.public()).unwrap();
+
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.observe_peer_address(remote_peer_id.to_string(), "/ip4/10.0.0.8/tcp/4001");
+
+        let promoted = maybe_promote_joined_primary_peer(
+            &mut snapshot,
+            &binding,
+            &remote_peer_id,
+            Some(&remote_device_identity),
+        );
+
+        assert_eq!(promoted, 1);
+        assert_eq!(
+            snapshot.trusted_peer_seed_addresses(8),
+            vec!["/ip4/10.0.0.8/tcp/4001".to_string()]
+        );
+    }
+
+    #[test]
+    fn same_owner_trace_source_promotes_author_peer_only() {
+        let local_identity = NodeIdentity::generate();
+        let remote_identity = NodeIdentity::generate();
+        let other_identity = NodeIdentity::generate();
+        let binding = IdentityBinding::new(local_identity.device_identity())
+            .bind_owner_account("oasyce1owner".into())
+            .unwrap();
+
+        let mut remote_secret = remote_identity.secret_key_bytes();
+        let remote_keypair =
+            libp2p::identity::Keypair::ed25519_from_bytes(&mut remote_secret).unwrap();
+        let remote_peer_id = remote_keypair.public().to_peer_id();
+
+        let mut other_secret = other_identity.secret_key_bytes();
+        let other_keypair =
+            libp2p::identity::Keypair::ed25519_from_bytes(&mut other_secret).unwrap();
+        let other_peer_id = other_keypair.public().to_peer_id();
+
+        let trace = Trace::new_with_identity(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            1,
+            simhash("read file: src/main.rs"),
+            Some("read file: src/main.rs".into()),
+            Some("remote-session".into()),
+            Some("oasyce1owner".into()),
+            Some(remote_identity.device_identity()),
+            "codex".into(),
+            remote_identity.public_key_bytes(),
+            |msg| remote_identity.sign(msg),
+        );
+
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.observe_peer_address(remote_peer_id.to_string(), "/ip4/10.0.0.9/tcp/4001");
+
+        let ignored =
+            maybe_promote_same_owner_trace_source(&mut snapshot, &binding, &trace, &other_peer_id);
+        assert_eq!(ignored, 0);
+        assert_eq!(snapshot.trusted_peer_seeds.len(), 0);
+
+        let promoted =
+            maybe_promote_same_owner_trace_source(&mut snapshot, &binding, &trace, &remote_peer_id);
+        assert_eq!(promoted, 1);
+        assert_eq!(
+            snapshot.trusted_peer_seed_addresses(8),
+            vec!["/ip4/10.0.0.9/tcp/4001".to_string()]
+        );
     }
 }

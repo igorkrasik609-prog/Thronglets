@@ -249,6 +249,7 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 - 手动填写 account + signer 只保留给高级 fallback 场景
 - connection file 由主设备签名，次设备加入时会先验签
 - connection file 现在还会携带一小份 peer seeds，次设备加入后会先尝试这些已知 peer，再回退 bootstrap
+- 一旦次设备和主设备真正建立过 same-owner 的 live direct connection，这条路径会自动升格成 trusted peer seed；之后再导出的 connection file 就会自然升级成更稳的恢复路径
 
 当前本地 primitive 已经就位：
 
@@ -274,8 +275,9 @@ thronglets connection-join --file ./thronglets.connection.json
   - `trusted-same-owner-ready`
 - 其中：
   - `identity-only` = 只能继承身份，不能继承任何 peer 路径
-  - `identity-plus-peer-seeds` = 能继承 remembered peer 路径，但还不是 trusted same-owner 直连
-  - `trusted-same-owner-ready` = 能继承 trusted same-owner peer seeds，适合多设备直连恢复
+- `identity-plus-peer-seeds` = 能继承 remembered peer 路径，但还不是 trusted same-owner 直连
+- `trusted-same-owner-ready` = 能继承 trusted same-owner peer seeds，适合多设备直连恢复
+- 当你先用 `identity-plus-peer-seeds` 文件把第二台设备接上网络后，后续同 owner 的 live direct connection 会自动被学习成 trusted path；不需要再手动标记“这条路径可信”
 - 当本地已经记住 peers 时，`run / mcp` 会先尝试这些 remembered peers，只在短暂 grace period 后才回退到 bootstrap；VPS 不再是每次启动的默认第一跳
 - `owner-bind` 和 `connection-join` 默认都不会静默覆盖成另一个 `owner account`
 - OpenClaw 插件现在会在成功加载后自动执行 `runtime-ready`，所以用户通常只需要 `bootstrap -> 重启一次 OpenClaw`

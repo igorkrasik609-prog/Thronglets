@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Same-owner trust promotion** — when a secondary device proves a direct live connection to its joined primary, or when a node receives a same-owner trace directly from the authoring peer, Thronglets now promotes that peer address into `trusted peer seeds` automatically; future connection files can graduate from `identity-plus-peer-seeds` to `trusted-same-owner-ready` without a manual trust step
+
 ## v0.4.5 — 2026-03-31
 
 - **Onboarding outcome clarity** — `status --json` now separates `identity` details from a top-level readiness summary (`local-only / identity-only / network-paths-ready / network-ready`), and `connection-export / connection-inspect / connection-join` now classify connection files as `identity-only / identity-plus-peer-seeds / trusted-same-owner-ready` with a single human next step instead of forcing users to infer network readiness from raw seed counts

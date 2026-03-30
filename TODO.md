@@ -214,6 +214,8 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
   - `thronglets owner-bind`
   - `thronglets connection-export`
   - `thronglets connection-join`
+- same-owner 的 live direct connection 现在会自动提升成 `trusted peer seed`
+- 这意味着 connection file 可以先以 `identity-plus-peer-seeds` 让次设备上线，后续再自然升级到 `trusted-same-owner-ready`
 
 剩余完成标准：
 - 验证 `owner -> device` 授权，不把 `agent / session` 提升成经济主体

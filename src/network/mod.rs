@@ -40,10 +40,19 @@ pub enum NetworkEvent {
     },
     /// A peer address was observed and can be reused as a future seed.
     PeerObserved { peer_id: PeerId, address: Multiaddr },
+    /// A peer identified itself, including its device identity when derivable.
+    PeerIdentified {
+        peer_id: PeerId,
+        device_identity: Option<String>,
+        listen_addrs: Vec<Multiaddr>,
+    },
     /// A peer disconnected.
     PeerDisconnected(PeerId),
     /// A trace was received from the network (already deserialized).
-    TraceReceived(Box<Trace>),
+    TraceReceived {
+        trace: Box<Trace>,
+        source_peer: PeerId,
+    },
 }
 
 /// A capability summary retrieved from the DHT.
@@ -168,13 +177,12 @@ pub async fn start(
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(256);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<NetworkCommand>(256);
 
-    let (mut bootstrap_fallback_at, contacted_bootstrap) =
-        dial_peer_first(
-            &mut swarm,
-            &config.trusted_peers,
-            &config.known_peers,
-            &config.bootstrap_peers,
-        );
+    let (mut bootstrap_fallback_at, contacted_bootstrap) = dial_peer_first(
+        &mut swarm,
+        &config.trusted_peers,
+        &config.known_peers,
+        &config.bootstrap_peers,
+    );
     if contacted_bootstrap {
         let _ = event_tx.try_send(NetworkEvent::BootstrapContacted {
             targets: config.bootstrap_peers.len(),
@@ -216,13 +224,22 @@ pub async fn start(
                 event = swarm.select_next_some() => {
                     match event {
                         SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Gossipsub(
-                            gossipsub::Event::Message { message, .. }
+                            gossipsub::Event::Message {
+                                propagation_source,
+                                message,
+                                ..
+                            }
                         )) => {
                             match serde_json::from_slice::<Trace>(&message.data) {
                                 Ok(trace) => {
                                     if trace.verify() && trace.verify_id() {
                                         debug!(trace_id = ?&trace.id[..4], "Received valid trace from network");
-                                        let _ = event_tx.send(NetworkEvent::TraceReceived(Box::new(trace))).await;
+                                        let _ = event_tx
+                                            .send(NetworkEvent::TraceReceived {
+                                                trace: Box::new(trace),
+                                                source_peer: propagation_source,
+                                            })
+                                            .await;
                                     } else {
                                         warn!("Received invalid trace from network, dropping");
                                     }
@@ -254,6 +271,18 @@ pub async fn start(
                                 debug!(%peer_id, "mDNS: peer expired");
                                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                             }
+                        }
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Identify(
+                            identify::Event::Received { peer_id, info, .. }
+                        )) => {
+                            let device_identity = identify_device_identity(&info.public_key);
+                            let _ = event_tx
+                                .send(NetworkEvent::PeerIdentified {
+                                    peer_id,
+                                    device_identity,
+                                    listen_addrs: info.listen_addrs,
+                                })
+                                .await;
                         }
                         SwarmEvent::ConnectionEstablished {
                             peer_id,
@@ -408,6 +437,13 @@ pub async fn start(
     Ok((cmd_tx, event_rx))
 }
 
+fn identify_device_identity(public_key: &libp2p::identity::PublicKey) -> Option<String> {
+    let ed25519 = public_key.clone().try_into_ed25519().ok()?;
+    Some(crate::identity::NodeIdentity::device_identity_from_pubkey(
+        &ed25519.to_bytes(),
+    ))
+}
+
 fn dial_peer_first(
     swarm: &mut libp2p::Swarm<ThrongletsNetworkBehaviour>,
     trusted_peers: &[Multiaddr],
@@ -416,8 +452,11 @@ fn dial_peer_first(
 ) -> (Option<tokio::time::Instant>, bool) {
     dial_trusted_peers(swarm, trusted_peers);
     dial_known_peers(swarm, known_peers);
-    let fallback_delay =
-        bootstrap_fallback_delay(trusted_peers.len(), known_peers.len(), bootstrap_peers.len());
+    let fallback_delay = bootstrap_fallback_delay(
+        trusted_peers.len(),
+        known_peers.len(),
+        bootstrap_peers.len(),
+    );
     let contacted_bootstrap = fallback_delay.is_some_and(|delay| {
         if delay.is_zero() {
             dial_bootstrap_peers(swarm, bootstrap_peers);

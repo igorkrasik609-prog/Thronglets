@@ -3,6 +3,7 @@
 //! This proves the core P2P loop works without relying on flaky mDNS timing.
 
 use std::time::Duration;
+use tempfile::TempDir;
 use thronglets::context::simhash;
 use thronglets::identity::{
     ConnectionFile, ConnectionSeedScope, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding,
@@ -12,7 +13,6 @@ use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use thronglets::network_state::NetworkSnapshot;
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
-use tempfile::TempDir;
 
 fn free_loopback_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
@@ -139,7 +139,7 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     while tokio::time::Instant::now() < receive_deadline && received_trace.is_none() {
         tokio::select! {
             Some(event) = event_rx_b.recv() => {
-                if let NetworkEvent::TraceReceived(t) = event {
+                if let NetworkEvent::TraceReceived { trace: t, .. } = event {
                     received_trace = Some(t);
                 }
             }
@@ -347,7 +347,10 @@ async fn secondary_node_recovers_via_signed_connection_file_without_bootstrap() 
         .expect("save connection file");
     let loaded_connection =
         ConnectionFile::load(&connection_file_path).expect("load connection file");
-    assert_eq!(loaded_connection.peer_seed_scope, ConnectionSeedScope::Trusted);
+    assert_eq!(
+        loaded_connection.peer_seed_scope,
+        ConnectionSeedScope::Trusted
+    );
 
     let id_b = NodeIdentity::generate();
     let mut secret_b = id_b.secret_key_bytes();

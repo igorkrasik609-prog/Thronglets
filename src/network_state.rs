@@ -217,11 +217,40 @@ impl NetworkSnapshot {
         let mut seeds = self.peer_seeds.clone();
         for peer in &self.peers {
             for address in peer.addresses.iter().rev() {
+                if self
+                    .trusted_peer_seeds
+                    .iter()
+                    .any(|trusted| trusted == address)
+                {
+                    continue;
+                }
                 push_unique_front(&mut seeds, address.clone(), MAX_PEER_SEEDS.max(limit));
             }
         }
+        seeds.retain(|seed| {
+            !self
+                .trusted_peer_seeds
+                .iter()
+                .any(|trusted| trusted == seed)
+        });
         seeds.truncate(limit);
         seeds
+    }
+
+    pub fn promote_peer_to_trusted(&mut self, peer_id: &str) -> usize {
+        let addresses = self
+            .peers
+            .iter()
+            .find(|peer| peer.peer_id == peer_id)
+            .map(|peer| peer.addresses.clone())
+            .unwrap_or_default();
+        if addresses.is_empty() {
+            return 0;
+        }
+
+        let before = self.trusted_peer_seeds.len();
+        self.merge_trusted_peer_seeds(addresses);
+        self.trusted_peer_seeds.len().saturating_sub(before)
     }
 
     pub fn mark_trace_received(&mut self) {
@@ -477,5 +506,28 @@ mod tests {
 
         let seeds = snapshot.connection_peer_seeds(8);
         assert_eq!(seeds, vec!["/ip4/10.0.0.1/tcp/4001".to_string()]);
+    }
+
+    #[test]
+    fn promote_observed_peer_to_trusted_moves_addresses_into_trusted_scope() {
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.merge_peer_seeds(["/ip4/10.0.0.1/tcp/4001".to_string()]);
+        snapshot.observe_peer_address("peer-a", "/ip4/10.0.0.9/tcp/4001");
+        snapshot.observe_peer_address("peer-a", "/ip4/10.0.0.8/tcp/4001");
+
+        let promoted = snapshot.promote_peer_to_trusted("peer-a");
+
+        assert_eq!(promoted, 2);
+        assert_eq!(
+            snapshot.trusted_peer_seed_addresses(8),
+            vec![
+                "/ip4/10.0.0.9/tcp/4001".to_string(),
+                "/ip4/10.0.0.8/tcp/4001".to_string()
+            ]
+        );
+        assert_eq!(
+            snapshot.remembered_peer_addresses(8),
+            vec!["/ip4/10.0.0.1/tcp/4001".to_string()]
+        );
     }
 }
