@@ -120,12 +120,21 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
         ("README.md", read("README.md")),
         ("README.en.md", read("README.en.md")),
         ("docs/llms.txt", read("docs/llms.txt")),
+        ("llms.txt", read("llms.txt")),
     ] {
         assert!(
             content.contains("npm install -g thronglets")
                 || content.contains("install.ps1")
                 || content.contains("install.sh"),
             "{path} should point users at the prebuilt install surface"
+        );
+        let install_regressed = content.contains("cargo install thronglets")
+            && !content.contains("do not")
+            && !content.contains("不应该")
+            && !content.contains("Development-only source path");
+        assert!(
+            !install_regressed,
+            "{path} should not present cargo install as the default user install path"
         );
     }
 }

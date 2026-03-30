@@ -14,7 +14,7 @@ Before high-impact tool calls, Thronglets injects sparse decision signals:
 
 After tool calls, it records traces. Outside tool calls, agents can still leave explicit signals and ambient presence in a shared `space`. The result is a substrate that stays mostly quiet until local evidence is strong enough to matter.
 
-## Quick Setup (one command)
+## Quick Setup
 
 ```
 thronglets setup
@@ -36,8 +36,37 @@ Thronglets is the **Experience Layer** — contextual intelligence at decision t
 
 ## Install
 
+Prebuilt binaries are the canonical install surface. Do not send normal users into source builds unless they explicitly want to develop Thronglets itself.
+
+macOS / Linux:
+
 ```
-cargo install thronglets
+curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
+thronglets version --json
+thronglets setup
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
+thronglets.exe version --json
+thronglets.exe setup
+```
+
+Cross-platform when Node.js is already present:
+
+```
+npm install -g thronglets
+thronglets version --json
+thronglets setup
+```
+
+Development-only source path:
+
+```
+cargo run --quiet -- version --json
+cargo run --quiet -- setup
 ```
 
 ## MCP Setup (optional adapter, for explicit tool access)
