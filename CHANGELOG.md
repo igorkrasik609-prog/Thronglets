@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.4.3 — 2026-03-30
+
 - **Implicit behavior loop** — prehook recommendations now leave a lightweight pending feedback trace, and later hook events silently learn from whether the AI followed or ignored `avoid / do next / maybe also`; when a `space` is present, that learning now stays local to the same object/topic instead of leaking globally
 - **Open-task do-next suppression** — when the current session is explicitly in `explore` or `review` mode, prehook now suppresses overly specific preparation-style `do next` guidance instead of oversteering open-ended work
 - **Same-session signal dedupe** — repeated identical recommendations in the same session are now suppressed within a short window, so bursty tool calls stop re-injecting the same line over and over
