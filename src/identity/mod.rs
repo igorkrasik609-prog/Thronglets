@@ -193,8 +193,9 @@ impl IdentityBinding {
     pub fn bind_owner_account(mut self, owner_account: String) -> std::io::Result<Self> {
         self.ensure_owner_compatible(Some(owner_account.as_str()))?;
         self.owner_account = Some(owner_account);
-        self.binding_source = Some("manual".into());
-        self.joined_from_device = None;
+        if self.binding_source.is_none() {
+            self.binding_source = Some("manual".into());
+        }
         self.updated_at = now_ms();
         Ok(self)
     }
@@ -276,11 +277,10 @@ impl ConnectionFile {
         peer_seed_scope: ConnectionSeedScope,
         peer_seeds: Vec<String>,
     ) -> std::io::Result<Self> {
-        let owner_account = binding.require_owner_account()?.to_string();
         let exported_at = now_ms();
         let mut file = Self {
             schema_version: CONNECTION_FILE_SCHEMA_VERSION.to_string(),
-            owner_account: Some(owner_account),
+            owner_account: binding.owner_account.clone(),
             primary_device_identity: binding.device_identity.clone(),
             primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
             peer_seed_scope,
@@ -296,7 +296,7 @@ impl ConnectionFile {
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let bytes = fs::read(path)?;
         let file: Self = serde_json::from_slice(&bytes).map_err(invalid_data)?;
-        if file.owner_account.as_deref().is_none_or(str::is_empty) {
+        if file.owner_account.as_deref().is_some_and(str::is_empty) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "owner_account cannot be empty in a connection file",
@@ -645,17 +645,31 @@ mod tests {
     }
 
     #[test]
-    fn ownerless_connection_file_cannot_be_created() {
+    fn ownerless_connection_file_can_be_created() {
         let node = NodeIdentity::generate();
         let binding = IdentityBinding::new(node.device_identity());
-        let error = ConnectionFile::from_binding(
+        let file = ConnectionFile::from_binding(
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
             ConnectionSeedScope::Trusted,
             vec![],
         )
-        .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        .unwrap();
+        assert_eq!(file.owner_account, None);
+        assert_eq!(file.primary_device_identity, node.device_identity());
+    }
+
+    #[test]
+    fn manual_owner_bind_preserves_connection_origin() {
+        let node = NodeIdentity::generate();
+        let binding = IdentityBinding::new(node.device_identity())
+            .joined_via_connection(None, "oasyce1primary".into())
+            .unwrap()
+            .bind_owner_account("oasyce1owner".into())
+            .unwrap();
+        assert_eq!(binding.owner_account.as_deref(), Some("oasyce1owner"));
+        assert_eq!(binding.binding_source.as_deref(), Some("connection_file"));
+        assert_eq!(binding.joined_from_device.as_deref(), Some("oasyce1primary"));
     }
 }

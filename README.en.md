@@ -202,7 +202,7 @@ V1 only needs `owner -> device` delegation to be solid. Richer agent semantics c
 The primary multi-device onboarding path is also fixed:
 
 - the primary device exports a connection file
-- the secondary device joins with that file
+- the secondary device joins the same network with that file; if the file carries an owner, it also joins the same owner
 - manual account + signer entry remains only as an advanced fallback
 - the connection file is signed by the primary device and verified on join
 - the connection file now also carries a small peer-seed set so the secondary device can try known peers before falling back to bootstrap
@@ -220,9 +220,9 @@ thronglets connection-join --file ./thronglets.connection.json
 - `id` shows the current `owner account` and `device identity`
 - `id` / `status` / HTTP `/v1/status` also surface the current `binding source` and `joined from device`
 - `id` / `owner-bind` / `connection-export` / `connection-join` / `status` all support `--json`
-- `connection-export` now requires a locally bound `owner account`
-- `owner-bind` is the manual advanced fallback
-- `connection-export / connection-join` are the primary onboarding path and verify the primary-device signature by default
+- `connection-export / connection-join` are the base onboarding path even before Oasyce is involved; they can establish local or multi-device pairing and verify the primary-device signature by default
+- `owner-bind` is the later upgrade layer, not the prerequisite for basic participation
+- users can start with Thronglets first and attach an `owner account` later without disrupting existing local use or device-origin metadata
 - `connection-export` now emits a `24h` connection file by default and supports `--ttl-hours`; `connection-join` verifies both signature and expiry
 - `connection-export` now prefers `trusted peer seeds` and only falls back to generic remembered peers when no trusted path exists. `connection-join` preserves that scope instead of silently promoting fallback remembered peers into trusted seeds
 - when remembered peers already exist, `run / mcp` now try those peers first and only fall back to bootstrap after a short grace period; VPS is no longer the unconditional first touch on every startup
@@ -235,7 +235,7 @@ This boundary is now fixed:
 
 - the VPS only runs the chain and shared public infrastructure
 - `oasyce-net` is a user-side client / AI runtime, not a centralized backend
-- Thronglets integrates around `owner account + device identity`, not a hosted account service
+- Thronglets is device-first by default; `owner account` is an optional upgrade layer, not the prerequisite for basic network participation
 - running nodes now try local known peers and connection-file peer seeds first, then fall back to VPS bootstrap
 
 If the target runtime is not one of the native adapters, `install-plan --agent generic --json` now also includes minimal `Python / Node.js / shell` `prehook / hook` snippets, so the runtime does not have to invent its own wrapper contract. If you only want one thinner result, use:

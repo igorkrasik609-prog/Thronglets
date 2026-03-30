@@ -8,6 +8,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.3`）：
 - MCP 定位：`optional adapter`, not core product
 - 协议形态：`thronglets.bootstrap.v2`
 - 输出原则：`summary first, details second`
+- 身份边界：`device-first, owner-optional`；没有 Oasyce 也必须能先加入和使用，之后再平滑升级到 `owner -> device`
 
 下面只保留真正还值得做的事。
 

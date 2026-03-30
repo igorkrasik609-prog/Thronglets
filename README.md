@@ -201,7 +201,7 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 多设备 onboarding 的主路径也已经确定：
 
 - 主设备导出一份 connection file
-- 次设备用这份文件加入同一个 owner
+- 次设备用这份文件加入同一网络；如果文件里带 owner，就顺手加入同一个 owner
 - 手动填写 account + signer 只保留给高级 fallback 场景
 - connection file 由主设备签名，次设备加入时会先验签
 - connection file 现在还会携带一小份 peer seeds，次设备加入后会先尝试这些已知 peer，再回退 bootstrap
@@ -219,9 +219,9 @@ thronglets connection-join --file ./thronglets.connection.json
 - `id` 会显示当前 `owner account` 和 `device identity`
 - `id` / `status` / HTTP `/v1/status` 也会显示当前 `binding source` 和 `joined from device`
 - `id` / `owner-bind` / `connection-export` / `connection-join` / `status` 都支持 `--json`
-- `connection-export` 现在要求本地已经有 `owner account`
-- `owner-bind` 是手动高级 fallback
-- `connection-export / connection-join` 是主路径，并且默认验证主设备签名
+- `connection-export / connection-join` 是基础主路径；没有 Oasyce 时也能先做本地 / 多设备 pairing，并且默认验证主设备签名
+- `owner-bind` 是后续升级层，不是基础入网前提
+- 用户可以先用 Thronglets，再在之后补 `owner account`；这不会打断已有本地使用或设备入网来源
 - `connection-export` 默认导出 `24h` 有效的 connection file，可用 `--ttl-hours` 调整；`connection-join` 会同时验证签名和过期时间
 - `connection-export` 优先只写入 `trusted peer seeds`；只有没有 trusted path 时才回退写入普通 remembered peers。`connection-join` 会保留这个 scope：trusted 继续按 trusted 导入，fallback 的 remembered peers 不会被静默升格成 trusted
 - 当本地已经记住 peers 时，`run / mcp` 会先尝试这些 remembered peers，只在短暂 grace period 后才回退到 bootstrap；VPS 不再是每次启动的默认第一跳
@@ -234,7 +234,7 @@ thronglets connection-join --file ./thronglets.connection.json
 
 - VPS 只跑链和公共基础设施
 - `oasyce-net` 是用户侧客户端 / AI runtime，不是中心化后端
-- Thronglets 默认按 `owner account + device identity` 集成，不要求中心化账户服务
+- Thronglets 默认按 `device-first` 集成；`owner account` 是可选升级层，不要求中心化账户服务，也不是基础入网前提
 - 运行节点现在会优先拨号本地已知 peers 和 connection file 继承来的 peer seeds，再回退 VPS bootstrap
 
 如果目标 runtime 不在原生 adapter 列表里，`install-plan --agent generic --json` 现在还会直接给出 `Python / Node.js / shell` 的最小 `prehook / hook` 示例，不需要再自己拼接调用方式。如果只想拿一份更薄的结果，可以直接加：

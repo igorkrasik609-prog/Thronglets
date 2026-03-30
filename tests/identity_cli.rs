@@ -280,26 +280,102 @@ fn expired_connection_file_join_fails() {
 }
 
 #[test]
-fn connection_export_requires_owner_binding() {
+fn connection_export_without_owner_binding_still_exports_network_pairing_file() {
     let temp = TempDir::new().unwrap();
-    let data_dir = temp.path().join("data");
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
     let connection_file = temp.path().join("device.connection.json");
 
-    let output = run_bin_raw(
+    let exported = run_bin(
         &[
             "connection-export",
             "--output",
             connection_file.to_str().unwrap(),
             "--json",
         ],
-        &data_dir,
+        &primary_dir,
     );
-    assert!(
-        !output.status.success(),
-        "ownerless export unexpectedly succeeded"
+    assert_eq!(exported["command"], "connection-export");
+    assert_eq!(exported["data"]["summary"]["owner_account"], Value::Null);
+    assert_eq!(exported["data"]["peer_seed_scope"], "remembered");
+    assert_eq!(exported["data"]["peer_seed_count"], 0);
+
+    let inspected = run_bin(
+        &[
+            "connection-inspect",
+            "--file",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &primary_dir,
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("owner account is not bound"));
+    assert_eq!(inspected["data"]["summary"]["owner_account"], Value::Null);
+    assert_eq!(inspected["data"]["signature_verified"], true);
+
+    let joined = run_bin(
+        &[
+            "connection-join",
+            "--file",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &secondary_dir,
+    );
+    assert_eq!(joined["data"]["summary"]["owner_account"], Value::Null);
+    assert_eq!(
+        joined["data"]["summary"]["binding_source"],
+        "connection_file"
+    );
+}
+
+#[test]
+fn owner_bind_after_ownerless_connection_join_preserves_join_origin() {
+    let temp = TempDir::new().unwrap();
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
+    let connection_file = temp.path().join("device.connection.json");
+
+    run_bin(
+        &[
+            "connection-export",
+            "--output",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &primary_dir,
+    );
+    let joined = run_bin(
+        &[
+            "connection-join",
+            "--file",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &secondary_dir,
+    );
+    let primary_device = joined["data"]["summary"]["joined_from_device"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let bound = run_bin(
+        &[
+            "owner-bind",
+            "--owner-account",
+            "oasyce1owner",
+            "--json",
+        ],
+        &secondary_dir,
+    );
+    assert_eq!(bound["data"]["summary"]["owner_account"], "oasyce1owner");
+    assert_eq!(
+        bound["data"]["summary"]["binding_source"],
+        "connection_file"
+    );
+    assert_eq!(
+        bound["data"]["summary"]["joined_from_device"],
+        primary_device.as_str()
+    );
 }
 
 #[test]
