@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
+use thronglets::network_state::NetworkSnapshot;
 
 fn run_bin(args: &[&str], data_dir: &Path) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_thronglets"))
@@ -91,6 +92,7 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     assert_eq!(exported["command"], "connection-export");
     assert_eq!(exported["data"]["summary"]["owner_account"], "oasyce1owner");
     assert_eq!(exported["data"]["signed_by_device"], primary_device);
+    assert_eq!(exported["data"]["peer_seed_count"], 0);
     assert_eq!(exported["data"]["ttl_hours"], 24);
     assert!(exported["data"]["expires_at"].as_u64().unwrap() > 0);
 
@@ -120,6 +122,7 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
         primary_device.as_str()
     );
     assert_eq!(joined["data"]["signature_verified"], true);
+    assert_eq!(joined["data"]["imported_peer_seed_count"], 0);
     assert_ne!(secondary_device, primary_device);
 
     let status = run_bin(&["status", "--json"], &secondary_dir);
@@ -137,6 +140,49 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
         status["data"]["summary"]["device_identity"],
         secondary_device.as_str()
     );
+}
+
+#[test]
+fn connection_join_imports_peer_seeds_into_local_snapshot() {
+    let temp = TempDir::new().unwrap();
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
+    let connection_file = temp.path().join("device.connection.json");
+
+    run_bin(
+        &["owner-bind", "--owner-account", "oasyce1owner", "--json"],
+        &primary_dir,
+    );
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.observe_peer_address("12D3KooWAlpha", "/ip4/10.0.0.1/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.save(&primary_dir);
+
+    let exported = run_bin(
+        &[
+            "connection-export",
+            "--output",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &primary_dir,
+    );
+    assert_eq!(exported["data"]["peer_seed_count"], 2);
+
+    let joined = run_bin(
+        &[
+            "connection-join",
+            "--file",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &secondary_dir,
+    );
+    assert_eq!(joined["data"]["imported_peer_seed_count"], 2);
+
+    let status = run_bin(&["status", "--json"], &secondary_dir);
+    assert_eq!(status["data"]["network"]["peer_seed_count"], 2);
 }
 
 #[test]
@@ -241,6 +287,7 @@ fn connection_inspect_json_surfaces_verified_metadata() {
         "oasyce1owner"
     );
     assert_eq!(inspected["data"]["signature_verified"], true);
+    assert_eq!(inspected["data"]["peer_seed_count"], 0);
     assert_eq!(inspected["data"]["ttl_hours"], 12);
     assert!(inspected["data"]["expires_at"].as_u64().unwrap() > 0);
 }

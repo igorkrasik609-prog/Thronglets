@@ -93,6 +93,7 @@ The response now includes:
 - `network.activity = offline | bootstrapping | connected`
 - `network.transport_mode = offline | direct | relayed | mixed`
 - `network.vps_dependency_level = offline | bootstrap-only | high | medium | low | peer-native`
+- `network.peer_seed_count`
 
 That gives both operators and other agents a minimal way to tell whether the substrate has been actively shaping recent decisions.
 It also makes current VPS dependence visible instead of implicit.
@@ -172,6 +173,7 @@ The primary multi-device onboarding path is also fixed:
 - the secondary device joins with that file
 - manual account + signer entry remains only as an advanced fallback
 - the connection file is signed by the primary device and verified on join
+- the connection file now also carries a small peer-seed set so the secondary device can try known peers before falling back to bootstrap
 
 The local primitives for that flow are now in place:
 
@@ -190,6 +192,7 @@ thronglets connection-join --file ./thronglets.connection.json
 - `owner-bind` is the manual advanced fallback
 - `connection-export / connection-join` are the primary onboarding path and verify the primary-device signature by default
 - `connection-export` now emits a `24h` connection file by default and supports `--ttl-hours`; `connection-join` verifies both signature and expiry
+- `connection-export` now includes recently observed peer addresses, and `connection-join` merges those peer seeds into the local network snapshot
 - `owner-bind` and `connection-join` both refuse to silently overwrite an existing different `owner account`
 - the OpenClaw plugin now auto-runs `runtime-ready` after a successful load, so users usually only need `bootstrap -> restart OpenClaw once`
 
@@ -200,6 +203,7 @@ This boundary is now fixed:
 - the VPS only runs the chain and shared public infrastructure
 - `oasyce-net` is a user-side client / AI runtime, not a centralized backend
 - Thronglets integrates around `owner account + device identity`, not a hosted account service
+- running nodes now try local known peers and connection-file peer seeds first, then fall back to VPS bootstrap
 
 If the target runtime is not one of the native adapters, `install-plan --agent generic --json` now also includes minimal `Python / Node.js / shell` `prehook / hook` snippets, so the runtime does not have to invent its own wrapper contract. If you only want one thinner result, use:
 

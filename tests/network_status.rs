@@ -25,7 +25,9 @@ fn status_json_surfaces_network_snapshot() {
     std::fs::create_dir_all(&data_dir).unwrap();
 
     let mut snapshot = NetworkSnapshot::begin(2);
-    snapshot.mark_peer_connected(3);
+    snapshot.mark_peer_connected("12D3KooWStatus", 3);
+    snapshot.observe_peer_address("12D3KooWStatus", "/ip4/10.0.0.3/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
     snapshot.mark_trace_received();
     snapshot.save(&data_dir);
 
@@ -35,4 +37,42 @@ fn status_json_surfaces_network_snapshot() {
     assert_eq!(status["data"]["network"]["vps_dependency_level"], "low");
     assert_eq!(status["data"]["network"]["peer_count"], 3);
     assert_eq!(status["data"]["network"]["bootstrap_targets"], 2);
+    assert_eq!(status["data"]["network"]["known_peer_count"], 1);
+    assert_eq!(status["data"]["network"]["peer_seed_count"], 1);
+}
+
+#[test]
+fn peers_json_surfaces_known_peer_book() {
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.mark_peer_connected("12D3KooWAlice", 1);
+    snapshot.observe_peer_address("12D3KooWAlice", "/ip4/127.0.0.1/tcp/4001");
+    snapshot.mark_peer_connected("12D3KooWBob", 2);
+    snapshot.observe_peer_address("12D3KooWBob", "/ip4/127.0.0.1/tcp/4002");
+    snapshot.mark_peer_disconnected("12D3KooWAlice", 1);
+    snapshot.merge_peer_seeds(["/ip4/127.0.0.1/tcp/4999".to_string()]);
+    snapshot.save(&data_dir);
+
+    let peers = run_bin(&["peers", "--json", "--limit", "10"], &data_dir);
+    assert_eq!(peers["schema_version"], "thronglets.network.v1");
+    assert_eq!(peers["command"], "peers");
+    assert_eq!(peers["data"]["summary"]["connected_peers"], 1);
+    assert_eq!(peers["data"]["summary"]["known_peers"], 2);
+    assert_eq!(peers["data"]["summary"]["peer_seed_count"], 1);
+    let list = peers["data"]["peers"].as_array().unwrap();
+    let alice = list
+        .iter()
+        .find(|peer| peer["peer_id"] == "12D3KooWAlice")
+        .unwrap();
+    let bob = list
+        .iter()
+        .find(|peer| peer["peer_id"] == "12D3KooWBob")
+        .unwrap();
+    assert_eq!(alice["connected"], false);
+    assert_eq!(bob["connected"], true);
+    assert_eq!(alice["addresses"][0], "/ip4/127.0.0.1/tcp/4001");
+    assert_eq!(bob["addresses"][0], "/ip4/127.0.0.1/tcp/4002");
 }

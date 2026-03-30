@@ -269,11 +269,15 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.2`）：
   - `bootstrap_targets`
   - `bootstrap_contacted_recently`
   - `vps_dependency_level`
+  - `peer_seed_count`
+- 多设备 `connection file` 已开始携带 peer seed 信息
+- `run / mcp` 已经会优先尝试本地已知 peers，再回退 bootstrap
 
 剩余完成标准：
-- 区分 direct / relay / bootstrap-only
-- 增加 `peers` / `net-check` 的更细观察面
-- 给多设备 connection file 带 peer seed 信息
+- 增加 `net-check` 的更细观察面
+- 同 owner 多设备直连优先
+- 把 relay 继续降级成兜底而不是默认路径
+- 做一次 VPS 掉线后的真实故障演练
 
 ## Later
 

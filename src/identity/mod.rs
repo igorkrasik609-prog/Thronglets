@@ -45,6 +45,8 @@ pub struct ConnectionFile {
     pub owner_account: Option<String>,
     pub primary_device_identity: String,
     pub primary_device_pubkey: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peer_seeds: Vec<String>,
     pub exported_at: u64,
     pub expires_at: u64,
     pub signature: String,
@@ -262,6 +264,7 @@ impl ConnectionFile {
         binding: &IdentityBinding,
         node_identity: &NodeIdentity,
         ttl_hours: u32,
+        peer_seeds: Vec<String>,
     ) -> std::io::Result<Self> {
         let owner_account = binding.require_owner_account()?.to_string();
         let exported_at = now_ms();
@@ -270,6 +273,7 @@ impl ConnectionFile {
             owner_account: Some(owner_account),
             primary_device_identity: binding.device_identity.clone(),
             primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
+            peer_seeds,
             exported_at,
             expires_at: exported_at.saturating_add(ttl_hours as u64 * 60 * 60 * 1000),
             signature: String::new(),
@@ -373,6 +377,10 @@ impl ConnectionFile {
         push_optional_bytes(&mut buf, Some(self.owner_account.as_deref().unwrap_or("")));
         push_optional_bytes(&mut buf, Some(self.primary_device_identity.as_str()));
         push_optional_bytes(&mut buf, Some(self.primary_device_pubkey.as_str()));
+        buf.extend_from_slice(&(self.peer_seeds.len() as u32).to_le_bytes());
+        for seed in &self.peer_seeds {
+            push_optional_bytes(&mut buf, Some(seed.as_str()));
+        }
         buf.extend_from_slice(&self.exported_at.to_le_bytes());
         buf.extend_from_slice(&self.expires_at.to_le_bytes());
         buf
@@ -535,8 +543,13 @@ mod tests {
             joined_from_device: None,
             updated_at: 123,
         };
-        let file = ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
-            .unwrap();
+        let file = ConnectionFile::from_binding(
+            &binding,
+            &node,
+            DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            vec!["/ip4/10.0.0.1/tcp/4001".into()],
+        )
+        .unwrap();
         let path = dir.path().join("device.thronglets.json");
         file.save(&path).unwrap();
         let loaded = ConnectionFile::load(&path).unwrap();
@@ -546,6 +559,7 @@ mod tests {
             loaded.primary_device_pubkey,
             hex::encode(&node.public_key_bytes())
         );
+        assert_eq!(loaded.peer_seeds.len(), 1);
         assert!(loaded.expires_at > loaded.exported_at);
     }
 
@@ -561,9 +575,13 @@ mod tests {
             joined_from_device: None,
             updated_at: 123,
         };
-        let mut file =
-            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
-                .unwrap();
+        let mut file = ConnectionFile::from_binding(
+            &binding,
+            &node,
+            DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            vec!["/ip4/10.0.0.1/tcp/4001".into()],
+        )
+        .unwrap();
         file.owner_account = Some("oasyce1other".into());
         let path = dir.path().join("device.thronglets.json");
         file.save(&path).unwrap();
@@ -583,9 +601,13 @@ mod tests {
             joined_from_device: None,
             updated_at: 123,
         };
-        let mut file =
-            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
-                .unwrap();
+        let mut file = ConnectionFile::from_binding(
+            &binding,
+            &node,
+            DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            vec![],
+        )
+        .unwrap();
         file.exported_at = now_ms().saturating_sub(10_000);
         file.expires_at = now_ms().saturating_sub(1_000);
         file.sign_with(&node);
@@ -599,9 +621,13 @@ mod tests {
     fn ownerless_connection_file_cannot_be_created() {
         let node = NodeIdentity::generate();
         let binding = IdentityBinding::new(node.device_identity());
-        let error =
-            ConnectionFile::from_binding(&binding, &node, DEFAULT_CONNECTION_FILE_TTL_HOURS)
-                .unwrap_err();
+        let error = ConnectionFile::from_binding(
+            &binding,
+            &node,
+            DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            vec![],
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

@@ -93,6 +93,7 @@ thronglets status --json
 - `network.activity = offline | bootstrapping | connected`
 - `network.transport_mode = offline | direct | relayed | mixed`
 - `network.vps_dependency_level = offline | bootstrap-only | high | medium | low | peer-native`
+- `network.peer_seed_count`
 
 也就是说，AI 和操作者都不需要再猜“刚才那次绕路是不是 Thronglets 在起作用”。
 同时也能直接看到当前网络是不是还在实质依赖 VPS。
@@ -172,6 +173,7 @@ V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
 - 次设备用这份文件加入同一个 owner
 - 手动填写 account + signer 只保留给高级 fallback 场景
 - connection file 由主设备签名，次设备加入时会先验签
+- connection file 现在还会携带一小份 peer seeds，次设备加入后会先尝试这些已知 peer，再回退 bootstrap
 
 当前本地 primitive 已经就位：
 
@@ -190,6 +192,7 @@ thronglets connection-join --file ./thronglets.connection.json
 - `owner-bind` 是手动高级 fallback
 - `connection-export / connection-join` 是主路径，并且默认验证主设备签名
 - `connection-export` 默认导出 `24h` 有效的 connection file，可用 `--ttl-hours` 调整；`connection-join` 会同时验证签名和过期时间
+- `connection-export` 会把最近观察到的 peer 地址一起写进 connection file；`connection-join` 会把这些 seeds 合并进本地 network snapshot
 - `owner-bind` 和 `connection-join` 默认都不会静默覆盖成另一个 `owner account`
 - OpenClaw 插件现在会在成功加载后自动执行 `runtime-ready`，所以用户通常只需要 `bootstrap -> 重启一次 OpenClaw`
 
@@ -200,6 +203,7 @@ thronglets connection-join --file ./thronglets.connection.json
 - VPS 只跑链和公共基础设施
 - `oasyce-net` 是用户侧客户端 / AI runtime，不是中心化后端
 - Thronglets 默认按 `owner account + device identity` 集成，不要求中心化账户服务
+- 运行节点现在会优先拨号本地已知 peers 和 connection file 继承来的 peer seeds，再回退 VPS bootstrap
 
 如果目标 runtime 不在原生 adapter 列表里，`install-plan --agent generic --json` 现在还会直接给出 `Python / Node.js / shell` 的最小 `prehook / hook` 示例，不需要再自己拼接调用方式。如果只想拿一份更薄的结果，可以直接加：
 

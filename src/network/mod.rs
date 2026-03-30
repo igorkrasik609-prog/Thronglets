@@ -30,7 +30,15 @@ const DHT_CAP_PREFIX: &str = "/thronglets/cap/v1/";
 #[derive(Debug)]
 pub enum NetworkEvent {
     /// A new peer was discovered and connected.
-    PeerConnected(PeerId),
+    PeerConnected {
+        peer_id: PeerId,
+        address: Option<Multiaddr>,
+    },
+    /// A peer address was observed and can be reused as a future seed.
+    PeerObserved {
+        peer_id: PeerId,
+        address: Multiaddr,
+    },
     /// A peer disconnected.
     PeerDisconnected(PeerId),
     /// A trace was received from the network (already deserialized).
@@ -81,6 +89,8 @@ pub struct NetworkConfig {
     pub listen_port: u16,
     /// Bootstrap peer addresses.
     pub bootstrap_peers: Vec<Multiaddr>,
+    /// Previously observed peer addresses to try before bootstrap fallback.
+    pub known_peers: Vec<Multiaddr>,
 }
 
 /// Start the network layer. Returns channels for communication with the node runtime.
@@ -151,7 +161,14 @@ pub async fn start(
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", config.listen_port).parse()?;
     swarm.listen_on(listen_addr)?;
 
-    // Connect to bootstrap peers
+    // Connect to remembered peers first, then bootstrap peers.
+    for addr in &config.known_peers {
+        info!(%addr, "Dialing known peer");
+        if let Err(e) = swarm.dial(addr.clone()) {
+            warn!(%addr, %e, "Failed to dial known peer");
+        }
+    }
+
     for addr in &config.bootstrap_peers {
         info!(%addr, "Dialing bootstrap peer");
         if let Err(e) = swarm.dial(addr.clone()) {
@@ -200,7 +217,13 @@ pub async fn start(
                             for (peer_id, addr) in peers {
                                 info!(%peer_id, %addr, "mDNS: discovered peer");
                                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                                let _ = event_tx
+                                    .send(NetworkEvent::PeerObserved {
+                                        peer_id,
+                                        address: addr,
+                                    })
+                                    .await;
                             }
                         }
                         SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Mdns(
@@ -211,10 +234,26 @@ pub async fn start(
                                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                             }
                         }
-                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        SwarmEvent::ConnectionEstablished {
+                            peer_id,
+                            endpoint,
+                            ..
+                        } => {
                             if connected_peers.insert(peer_id) {
                                 debug!(%peer_id, "Connection established");
-                                let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+                                let remote_address = endpoint.get_remote_address().clone();
+                                let _ = event_tx
+                                    .send(NetworkEvent::PeerObserved {
+                                        peer_id,
+                                        address: remote_address.clone(),
+                                    })
+                                    .await;
+                                let _ = event_tx
+                                    .send(NetworkEvent::PeerConnected {
+                                        peer_id,
+                                        address: Some(remote_address),
+                                    })
+                                    .await;
                             }
                         }
                         SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {

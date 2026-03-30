@@ -46,6 +46,7 @@ use tracing::info;
 
 const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
 const IDENTITY_SCHEMA_VERSION: &str = "thronglets.identity.v1";
+const NETWORK_SCHEMA_VERSION: &str = "thronglets.network.v1";
 const PRESENCE_SCHEMA_VERSION: &str = "thronglets.presence.v1";
 const VERSION_SCHEMA_VERSION: &str = "thronglets.version.v1";
 const RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP: i32 = 50;
@@ -210,6 +211,7 @@ struct ConnectionExportData {
     output: String,
     primary_device_pubkey: String,
     signed_by_device: String,
+    peer_seed_count: usize,
     ttl_hours: u32,
     expires_at: u64,
 }
@@ -219,6 +221,7 @@ struct ConnectionJoinData {
     summary: IdentitySummary,
     file: String,
     signature_verified: bool,
+    imported_peer_seed_count: usize,
     source_expires_at: u64,
 }
 
@@ -227,6 +230,7 @@ struct ConnectionInspectData {
     summary: IdentitySummary,
     file: String,
     primary_device_pubkey: String,
+    peer_seed_count: usize,
     exported_at: u64,
     expires_at: u64,
     ttl_hours: u32,
@@ -244,6 +248,22 @@ struct StatusData {
     database_size_bytes: u64,
     substrate: workspace::SubstrateActivity,
     network: thronglets::network_state::NetworkStatus,
+}
+
+#[derive(Serialize)]
+struct PeersSummary {
+    status: &'static str,
+    connected_peers: usize,
+    known_peers: usize,
+    peer_seed_count: usize,
+    bootstrap_targets: usize,
+    vps_dependency_level: &'static str,
+}
+
+#[derive(Serialize)]
+struct PeersData {
+    summary: PeersSummary,
+    peers: Vec<thronglets::network_state::ObservedPeer>,
 }
 
 #[derive(Serialize)]
@@ -754,8 +774,16 @@ enum Commands {
         port: u16,
     },
 
-    /// Show connected peers
-    Peers,
+    /// Show recently observed peers from the local network snapshot.
+    Peers {
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+
+        /// Maximum peer entries to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 
     /// Show node status and statistics
     Status {
@@ -1994,8 +2022,11 @@ async fn main() {
             ttl_hours,
             json,
         } => {
-            let connection = ConnectionFile::from_binding(&identity_binding, &identity, ttl_hours)
-                .expect("failed to create connection file");
+            let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
+            let peer_seeds = network_snapshot.peer_seed_addresses(16);
+            let connection =
+                ConnectionFile::from_binding(&identity_binding, &identity, ttl_hours, peer_seeds)
+                    .expect("failed to create connection file");
             connection
                 .save(&output)
                 .expect("failed to write connection file");
@@ -2004,6 +2035,7 @@ async fn main() {
                 output: output.display().to_string(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
                 signed_by_device: connection.primary_device_identity.clone(),
+                peer_seed_count: connection.peer_seeds.len(),
                 ttl_hours: connection.ttl_hours(),
                 expires_at: connection.expires_at,
             };
@@ -2018,6 +2050,7 @@ async fn main() {
                 );
                 println!("  Primary device:     {}", identity_binding.device_identity);
                 println!("  Signed by device:   {}", data.signed_by_device);
+                println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
             }
         }
@@ -2035,6 +2068,7 @@ async fn main() {
                 summary,
                 file: file.display().to_string(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
+                peer_seed_count: connection.peer_seeds.len(),
                 exported_at: connection.exported_at,
                 expires_at: connection.expires_at,
                 ttl_hours: connection.ttl_hours(),
@@ -2055,6 +2089,7 @@ async fn main() {
                 );
                 println!("  Primary device:     {}", data.summary.device_identity);
                 println!("  Signature verified: yes");
+                println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
             }
         }
@@ -2071,10 +2106,14 @@ async fn main() {
             binding
                 .save(&identity_binding_path(&dir))
                 .expect("failed to save identity binding");
+            let mut network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
+            network_snapshot.merge_peer_seeds(connection.peer_seeds.clone());
+            network_snapshot.save(&dir);
             let data = ConnectionJoinData {
                 summary: identity_summary("joined", &binding),
                 file: file.display().to_string(),
                 signature_verified: true,
+                imported_peer_seed_count: connection.peer_seeds.len(),
                 source_expires_at: connection.expires_at,
             };
             if json {
@@ -2092,6 +2131,7 @@ async fn main() {
                     connection.primary_device_identity
                 );
                 println!("  Signature verified: yes");
+                println!("  Imported peer seeds: {}", data.imported_peer_seed_count);
             }
         }
 
@@ -2364,8 +2404,8 @@ async fn main() {
 
         Commands::Run { port, bootstrap } => {
             let store = open_store(&dir);
-            let mut network_snapshot =
-                thronglets::network_state::NetworkSnapshot::begin(bootstrap.len());
+            let mut network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
+            network_snapshot.mark_bootstrap_start(bootstrap.len());
             network_snapshot.save(&dir);
 
             let libp2p_keypair =
@@ -2374,10 +2414,16 @@ async fn main() {
 
             let bootstrap_addrs: Vec<libp2p::Multiaddr> =
                 bootstrap.iter().filter_map(|s| s.parse().ok()).collect();
+            let known_peer_addrs: Vec<libp2p::Multiaddr> = network_snapshot
+                .peer_seed_addresses(16)
+                .into_iter()
+                .filter_map(|address| address.parse().ok())
+                .collect();
 
             let config = NetworkConfig {
                 listen_port: port,
                 bootstrap_peers: bootstrap_addrs,
+                known_peers: known_peer_addrs,
             };
 
             let (cmd_tx, mut event_rx) = thronglets::network::start(libp2p_keypair, config)
@@ -2404,9 +2450,23 @@ async fn main() {
                 tokio::select! {
                     Some(event) = event_rx.recv() => {
                         match event {
-                            NetworkEvent::PeerConnected(peer) => {
-                                info!(%peer, "Peer connected");
+                            NetworkEvent::PeerObserved { peer_id, address } => {
+                                network_snapshot.observe_peer_address(
+                                    peer_id.to_string(),
+                                    address.to_string(),
+                                );
+                                network_snapshot.save(&dir);
+                            }
+                            NetworkEvent::PeerConnected { peer_id, address } => {
+                                info!(peer=%peer_id, "Peer connected");
+                                if let Some(address) = address {
+                                    network_snapshot.observe_peer_address(
+                                        peer_id.to_string(),
+                                        address.to_string(),
+                                    );
+                                }
                                 network_snapshot.mark_peer_connected(
+                                    peer_id.to_string(),
                                     network_snapshot.peer_count.saturating_add(1),
                                 );
                                 network_snapshot.save(&dir);
@@ -2414,6 +2474,7 @@ async fn main() {
                             NetworkEvent::PeerDisconnected(peer) => {
                                 info!(%peer, "Peer disconnected");
                                 network_snapshot.mark_peer_disconnected(
+                                    &peer.to_string(),
                                     network_snapshot.peer_count.saturating_sub(1),
                                 );
                                 network_snapshot.save(&dir);
@@ -2491,8 +2552,8 @@ async fn main() {
             let store = Arc::new(store);
 
             let network_tx = if let Some(p) = port {
-                let mut network_snapshot =
-                    thronglets::network_state::NetworkSnapshot::begin(bootstrap.len());
+                let mut network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
+                network_snapshot.mark_bootstrap_start(bootstrap.len());
                 network_snapshot.save(&dir);
                 let libp2p_keypair =
                     libp2p::identity::Keypair::ed25519_from_bytes(&mut identity.secret_key_bytes())
@@ -2500,10 +2561,16 @@ async fn main() {
 
                 let bootstrap_addrs: Vec<libp2p::Multiaddr> =
                     bootstrap.iter().filter_map(|s| s.parse().ok()).collect();
+                let known_peer_addrs: Vec<libp2p::Multiaddr> = network_snapshot
+                    .peer_seed_addresses(16)
+                    .into_iter()
+                    .filter_map(|address| address.parse().ok())
+                    .collect();
 
                 let config = NetworkConfig {
                     listen_port: p,
                     bootstrap_peers: bootstrap_addrs,
+                    known_peers: known_peer_addrs,
                 };
 
                 let (cmd_tx, mut event_rx) = thronglets::network::start(libp2p_keypair, config)
@@ -2521,9 +2588,23 @@ async fn main() {
                         tokio::select! {
                             event = event_rx.recv() => {
                                 match event {
-                                    Some(NetworkEvent::PeerConnected(peer)) => {
-                                        info!(%peer, "Peer connected");
+                                    Some(NetworkEvent::PeerObserved { peer_id, address }) => {
+                                        network_snapshot.observe_peer_address(
+                                            peer_id.to_string(),
+                                            address.to_string(),
+                                        );
+                                        network_snapshot.save(&data_dir);
+                                    }
+                                    Some(NetworkEvent::PeerConnected { peer_id, address }) => {
+                                        info!(peer=%peer_id, "Peer connected");
+                                        if let Some(address) = address {
+                                            network_snapshot.observe_peer_address(
+                                                peer_id.to_string(),
+                                                address.to_string(),
+                                            );
+                                        }
                                         network_snapshot.mark_peer_connected(
+                                            peer_id.to_string(),
                                             network_snapshot.peer_count.saturating_add(1),
                                         );
                                         network_snapshot.save(&data_dir);
@@ -2531,6 +2612,7 @@ async fn main() {
                                     Some(NetworkEvent::PeerDisconnected(peer)) => {
                                         info!(%peer, "Peer disconnected");
                                         network_snapshot.mark_peer_disconnected(
+                                            &peer.to_string(),
                                             network_snapshot.peer_count.saturating_sub(1),
                                         );
                                         network_snapshot.save(&data_dir);
@@ -3187,9 +3269,47 @@ async fn main() {
                 .expect("HTTP server failed");
         }
 
-        Commands::Peers => {
-            println!("The 'peers' command requires a running node.");
-            println!("Use 'thronglets run' to start a node, then peers are logged to console.");
+        Commands::Peers { json, limit } => {
+            let snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
+            let status = snapshot.to_status();
+            let peers: Vec<_> = snapshot.peers.into_iter().take(limit).collect();
+            let data = PeersData {
+                summary: PeersSummary {
+                    status: status.activity,
+                    connected_peers: status.peer_count,
+                    known_peers: status.known_peer_count,
+                    peer_seed_count: status.peer_seed_count,
+                    bootstrap_targets: status.bootstrap_targets,
+                    vps_dependency_level: status.vps_dependency_level,
+                },
+                peers,
+            };
+            if json {
+                print_machine_json_with_schema(NETWORK_SCHEMA_VERSION, "peers", &data);
+            } else if data.peers.is_empty() {
+                println!("No peers observed yet.");
+                println!(
+                    "Network status: {} ({})",
+                    status.activity, status.vps_dependency_level
+                );
+            } else {
+                println!(
+                    "Known peers: {} ({} currently connected, {} seeds, dependency {})",
+                    data.summary.known_peers,
+                    data.summary.connected_peers,
+                    data.summary.peer_seed_count,
+                    data.summary.vps_dependency_level
+                );
+                let now = chrono::Utc::now().timestamp_millis();
+                for peer in &data.peers {
+                    let age_s = (now.saturating_sub(peer.last_seen_at_ms)) / 1000;
+                    let state = if peer.connected { "connected" } else { "seen" };
+                    println!("  {state}: {} ({age_s}s ago)", peer.peer_id);
+                    if !peer.addresses.is_empty() {
+                        println!("    addrs: {}", peer.addresses.join(", "));
+                    }
+                }
+            }
         }
 
         Commands::Status { json } => {
@@ -3274,6 +3394,7 @@ async fn main() {
                     "  Bootstrap:       {} targets, dependency {}",
                     data.network.bootstrap_targets, data.network.vps_dependency_level
                 );
+                println!("  Known peers:     {}", data.network.known_peer_count);
                 println!(
                     "  Bootstrap seen:  {}",
                     if data.network.bootstrap_contacted_recently {

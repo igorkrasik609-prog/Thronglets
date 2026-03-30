@@ -48,6 +48,7 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     let config_b = NetworkConfig {
         listen_port: port_b,
         bootstrap_peers: vec![bootstrap_a],
+        known_peers: Vec::new(),
     };
     let (cmd_tx_b, mut event_rx_b) = thronglets::network::start(keypair_b, config_b)
         .await
@@ -62,12 +63,12 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     while tokio::time::Instant::now() < discover_deadline && !(a_found_b && b_found_a) {
         tokio::select! {
             Some(event) = event_rx_a.recv() => {
-                if matches!(event, NetworkEvent::PeerConnected(_)) {
+                if matches!(event, NetworkEvent::PeerConnected { .. }) {
                     a_found_b = true;
                 }
             }
             Some(event) = event_rx_b.recv() => {
-                if matches!(event, NetworkEvent::PeerConnected(_)) {
+                if matches!(event, NetworkEvent::PeerConnected { .. }) {
                     b_found_a = true;
                 }
             }

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Direct-first peer seeds** — `connection-export` now includes a small set of recently observed peer addresses, `connection-join` imports those seeds into the local network snapshot, and `run` / `mcp` now try remembered peers before falling back to VPS bootstrap so multi-device onboarding starts closer to true peer-first behavior
+
 ## v0.4.2 — 2026-03-30
 
 - **Visible substrate activity** — `status --json` and HTTP `/v1/status` now expose `substrate.activity` (`active / learning / quiet`) plus recent intervention metadata, so agents can distinguish Thronglets intervention from ordinary runtime failure instead of guessing
