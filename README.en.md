@@ -102,7 +102,7 @@ The default user entry points are now:
 `thronglets join` automatically does three things:
 - wires up the current runtime on this device
 - verifies and imports the connection file exported by the primary device
-- returns only the resulting state for this device: `identity-only / network-paths-ready / network-ready`
+- tells you only whether this device still needs a better share file, is waiting for its first live connection, or is already ready to use
 
 `thronglets share` writes the connection file to `~/Desktop/thronglets.connection.json` by default and tells you whether that file is still `identity-only`, already carries peer seeds, or has reached `trusted-same-owner-ready`. The second device also looks for `~/Desktop/thronglets.connection.json` by default, so normal users do not need to type a file argument on the join path.
 

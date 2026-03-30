@@ -1411,8 +1411,7 @@ fn render_join_flow_report(data: &JoinFlowData) {
         println!("  Next:    {step}");
     }
     println!("  File:    {}", data.file);
-    println!("  Inspect: {}", human_readiness_label(&data.inspect));
-    println!("  Ready:   {}", human_readiness_label(&data.readiness));
+    println!("  State:   {}", human_readiness_label(&data.readiness));
     println!("  Device:  {}", data.identity.device_identity);
 }
 
@@ -1420,12 +1419,7 @@ fn render_share_flow_report(data: &ShareFlowData) {
     println!("Thronglets: {}", human_onboarding_label(&data.summary));
     println!("  Meaning: {}", data.summary.detail);
     println!("  Output:  {}", data.output);
-    println!("  Ready:   {}", human_readiness_label(&data.readiness));
-    println!("  Seeds:   {}", data.peer_seed_scope);
-    println!(
-        "  Count:   {} trusted / {} total",
-        data.trusted_peer_seed_count, data.peer_seed_count
-    );
+    println!("  State:   {}", human_readiness_label(&data.readiness));
     if let Some(step) = &data.summary.next_step {
         println!("  Next:    {step}");
     }
@@ -1434,10 +1428,10 @@ fn render_share_flow_report(data: &ShareFlowData) {
 fn human_readiness_label(summary: &ReadinessSummary) -> &'static str {
     match summary.status {
         "local-only" => "ready on this device",
-        "identity-only" => "joined, waiting for network paths",
-        "network-paths-ready" => "joined, waiting to connect",
-        "network-ready" => "ready and connected",
-        "trusted-same-owner-ready" => "ready with trusted recovery",
+        "identity-only" => "waiting for a better share file",
+        "network-paths-ready" => "waiting for the first live connection",
+        "network-ready" => "ready now",
+        "trusted-same-owner-ready" => "ready now, with fast recovery",
         _ => summary.status,
     }
 }
@@ -1449,9 +1443,9 @@ fn human_onboarding_label(summary: &OnboardingSummary) -> &'static str {
         "local-ready" => "ready on this device",
         "share-ready" => "share this file",
         "share-limited" => "share now, then keep learning peers",
-        "identity-only" => "joined, waiting for network paths",
-        "network-paths-ready" => "joined, waiting to connect",
-        "network-ready" => "ready and connected",
+        "identity-only" => "waiting for a better share file",
+        "network-paths-ready" => "waiting for the first live connection",
+        "network-ready" => "ready now",
         _ => summary.status,
     }
 }

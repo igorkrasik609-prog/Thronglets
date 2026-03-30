@@ -102,7 +102,7 @@ thronglets start
 `thronglets join` 会自动做三件事：
 - 接好这台机器当前的 runtime
 - 验签并导入主设备导出的 connection file
-- 最后只返回这台机器当前是 `identity-only / network-paths-ready / network-ready`
+- 最后只告诉你这台机器现在是“还需要更好的分享文件”、“正在等第一次连上”，还是“已经可以直接用了”
 
 `thronglets share` 默认会把连接文件写到 `~/Desktop/thronglets.connection.json`，并直接告诉你这份文件现在只是 `identity-only`、已经带 `peer seeds`，还是已经到了 `trusted-same-owner-ready`。第二台设备默认也会去 `~/Desktop/thronglets.connection.json` 读这份文件，所以正常用户路径不需要再手敲文件参数。
 

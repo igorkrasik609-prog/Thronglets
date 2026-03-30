@@ -44,6 +44,23 @@ fn run_bin_raw(args: &[&str], data_dir: &Path) -> std::process::Output {
         .expect("failed to run thronglets")
 }
 
+fn run_bin_text_in_home(args: &[&str], home: &Path, data_dir: &Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args(["--data-dir", data_dir.to_str().unwrap()])
+        .args(args)
+        .env("HOME", home)
+        .env("PATH", "")
+        .output()
+        .expect("failed to run thronglets");
+    assert!(
+        output.status.success(),
+        "command failed: {}\nstderr={}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("stdout should be utf-8")
+}
+
 #[test]
 fn id_json_surfaces_identity_summary() {
     let temp = TempDir::new().unwrap();
@@ -117,6 +134,21 @@ fn share_json_defaults_to_desktop_connection_file_for_primary_device() {
             .display()
             .to_string()
     );
+}
+
+#[test]
+fn share_text_hides_seed_scope_details() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join("Desktop")).unwrap();
+    let data_dir = temp.path().join("data");
+
+    let output = run_bin_text_in_home(&["share"], &home, &data_dir);
+
+    assert!(output.contains("Thronglets:"));
+    assert!(output.contains("Output:"));
+    assert!(!output.contains("Seeds:"));
+    assert!(!output.contains("Count:"));
 }
 
 #[test]
@@ -369,6 +401,39 @@ fn join_json_defaults_to_desktop_connection_file() {
             .display()
             .to_string()
     );
+}
+
+#[test]
+fn join_text_hides_inspect_stage_details() {
+    let temp = TempDir::new().unwrap();
+    let primary_home = temp.path().join("primary-home");
+    let secondary_home = temp.path().join("secondary-home");
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
+
+    std::fs::create_dir_all(primary_home.join("Desktop")).unwrap();
+    std::fs::create_dir_all(secondary_home.join("Desktop")).unwrap();
+
+    run_bin_in_home(&["start", "--json"], &primary_home, &primary_dir);
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.observe_peer_address("12D3KooWAlpha", "/ip4/10.0.0.1/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.save(&primary_dir);
+
+    run_bin_in_home(&["share", "--json"], &primary_home, &primary_dir);
+
+    std::fs::copy(
+        primary_home.join("Desktop").join("thronglets.connection.json"),
+        secondary_home.join("Desktop").join("thronglets.connection.json"),
+    )
+    .unwrap();
+
+    let output = run_bin_text_in_home(&["join"], &secondary_home, &secondary_dir);
+
+    assert!(output.contains("Thronglets:"));
+    assert!(output.contains("State:"));
+    assert!(!output.contains("Inspect:"));
 }
 
 #[test]
