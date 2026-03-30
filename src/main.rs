@@ -222,12 +222,31 @@ struct RuntimeReadyData {
 }
 
 #[derive(Clone, Serialize)]
+struct IdentityRoleBlueprint {
+    definition: &'static str,
+    current_v1_binding: &'static str,
+    current_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct IdentityBlueprint {
+    version: &'static str,
+    authorization_truth_source: &'static str,
+    public_finality_layer: &'static str,
+    principal: IdentityRoleBlueprint,
+    account: IdentityRoleBlueprint,
+    delegate: IdentityRoleBlueprint,
+    session: IdentityRoleBlueprint,
+}
+
+#[derive(Clone, Serialize)]
 struct IdentitySummary {
     status: &'static str,
     owner_account: Option<String>,
     device_identity: String,
     binding_source: String,
     joined_from_device: Option<String>,
+    identity_model: IdentityBlueprint,
 }
 
 #[derive(Clone, Serialize)]
@@ -1138,6 +1157,34 @@ fn print_machine_json_with_schema<T: serde::Serialize>(
     });
 }
 
+fn identity_blueprint(owner_account: Option<String>, device_identity: String) -> IdentityBlueprint {
+    IdentityBlueprint {
+        version: "principal-account-delegate-session.v1",
+        authorization_truth_source: "oasyce_chain",
+        public_finality_layer: "oasyce_chain",
+        principal: IdentityRoleBlueprint {
+            definition: "continuous subject",
+            current_v1_binding: "not-modeled-in-v1",
+            current_id: None,
+        },
+        account: IdentityRoleBlueprint {
+            definition: "asset / settlement container",
+            current_v1_binding: "owner_account",
+            current_id: owner_account,
+        },
+        delegate: IdentityRoleBlueprint {
+            definition: "authorized executor",
+            current_v1_binding: "device_identity",
+            current_id: Some(device_identity),
+        },
+        session: IdentityRoleBlueprint {
+            definition: "one concrete run; never an economic subject",
+            current_v1_binding: "session_id_audit_label",
+            current_id: None,
+        },
+    }
+}
+
 fn identity_summary(status: &'static str, binding: &IdentityBinding) -> IdentitySummary {
     IdentitySummary {
         status,
@@ -1145,6 +1192,10 @@ fn identity_summary(status: &'static str, binding: &IdentityBinding) -> Identity
         device_identity: binding.device_identity.clone(),
         binding_source: binding.binding_source_or_local().to_string(),
         joined_from_device: binding.joined_from_device.clone(),
+        identity_model: identity_blueprint(
+            binding.owner_account.clone(),
+            binding.device_identity.clone(),
+        ),
     }
 }
 
@@ -3079,6 +3130,10 @@ async fn main() {
                 device_identity: connection.primary_device_identity.clone(),
                 binding_source: "connection_file".into(),
                 joined_from_device: None,
+                identity_model: identity_blueprint(
+                    connection.owner_account.clone(),
+                    connection.primary_device_identity.clone(),
+                ),
             };
             let inspected_trusted_peer_seed_count = match connection.peer_seed_scope {
                 ConnectionSeedScope::Trusted => connection.peer_seeds.len(),

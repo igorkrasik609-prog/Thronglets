@@ -73,6 +73,26 @@ fn id_json_surfaces_identity_summary() {
     assert_eq!(data["data"]["summary"]["status"], "healthy");
     assert_eq!(data["data"]["summary"]["binding_source"], "local");
     assert_eq!(data["data"]["summary"]["owner_account"], Value::Null);
+    assert_eq!(
+        data["data"]["summary"]["identity_model"]["principal"]["current_v1_binding"],
+        "not-modeled-in-v1"
+    );
+    assert_eq!(
+        data["data"]["summary"]["identity_model"]["account"]["current_v1_binding"],
+        "owner_account"
+    );
+    assert_eq!(
+        data["data"]["summary"]["identity_model"]["delegate"]["current_v1_binding"],
+        "device_identity"
+    );
+    assert_eq!(
+        data["data"]["summary"]["identity_model"]["session"]["current_v1_binding"],
+        "session_id_audit_label"
+    );
+    assert_eq!(
+        data["data"]["summary"]["identity_model"]["account"]["current_id"],
+        Value::Null
+    );
     assert_eq!(data["data"]["summary"]["joined_from_device"], Value::Null);
     assert!(
         data["data"]["summary"]["device_identity"]
@@ -619,6 +639,14 @@ fn owner_bind_after_ownerless_connection_join_preserves_join_origin() {
     assert_eq!(
         bound["data"]["summary"]["joined_from_device"],
         primary_device.as_str()
+    );
+    assert_eq!(
+        bound["data"]["summary"]["identity_model"]["account"]["current_id"],
+        "oasyce1owner"
+    );
+    assert_eq!(
+        bound["data"]["summary"]["identity_model"]["delegate"]["current_id"],
+        bound["data"]["summary"]["device_identity"]
     );
 }
 

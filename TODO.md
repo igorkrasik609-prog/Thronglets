@@ -258,6 +258,10 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - `delegate`：被 `principal` 授权执行的人 / 设备 / runtime / worker
 - `session`：一次具体运行，永不作为经济主体
 
+当前状态：
+- 文档和长期记忆已经冻结这 4 个对象
+- 机器输出已经开始附带当前 V1 到 `principal / account / delegate / session` 的映射
+
 四层职责固定为：
 - `Psyche = subjective continuity substrate`
 - `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
