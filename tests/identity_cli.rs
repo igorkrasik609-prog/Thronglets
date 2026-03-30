@@ -191,6 +191,48 @@ fn connection_join_imports_peer_seeds_into_local_snapshot() {
 }
 
 #[test]
+fn connection_export_prefers_trusted_peer_seeds() {
+    let temp = TempDir::new().unwrap();
+    let primary_dir = temp.path().join("primary");
+    let connection_file = temp.path().join("device.connection.json");
+
+    run_bin(
+        &["owner-bind", "--owner-account", "oasyce1owner", "--json"],
+        &primary_dir,
+    );
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.observe_peer_address("12D3KooWAlpha", "/ip4/10.0.0.1/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.merge_trusted_peer_seeds(["/ip4/10.0.0.8/tcp/4001".to_string()]);
+    snapshot.save(&primary_dir);
+
+    let exported = run_bin(
+        &[
+            "connection-export",
+            "--output",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &primary_dir,
+    );
+    assert_eq!(exported["data"]["trusted_peer_seed_count"], 1);
+    assert_eq!(exported["data"]["peer_seed_count"], 1);
+
+    let inspected = run_bin(
+        &[
+            "connection-inspect",
+            "--file",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &primary_dir,
+    );
+    assert_eq!(inspected["data"]["trusted_peer_seed_count"], 1);
+    assert_eq!(inspected["data"]["peer_seed_count"], 1);
+}
+
+#[test]
 fn expired_connection_file_join_fails() {
     let temp = TempDir::new().unwrap();
     let primary_dir = temp.path().join("primary");

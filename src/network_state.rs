@@ -198,6 +198,15 @@ impl NetworkSnapshot {
         seeds
     }
 
+    pub fn connection_peer_seeds(&self, limit: usize) -> Vec<String> {
+        let trusted = self.trusted_peer_seed_addresses(limit);
+        if trusted.is_empty() {
+            self.peer_seed_addresses(limit)
+        } else {
+            trusted
+        }
+    }
+
     pub fn trusted_peer_seed_addresses(&self, limit: usize) -> Vec<String> {
         let mut seeds = self.trusted_peer_seeds.clone();
         seeds.truncate(limit);
@@ -446,5 +455,27 @@ mod tests {
         assert_eq!(remembered[0], "/ip4/10.0.0.3/tcp/4001");
         assert!(remembered.contains(&"/ip4/10.0.0.1/tcp/4001".to_string()));
         assert!(!remembered.contains(&"/ip4/10.0.0.9/tcp/4001".to_string()));
+    }
+
+    #[test]
+    fn connection_peer_seeds_prefer_trusted_over_generic() {
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.merge_peer_seeds([
+            "/ip4/10.0.0.1/tcp/4001".to_string(),
+            "/ip4/10.0.0.2/tcp/4001".to_string(),
+        ]);
+        snapshot.merge_trusted_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+
+        let seeds = snapshot.connection_peer_seeds(8);
+        assert_eq!(seeds, vec!["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    }
+
+    #[test]
+    fn connection_peer_seeds_fall_back_to_generic_when_untrusted() {
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.merge_peer_seeds(["/ip4/10.0.0.1/tcp/4001".to_string()]);
+
+        let seeds = snapshot.connection_peer_seeds(8);
+        assert_eq!(seeds, vec!["/ip4/10.0.0.1/tcp/4001".to_string()]);
     }
 }

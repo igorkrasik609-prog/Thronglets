@@ -2291,7 +2291,7 @@ async fn main() {
         } => {
             let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
             let network_status = network_snapshot.to_status();
-            let peer_seeds = network_snapshot.peer_seed_addresses(16);
+            let peer_seeds = network_snapshot.connection_peer_seeds(16);
             let connection =
                 ConnectionFile::from_binding(&identity_binding, &identity, ttl_hours, peer_seeds)
                     .expect("failed to create connection file");
