@@ -59,20 +59,23 @@ impl NetworkSnapshot {
     }
 
     pub fn begin(bootstrap_targets: usize) -> Self {
-        let now = now_ms();
         Self {
-            updated_at_ms: now,
+            updated_at_ms: now_ms(),
             bootstrap_targets,
-            last_bootstrap_contact_at_ms: (bootstrap_targets > 0).then_some(now),
             ..Self::default()
         }
     }
 
-    pub fn mark_bootstrap_start(&mut self, bootstrap_targets: usize) {
+    pub fn configure_bootstrap(&mut self, bootstrap_targets: usize) {
+        self.updated_at_ms = now_ms();
+        self.bootstrap_targets = bootstrap_targets;
+    }
+
+    pub fn mark_bootstrap_contact(&mut self, bootstrap_targets: usize) {
         let now = now_ms();
         self.updated_at_ms = now;
         self.bootstrap_targets = bootstrap_targets;
-        self.last_bootstrap_contact_at_ms = (bootstrap_targets > 0).then_some(now);
+        self.last_bootstrap_contact_at_ms = Some(now);
     }
 
     pub fn load(data_dir: &Path) -> Self {
@@ -317,12 +320,23 @@ mod tests {
 
     #[test]
     fn bootstrap_only_status_is_detected() {
-        let snapshot = NetworkSnapshot::begin(1);
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.mark_bootstrap_contact(1);
         let status = snapshot.to_status();
         assert_eq!(status.activity, "bootstrapping");
         assert_eq!(status.vps_dependency_level, "bootstrap-only");
         assert_eq!(status.bootstrap_fallback_mode, "immediate");
         assert!(status.bootstrap_contacted_recently);
+    }
+
+    #[test]
+    fn configured_bootstrap_is_not_counted_as_recent_contact() {
+        let snapshot = NetworkSnapshot::begin(1);
+        let status = snapshot.to_status();
+        assert_eq!(status.activity, "offline");
+        assert_eq!(status.vps_dependency_level, "bootstrap-only");
+        assert_eq!(status.bootstrap_fallback_mode, "immediate");
+        assert!(!status.bootstrap_contacted_recently);
     }
 
     #[test]

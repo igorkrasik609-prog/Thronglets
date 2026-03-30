@@ -30,6 +30,8 @@ const BOOTSTRAP_FALLBACK_DELAY: Duration = Duration::from_secs(5);
 /// Events emitted by the network layer to the node runtime.
 #[derive(Debug)]
 pub enum NetworkEvent {
+    /// Bootstrap peers were actively dialed as a fallback path.
+    BootstrapContacted { targets: usize },
     /// A new peer was discovered and connected.
     PeerConnected {
         peer_id: PeerId,
@@ -159,12 +161,17 @@ pub async fn start(
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", config.listen_port).parse()?;
     swarm.listen_on(listen_addr)?;
 
-    let mut bootstrap_fallback_at =
-        dial_peer_first(&mut swarm, &config.known_peers, &config.bootstrap_peers);
-
     // Channels
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(256);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<NetworkCommand>(256);
+
+    let (mut bootstrap_fallback_at, contacted_bootstrap) =
+        dial_peer_first(&mut swarm, &config.known_peers, &config.bootstrap_peers);
+    if contacted_bootstrap {
+        let _ = event_tx.try_send(NetworkEvent::BootstrapContacted {
+            targets: config.bootstrap_peers.len(),
+        });
+    }
 
     // Pending DHT query replies
     let mut pending_dht_queries: std::collections::HashMap<
@@ -190,6 +197,11 @@ pub async fn start(
                 } => {
                     if connected_peers.is_empty() && !config.bootstrap_peers.is_empty() {
                         dial_bootstrap_peers(&mut swarm, &config.bootstrap_peers);
+                        let _ = event_tx
+                            .send(NetworkEvent::BootstrapContacted {
+                                targets: config.bootstrap_peers.len(),
+                            })
+                            .await;
                     }
                     bootstrap_fallback_at = None;
                 }
@@ -262,11 +274,19 @@ pub async fn start(
                             if num_established == 0 && connected_peers.remove(&peer_id) {
                                 debug!(%peer_id, "Connection closed");
                                 if connected_peers.is_empty() {
-                                    bootstrap_fallback_at = dial_peer_first(
+                                    let (next_fallback_at, contacted_bootstrap) = dial_peer_first(
                                         &mut swarm,
                                         &config.known_peers,
                                         &config.bootstrap_peers,
                                     );
+                                    bootstrap_fallback_at = next_fallback_at;
+                                    if contacted_bootstrap {
+                                        let _ = event_tx
+                                            .send(NetworkEvent::BootstrapContacted {
+                                                targets: config.bootstrap_peers.len(),
+                                            })
+                                            .await;
+                                    }
                                 }
                                 let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
                             }
@@ -383,16 +403,25 @@ fn dial_peer_first(
     swarm: &mut libp2p::Swarm<ThrongletsNetworkBehaviour>,
     known_peers: &[Multiaddr],
     bootstrap_peers: &[Multiaddr],
-) -> Option<tokio::time::Instant> {
+) -> (Option<tokio::time::Instant>, bool) {
     dial_known_peers(swarm, known_peers);
-    bootstrap_fallback_delay(known_peers.len(), bootstrap_peers.len()).and_then(|delay| {
+    let contacted_bootstrap = bootstrap_fallback_delay(known_peers.len(), bootstrap_peers.len())
+        .is_some_and(|delay| {
+            if delay.is_zero() {
+                dial_bootstrap_peers(swarm, bootstrap_peers);
+                true
+            } else {
+                false
+            }
+        });
+    let fallback_at = bootstrap_fallback_delay(known_peers.len(), bootstrap_peers.len()).and_then(|delay| {
         if delay.is_zero() {
-            dial_bootstrap_peers(swarm, bootstrap_peers);
             None
         } else {
             Some(tokio::time::Instant::now() + delay)
         }
-    })
+    });
+    (fallback_at, contacted_bootstrap)
 }
 
 fn dial_known_peers(

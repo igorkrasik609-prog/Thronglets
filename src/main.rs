@@ -2661,7 +2661,7 @@ async fn main() {
         Commands::Run { port, bootstrap } => {
             let store = open_store(&dir);
             let mut network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
-            network_snapshot.mark_bootstrap_start(bootstrap.len());
+            network_snapshot.configure_bootstrap(bootstrap.len());
             network_snapshot.save(&dir);
 
             let libp2p_keypair =
@@ -2706,6 +2706,10 @@ async fn main() {
                 tokio::select! {
                     Some(event) = event_rx.recv() => {
                         match event {
+                            NetworkEvent::BootstrapContacted { targets } => {
+                                network_snapshot.mark_bootstrap_contact(targets);
+                                network_snapshot.save(&dir);
+                            }
                             NetworkEvent::PeerObserved { peer_id, address } => {
                                 network_snapshot.observe_peer_address(
                                     peer_id.to_string(),
@@ -2809,7 +2813,7 @@ async fn main() {
 
             let network_tx = if let Some(p) = port {
                 let mut network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
-                network_snapshot.mark_bootstrap_start(bootstrap.len());
+                network_snapshot.configure_bootstrap(bootstrap.len());
                 network_snapshot.save(&dir);
                 let libp2p_keypair =
                     libp2p::identity::Keypair::ed25519_from_bytes(&mut identity.secret_key_bytes())
@@ -2844,6 +2848,10 @@ async fn main() {
                         tokio::select! {
                             event = event_rx.recv() => {
                                 match event {
+                                    Some(NetworkEvent::BootstrapContacted { targets }) => {
+                                        network_snapshot.mark_bootstrap_contact(targets);
+                                        network_snapshot.save(&data_dir);
+                                    }
                                     Some(NetworkEvent::PeerObserved { peer_id, address }) => {
                                         network_snapshot.observe_peer_address(
                                             peer_id.to_string(),

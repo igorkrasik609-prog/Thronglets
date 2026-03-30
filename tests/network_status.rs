@@ -48,6 +48,21 @@ fn status_json_surfaces_network_snapshot() {
 }
 
 #[test]
+fn status_json_requires_actual_bootstrap_contact_for_bootstrapping() {
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let snapshot = NetworkSnapshot::begin(1);
+    snapshot.save(&data_dir);
+
+    let status = run_bin(&["status", "--json"], &data_dir);
+    assert_eq!(status["data"]["network"]["activity"], "offline");
+    assert_eq!(status["data"]["network"]["bootstrap_targets"], 1);
+    assert_eq!(status["data"]["network"]["bootstrap_contacted_recently"], false);
+}
+
+#[test]
 fn peers_json_surfaces_known_peer_book() {
     let temp = TempDir::new().unwrap();
     let data_dir = temp.path().join("data");

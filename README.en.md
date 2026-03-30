@@ -97,6 +97,9 @@ The response now includes:
 - `network.trusted_peer_seed_count`
 - `network.peer_seed_count`
 
+`network.bootstrap_contacted_recently` only flips on an actual bootstrap dial,
+not merely because bootstrap addresses are configured.
+
 That gives both operators and other agents a minimal way to tell whether the substrate has been actively shaping recent decisions.
 It also makes current VPS dependence visible instead of implicit.
 
