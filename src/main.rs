@@ -1395,40 +1395,32 @@ fn collect_status_data(
 }
 
 fn render_start_report(data: &StartData) {
-    println!("Thronglets start: {}", data.summary.status);
+    println!("Thronglets: {}", human_onboarding_label(&data.summary));
     println!("  Meaning: {}", data.summary.detail);
     if let Some(step) = &data.summary.next_step {
         println!("  Next:    {step}");
     }
-    println!(
-        "  Runtime: {}",
-        if data.setup.restart_required || data.setup.restart_pending {
-            "restart-required"
-        } else {
-            data.setup.status
-        }
-    );
     println!("  Device:  {}", data.identity.device_identity);
-    println!("  Ready:   {}", data.readiness.status);
+    println!("  Ready:   {}", human_readiness_label(&data.readiness));
 }
 
 fn render_join_flow_report(data: &JoinFlowData) {
-    println!("Thronglets join: {}", data.summary.status);
+    println!("Thronglets: {}", human_onboarding_label(&data.summary));
     println!("  Meaning: {}", data.summary.detail);
     if let Some(step) = &data.summary.next_step {
         println!("  Next:    {step}");
     }
     println!("  File:    {}", data.file);
-    println!("  Inspect: {}", data.inspect.status);
-    println!("  Ready:   {}", data.readiness.status);
+    println!("  Inspect: {}", human_readiness_label(&data.inspect));
+    println!("  Ready:   {}", human_readiness_label(&data.readiness));
     println!("  Device:  {}", data.identity.device_identity);
 }
 
 fn render_share_flow_report(data: &ShareFlowData) {
-    println!("Thronglets share: {}", data.summary.status);
+    println!("Thronglets: {}", human_onboarding_label(&data.summary));
     println!("  Meaning: {}", data.summary.detail);
     println!("  Output:  {}", data.output);
-    println!("  Ready:   {}", data.readiness.status);
+    println!("  Ready:   {}", human_readiness_label(&data.readiness));
     println!("  Seeds:   {}", data.peer_seed_scope);
     println!(
         "  Count:   {} trusted / {} total",
@@ -1436,6 +1428,31 @@ fn render_share_flow_report(data: &ShareFlowData) {
     );
     if let Some(step) = &data.summary.next_step {
         println!("  Next:    {step}");
+    }
+}
+
+fn human_readiness_label(summary: &ReadinessSummary) -> &'static str {
+    match summary.status {
+        "local-only" => "ready on this device",
+        "identity-only" => "joined, waiting for network paths",
+        "network-paths-ready" => "joined, waiting to connect",
+        "network-ready" => "ready and connected",
+        "trusted-same-owner-ready" => "ready with trusted recovery",
+        _ => summary.status,
+    }
+}
+
+fn human_onboarding_label(summary: &OnboardingSummary) -> &'static str {
+    match summary.status {
+        "needs-fix" => "needs attention",
+        "restart-required" => "restart once",
+        "local-ready" => "ready on this device",
+        "share-ready" => "share this file",
+        "share-limited" => "share now, then keep learning peers",
+        "identity-only" => "joined, waiting for network paths",
+        "network-paths-ready" => "joined, waiting to connect",
+        "network-ready" => "ready and connected",
+        _ => summary.status,
     }
 }
 
@@ -4577,84 +4594,36 @@ async fn main() {
 
         Commands::Status { json } => {
             let data = collect_status_data(&dir, &identity, &identity_binding);
-
-            let size_display = if data.database_size_bytes >= 1_048_576 {
-                format!("{:.1} MB", data.database_size_bytes as f64 / 1_048_576.0)
-            } else if data.database_size_bytes >= 1024 {
-                format!("{:.1} KB", data.database_size_bytes as f64 / 1024.0)
-            } else {
-                format!("{} B", data.database_size_bytes)
-            };
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "status", &data);
             } else {
                 println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
                 println!();
-                println!("  Status:           {}", data.summary.status);
+                println!("  Status:           {}", human_readiness_label(&data.summary));
                 println!("  Meaning:          {}", data.summary.detail);
                 if let Some(step) = &data.summary.next_step {
                     println!("  Next:             {step}");
                 }
                 println!();
-                println!("  Node ID:          {}", data.node_id);
-                println!("  Oasyce address:   {}", data.oasyce_address);
                 println!("  Device identity:  {}", data.identity.device_identity);
                 println!(
                     "  Owner account:    {}",
                     identity_binding.owner_account_or_unbound()
                 );
-                println!("  Binding source:   {}", data.identity.binding_source);
-                println!(
-                    "  Joined from:      {}",
-                    identity_binding.joined_from_device_or_none()
-                );
-                println!("  Data directory:   {}", data.data_dir);
-                println!();
-                println!("  Substrate:       {}", data.substrate.activity);
-                if let Some(tool) = &data.substrate.last_intervention_tool {
-                    let kinds = if data.substrate.last_intervention_kinds.is_empty() {
-                        "none".to_string()
-                    } else {
-                        data.substrate.last_intervention_kinds.join(", ")
-                    };
-                    let age = data.substrate.last_intervention_age_ms.unwrap_or_default() / 1000;
-                    println!("  Last signal:     {tool} ({kinds}, {age}s ago)");
-                }
-                println!(
-                    "  Interventions:   {} in last 15m",
-                    data.substrate.recent_interventions_15m
-                );
                 println!();
                 println!(
-                    "  Network:         {} ({})",
-                    data.network.activity, data.network.transport_mode
-                );
-                println!(
-                    "  Peers:           {} direct / {} relayed",
-                    data.network.direct_peer_count, data.network.relay_peer_count
-                );
-                println!(
-                    "  Bootstrap:       {} targets, dependency {}",
-                    data.network.bootstrap_targets, data.network.vps_dependency_level
-                );
-                println!(
-                    "  Known peers:     {} ({} trusted seeds, {} total seeds)",
-                    data.network.known_peer_count,
-                    data.network.trusted_peer_seed_count,
-                    data.network.peer_seed_count
-                );
-                println!(
-                    "  Bootstrap seen:  {}",
-                    if data.network.bootstrap_contacted_recently {
-                        "recently"
+                    "  Network:          {}",
+                    if data.summary.connected {
+                        "online"
+                    } else if data.summary.network_path_ready {
+                        "waiting to connect"
                     } else {
-                        "not recently"
+                        "offline"
                     }
                 );
-                println!();
-                println!("  Trace count:      {}", data.trace_count);
-                println!("  Capabilities:     {}", data.capabilities);
-                println!("  Database size:    {}", size_display);
+                println!(
+                    "  Help:             run `thronglets status --json` if you need full diagnostics"
+                );
             }
         }
 
