@@ -34,7 +34,7 @@ fn id_json_surfaces_identity_summary() {
 
     let data = run_bin(&["id", "--json"], &data_dir);
 
-    assert_eq!(data["schema_version"], "thronglets.identity.v1");
+    assert_eq!(data["schema_version"], "thronglets.identity.v2");
     assert_eq!(data["command"], "id");
     assert_eq!(data["data"]["summary"]["status"], "healthy");
     assert_eq!(data["data"]["summary"]["binding_source"], "local");
@@ -56,6 +56,8 @@ fn status_json_surfaces_quiet_substrate_activity() {
     let status = run_bin(&["status", "--json"], &data_dir);
 
     assert_eq!(status["command"], "status");
+    assert_eq!(status["data"]["summary"]["status"], "local-only");
+    assert_eq!(status["data"]["summary"]["network_path_ready"], false);
     assert_eq!(status["data"]["substrate"]["activity"], "quiet");
     assert_eq!(status["data"]["substrate"]["recent_interventions_15m"], 0);
     assert_eq!(status["data"]["network"]["activity"], "offline");
@@ -85,12 +87,12 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
         ],
         &primary_dir,
     );
-    let primary_device = exported["data"]["summary"]["device_identity"]
+    let primary_device = exported["data"]["identity"]["device_identity"]
         .as_str()
         .unwrap()
         .to_string();
     assert_eq!(exported["command"], "connection-export");
-    assert_eq!(exported["data"]["summary"]["owner_account"], "oasyce1owner");
+    assert_eq!(exported["data"]["identity"]["owner_account"], "oasyce1owner");
     assert_eq!(exported["data"]["signed_by_device"], primary_device);
     assert_eq!(exported["data"]["peer_seed_scope"], "remembered");
     assert_eq!(exported["data"]["trusted_peer_seed_count"], 0);
@@ -107,20 +109,21 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
         ],
         &secondary_dir,
     );
-    let secondary_device = joined["data"]["summary"]["device_identity"]
+    let secondary_device = joined["data"]["identity"]["device_identity"]
         .as_str()
         .unwrap()
         .to_string();
-    assert_eq!(joined["schema_version"], "thronglets.identity.v1");
+    assert_eq!(joined["schema_version"], "thronglets.identity.v2");
     assert_eq!(joined["command"], "connection-join");
-    assert_eq!(joined["data"]["summary"]["status"], "joined");
-    assert_eq!(joined["data"]["summary"]["owner_account"], "oasyce1owner");
+    assert_eq!(joined["data"]["summary"]["status"], "identity-only");
+    assert_eq!(joined["data"]["summary"]["network_path_ready"], false);
+    assert_eq!(joined["data"]["identity"]["owner_account"], "oasyce1owner");
     assert_eq!(
-        joined["data"]["summary"]["binding_source"],
+        joined["data"]["identity"]["binding_source"],
         "connection_file"
     );
     assert_eq!(
-        joined["data"]["summary"]["joined_from_device"],
+        joined["data"]["identity"]["joined_from_device"],
         primary_device.as_str()
     );
     assert_eq!(joined["data"]["signature_verified"], true);
@@ -131,17 +134,18 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
 
     let status = run_bin(&["status", "--json"], &secondary_dir);
     assert_eq!(status["command"], "status");
-    assert_eq!(status["data"]["summary"]["owner_account"], "oasyce1owner");
+    assert_eq!(status["data"]["summary"]["status"], "identity-only");
+    assert_eq!(status["data"]["identity"]["owner_account"], "oasyce1owner");
     assert_eq!(
-        status["data"]["summary"]["binding_source"],
+        status["data"]["identity"]["binding_source"],
         "connection_file"
     );
     assert_eq!(
-        status["data"]["summary"]["joined_from_device"],
+        status["data"]["identity"]["joined_from_device"],
         primary_device.as_str()
     );
     assert_eq!(
-        status["data"]["summary"]["device_identity"],
+        status["data"]["identity"]["device_identity"],
         secondary_device.as_str()
     );
 }
@@ -185,11 +189,14 @@ fn connection_join_imports_peer_seeds_into_local_snapshot() {
         ],
         &secondary_dir,
     );
+    assert_eq!(joined["data"]["summary"]["status"], "identity-plus-peer-seeds");
+    assert_eq!(joined["data"]["summary"]["network_path_ready"], true);
     assert_eq!(joined["data"]["peer_seed_scope"], "remembered");
     assert_eq!(joined["data"]["imported_trusted_peer_seed_count"], 0);
     assert_eq!(joined["data"]["imported_peer_seed_count"], 2);
 
     let status = run_bin(&["status", "--json"], &secondary_dir);
+    assert_eq!(status["data"]["summary"]["status"], "network-paths-ready");
     assert_eq!(status["data"]["network"]["trusted_peer_seed_count"], 0);
     assert_eq!(status["data"]["network"]["peer_seed_count"], 2);
 }
@@ -233,6 +240,7 @@ fn connection_export_prefers_trusted_peer_seeds() {
         ],
         &primary_dir,
     );
+    assert_eq!(inspected["data"]["summary"]["status"], "trusted-same-owner-ready");
     assert_eq!(inspected["data"]["peer_seed_scope"], "trusted");
     assert_eq!(inspected["data"]["trusted_peer_seed_count"], 1);
     assert_eq!(inspected["data"]["peer_seed_count"], 1);
@@ -296,7 +304,8 @@ fn connection_export_without_owner_binding_still_exports_network_pairing_file() 
         &primary_dir,
     );
     assert_eq!(exported["command"], "connection-export");
-    assert_eq!(exported["data"]["summary"]["owner_account"], Value::Null);
+    assert_eq!(exported["data"]["summary"]["status"], "identity-only");
+    assert_eq!(exported["data"]["identity"]["owner_account"], Value::Null);
     assert_eq!(exported["data"]["peer_seed_scope"], "remembered");
     assert_eq!(exported["data"]["peer_seed_count"], 0);
 
@@ -309,7 +318,8 @@ fn connection_export_without_owner_binding_still_exports_network_pairing_file() 
         ],
         &primary_dir,
     );
-    assert_eq!(inspected["data"]["summary"]["owner_account"], Value::Null);
+    assert_eq!(inspected["data"]["summary"]["status"], "identity-only");
+    assert_eq!(inspected["data"]["identity"]["owner_account"], Value::Null);
     assert_eq!(inspected["data"]["signature_verified"], true);
 
     let joined = run_bin(
@@ -321,9 +331,10 @@ fn connection_export_without_owner_binding_still_exports_network_pairing_file() 
         ],
         &secondary_dir,
     );
-    assert_eq!(joined["data"]["summary"]["owner_account"], Value::Null);
+    assert_eq!(joined["data"]["summary"]["status"], "identity-only");
+    assert_eq!(joined["data"]["identity"]["owner_account"], Value::Null);
     assert_eq!(
-        joined["data"]["summary"]["binding_source"],
+        joined["data"]["identity"]["binding_source"],
         "connection_file"
     );
 }
@@ -353,7 +364,7 @@ fn owner_bind_after_ownerless_connection_join_preserves_join_origin() {
         ],
         &secondary_dir,
     );
-    let primary_device = joined["data"]["summary"]["joined_from_device"]
+    let primary_device = joined["data"]["identity"]["joined_from_device"]
         .as_str()
         .unwrap()
         .to_string();
@@ -410,9 +421,9 @@ fn connection_inspect_json_surfaces_verified_metadata() {
         &primary_dir,
     );
     assert_eq!(inspected["command"], "connection-inspect");
-    assert_eq!(inspected["data"]["summary"]["status"], "valid");
+    assert_eq!(inspected["data"]["summary"]["status"], "identity-only");
     assert_eq!(
-        inspected["data"]["summary"]["owner_account"],
+        inspected["data"]["identity"]["owner_account"],
         "oasyce1owner"
     );
     assert_eq!(inspected["data"]["signature_verified"], true);

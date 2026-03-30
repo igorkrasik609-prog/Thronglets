@@ -33,6 +33,9 @@ fn status_json_surfaces_network_snapshot() {
     snapshot.save(&data_dir);
 
     let status = run_bin(&["status", "--json"], &data_dir);
+    assert_eq!(status["data"]["summary"]["status"], "network-ready");
+    assert_eq!(status["data"]["summary"]["connected"], true);
+    assert_eq!(status["data"]["summary"]["network_path_ready"], true);
     assert_eq!(status["data"]["network"]["activity"], "connected");
     assert_eq!(status["data"]["network"]["transport_mode"], "direct");
     assert_eq!(status["data"]["network"]["vps_dependency_level"], "low");
@@ -57,6 +60,7 @@ fn status_json_requires_actual_bootstrap_contact_for_bootstrapping() {
     snapshot.save(&data_dir);
 
     let status = run_bin(&["status", "--json"], &data_dir);
+    assert_eq!(status["data"]["summary"]["status"], "local-only");
     assert_eq!(status["data"]["network"]["activity"], "offline");
     assert_eq!(status["data"]["network"]["bootstrap_targets"], 1);
     assert_eq!(status["data"]["network"]["bootstrap_contacted_recently"], false);

@@ -45,7 +45,7 @@ use thronglets::workspace::{self, WorkspaceState};
 use tracing::info;
 
 const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
-const IDENTITY_SCHEMA_VERSION: &str = "thronglets.identity.v1";
+const IDENTITY_SCHEMA_VERSION: &str = "thronglets.identity.v2";
 const NETWORK_SCHEMA_VERSION: &str = "thronglets.network.v1";
 const PRESENCE_SCHEMA_VERSION: &str = "thronglets.presence.v1";
 const VERSION_SCHEMA_VERSION: &str = "thronglets.version.v1";
@@ -191,6 +191,17 @@ struct IdentitySummary {
     joined_from_device: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+struct ReadinessSummary {
+    status: &'static str,
+    detail: String,
+    identity_ready: bool,
+    network_path_ready: bool,
+    trusted_same_owner_ready: bool,
+    connected: bool,
+    next_step: Option<String>,
+}
+
 #[derive(Serialize)]
 struct IdentityIdData {
     summary: IdentitySummary,
@@ -207,7 +218,8 @@ struct IdentityMutationData {
 
 #[derive(Serialize)]
 struct ConnectionExportData {
-    summary: IdentitySummary,
+    summary: ReadinessSummary,
+    identity: IdentitySummary,
     output: String,
     primary_device_pubkey: String,
     signed_by_device: String,
@@ -220,7 +232,8 @@ struct ConnectionExportData {
 
 #[derive(Serialize)]
 struct ConnectionJoinData {
-    summary: IdentitySummary,
+    summary: ReadinessSummary,
+    identity: IdentitySummary,
     file: String,
     signature_verified: bool,
     peer_seed_scope: &'static str,
@@ -231,7 +244,8 @@ struct ConnectionJoinData {
 
 #[derive(Serialize)]
 struct ConnectionInspectData {
-    summary: IdentitySummary,
+    summary: ReadinessSummary,
+    identity: IdentitySummary,
     file: String,
     primary_device_pubkey: String,
     peer_seed_scope: &'static str,
@@ -245,7 +259,8 @@ struct ConnectionInspectData {
 
 #[derive(Serialize)]
 struct StatusData {
-    summary: IdentitySummary,
+    summary: ReadinessSummary,
+    identity: IdentitySummary,
     node_id: String,
     oasyce_address: String,
     data_dir: String,
@@ -1023,6 +1038,116 @@ fn identity_summary(status: &'static str, binding: &IdentityBinding) -> Identity
     }
 }
 
+fn connection_readiness_summary(
+    peer_seed_scope: ConnectionSeedScope,
+    peer_seed_count: usize,
+    imported_or_exported: &'static str,
+) -> ReadinessSummary {
+    let trusted_peer_seed_count = match peer_seed_scope {
+        ConnectionSeedScope::Trusted => peer_seed_count,
+        ConnectionSeedScope::Remembered => 0,
+    };
+    if trusted_peer_seed_count > 0 {
+        ReadinessSummary {
+            status: "trusted-same-owner-ready",
+            detail: format!(
+                "This connection file will carry identity plus {} trusted same-owner peer seed(s).",
+                trusted_peer_seed_count
+            ),
+            identity_ready: true,
+            network_path_ready: true,
+            trusted_same_owner_ready: true,
+            connected: false,
+            next_step: Some(
+                "Use this file on the secondary device, then keep the primary device online once so direct same-owner recovery can be proven.".into(),
+            ),
+        }
+    } else if peer_seed_count > 0 {
+        ReadinessSummary {
+            status: "identity-plus-peer-seeds",
+            detail: format!(
+                "This connection file will carry identity plus {} remembered peer seed(s), but not a trusted same-owner path yet.",
+                peer_seed_count
+            ),
+            identity_ready: true,
+            network_path_ready: true,
+            trusted_same_owner_ready: false,
+            connected: false,
+            next_step: Some(format!(
+                "Continue with the secondary device, then let it learn direct peers; re-{imported_or_exported} a trusted connection file later if you want same-owner direct recovery."
+            )),
+        }
+    } else {
+        ReadinessSummary {
+            status: "identity-only",
+            detail: "This connection file will transfer identity only. It carries no reusable peer paths.".into(),
+            identity_ready: true,
+            network_path_ready: false,
+            trusted_same_owner_ready: false,
+            connected: false,
+            next_step: Some(
+                "Re-export the connection file from the primary device after it has learned peers, then join again.".into(),
+            ),
+        }
+    }
+}
+
+fn status_readiness_summary(
+    binding: &IdentityBinding,
+    network: &thronglets::network_state::NetworkStatus,
+) -> ReadinessSummary {
+    if network.peer_count > 0 {
+        ReadinessSummary {
+            status: "network-ready",
+            detail: "Identity is ready and this device already has live peer connectivity.".into(),
+            identity_ready: true,
+            network_path_ready: true,
+            trusted_same_owner_ready: network.trusted_peer_seed_count > 0,
+            connected: true,
+            next_step: Some(
+                "Optional: run `thronglets net-check --bootstrap-offline --json` to confirm bootstrap-free recovery."
+                    .into(),
+            ),
+        }
+    } else if network.known_peer_count > 0 || network.peer_seed_count > 0 {
+        ReadinessSummary {
+            status: "network-paths-ready",
+            detail: "Identity is ready and this device has reusable peer paths, but it is not currently connected.".into(),
+            identity_ready: true,
+            network_path_ready: true,
+            trusted_same_owner_ready: network.trusted_peer_seed_count > 0,
+            connected: false,
+            next_step: Some(
+                "Keep a remembered peer online once so this device can re-establish a live connection.".into(),
+            ),
+        }
+    } else if binding.owner_account.is_some() || binding.joined_from_device.is_some() {
+        ReadinessSummary {
+            status: "identity-only",
+            detail: "Identity joined successfully, but this device still has no reusable peer paths.".into(),
+            identity_ready: true,
+            network_path_ready: false,
+            trusted_same_owner_ready: false,
+            connected: false,
+            next_step: Some(
+                "Re-export a connection file from the primary device after it has learned peers, then join again on this device.".into(),
+            ),
+        }
+    } else {
+        ReadinessSummary {
+            status: "local-only",
+            detail: "This device is usable locally, but it has not joined an owner or inherited any peer paths yet.".into(),
+            identity_ready: true,
+            network_path_ready: false,
+            trusted_same_owner_ready: false,
+            connected: false,
+            next_step: Some(
+                "If this is your first device, keep using it locally; otherwise import a connection file from an existing device.".into(),
+            ),
+        }
+    }
+}
+
 fn collect_restart_commands(commands: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
     let mut values: Vec<_> = commands.into_iter().flatten().collect();
     values.sort();
@@ -1602,13 +1727,13 @@ fn render_doctor_report(data: &DoctorData) {
         println!("Pending restart: {}", pending_agents.join(", "));
     }
     if data.summary.restart_pending {
-        println!("Restart pending: yes");
+        println!("Restart still pending: yes");
     }
     for command in &data.summary.restart_commands {
-        println!("Restart: {command}");
+        println!("Restart once: {command}");
     }
     for step in &data.summary.next_steps {
-        println!("Next: {step}");
+        println!("After restart: {step}");
     }
     let unhealthy: Vec<_> = data
         .reports
@@ -1689,16 +1814,16 @@ fn render_bootstrap_report(data: &BootstrapData) {
         println!("Installed: {}", installed.join(", "));
     }
     if data.summary.restart_required {
-        println!("Restart required: yes");
+        println!("Finish loading the integration by restarting the affected runtime once.");
     }
     if data.summary.restart_pending {
-        println!("Restart pending: yes");
+        println!("Restart still pending: yes");
     }
     for command in &data.summary.restart_commands {
-        println!("Restart: {command}");
+        println!("Restart once: {command}");
     }
     for step in &data.summary.next_steps {
-        println!("Next: {step}");
+        println!("After restart: {step}");
     }
     if !data.summary.healthy {
         let unhealthy: Vec<_> = data
@@ -1726,16 +1851,16 @@ fn render_setup_report(data: &BootstrapData) {
         println!("Installed: {}", installed.join(", "));
     }
     if data.summary.restart_pending {
-        println!("Restart pending: yes");
+        println!("Restart still pending: yes");
     }
     if data.summary.restart_required {
-        println!("Restart required: yes");
+        println!("Finish loading the integration by restarting the affected runtime once.");
     }
     for command in &data.summary.restart_commands {
-        println!("Restart: {command}");
+        println!("Restart once: {command}");
     }
     for step in &data.summary.next_steps {
-        println!("Next: {step}");
+        println!("After restart: {step}");
     }
     println!("Other agents can reuse `thronglets prehook` and `thronglets hook`.");
 }
@@ -2317,12 +2442,19 @@ async fn main() {
                 ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
                 ConnectionSeedScope::Remembered => 0,
             };
+            let peer_seed_scope = connection.peer_seed_scope_label();
+            let readiness = connection_readiness_summary(
+                connection.peer_seed_scope.clone(),
+                connection.peer_seeds.len(),
+                "export",
+            );
             let data = ConnectionExportData {
-                summary: identity_summary("exported", &identity_binding),
+                summary: readiness,
+                identity: identity_summary("exported", &identity_binding),
                 output: output.display().to_string(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
                 signed_by_device: connection.primary_device_identity.clone(),
-                peer_seed_scope: connection.peer_seed_scope_label(),
+                peer_seed_scope,
                 trusted_peer_seed_count: exported_trusted_peer_seed_count,
                 peer_seed_count: connection.peer_seeds.len(),
                 ttl_hours: connection.ttl_hours(),
@@ -2331,24 +2463,28 @@ async fn main() {
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "connection-export", &data);
             } else {
-                println!("Connection file exported:");
+                println!("Connection file: {}", data.summary.status);
+                println!("  Meaning:            {}", data.summary.detail);
                 println!("  Output:             {}", data.output);
                 println!(
                     "  Owner account:      {}",
-                    identity_binding.owner_account_or_unbound()
+                    data.identity.owner_account.as_deref().unwrap_or("unbound")
                 );
-                println!("  Primary device:     {}", identity_binding.device_identity);
+                println!("  Primary device:     {}", data.identity.device_identity);
                 println!("  Signed by device:   {}", data.signed_by_device);
                 println!("  Seed scope:         {}", data.peer_seed_scope);
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
+                if let Some(step) = &data.summary.next_step {
+                    println!("  Next:               {step}");
+                }
             }
         }
 
         Commands::ConnectionInspect { file, json } => {
             let connection = ConnectionFile::load(&file).expect("failed to read connection file");
-            let summary = IdentitySummary {
+            let identity = IdentitySummary {
                 status: "valid",
                 owner_account: connection.owner_account.clone(),
                 device_identity: connection.primary_device_identity.clone(),
@@ -2359,11 +2495,18 @@ async fn main() {
                 ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
                 ConnectionSeedScope::Remembered => 0,
             };
+            let peer_seed_scope = connection.peer_seed_scope_label();
+            let readiness = connection_readiness_summary(
+                connection.peer_seed_scope.clone(),
+                connection.peer_seeds.len(),
+                "export",
+            );
             let data = ConnectionInspectData {
-                summary,
+                summary: readiness,
+                identity,
                 file: file.display().to_string(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
-                peer_seed_scope: connection.peer_seed_scope_label(),
+                peer_seed_scope,
                 trusted_peer_seed_count: inspected_trusted_peer_seed_count,
                 peer_seed_count: connection.peer_seeds.len(),
                 exported_at: connection.exported_at,
@@ -2378,18 +2521,22 @@ async fn main() {
                     &data,
                 );
             } else {
-                println!("Connection file valid:");
+                println!("Connection file: {}", data.summary.status);
+                println!("  Meaning:            {}", data.summary.detail);
                 println!("  File:               {}", data.file);
                 println!(
                     "  Owner account:      {}",
-                    data.summary.owner_account.as_deref().unwrap_or("unbound")
+                    data.identity.owner_account.as_deref().unwrap_or("unbound")
                 );
-                println!("  Primary device:     {}", data.summary.device_identity);
+                println!("  Primary device:     {}", data.identity.device_identity);
                 println!("  Signature verified: yes");
                 println!("  Seed scope:         {}", data.peer_seed_scope);
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
+                if let Some(step) = &data.summary.next_step {
+                    println!("  Next:               {step}");
+                }
             }
         }
 
@@ -2419,11 +2566,18 @@ async fn main() {
                 ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
                 ConnectionSeedScope::Remembered => 0,
             };
+            let peer_seed_scope = connection.peer_seed_scope_label();
+            let readiness = connection_readiness_summary(
+                connection.peer_seed_scope.clone(),
+                connection.peer_seeds.len(),
+                "export",
+            );
             let data = ConnectionJoinData {
-                summary: identity_summary("joined", &binding),
+                summary: readiness,
+                identity: identity_summary("joined", &binding),
                 file: file.display().to_string(),
                 signature_verified: true,
-                peer_seed_scope: connection.peer_seed_scope_label(),
+                peer_seed_scope,
                 imported_trusted_peer_seed_count,
                 imported_peer_seed_count: connection.peer_seeds.len(),
                 source_expires_at: connection.expires_at,
@@ -2431,13 +2585,14 @@ async fn main() {
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "connection-join", &data);
             } else {
-                println!("Connection file joined:");
+                println!("Connection join: {}", data.summary.status);
+                println!("  Meaning:            {}", data.summary.detail);
                 println!("  File:               {}", data.file);
                 println!(
                     "  Owner account:      {}",
-                    binding.owner_account_or_unbound()
+                    data.identity.owner_account.as_deref().unwrap_or("unbound")
                 );
-                println!("  Device identity:    {}", binding.device_identity);
+                println!("  Device identity:    {}", data.identity.device_identity);
                 println!(
                     "  Joined from device: {}",
                     connection.primary_device_identity
@@ -2449,6 +2604,9 @@ async fn main() {
                     data.imported_trusted_peer_seed_count
                 );
                 println!("  Imported peer seeds: {}", data.imported_peer_seed_count);
+                if let Some(step) = &data.summary.next_step {
+                    println!("  Next:               {step}");
+                }
             }
         }
 
@@ -3727,8 +3885,10 @@ async fn main() {
             } else {
                 format!("{} B", db_size)
             };
+            let readiness = status_readiness_summary(&identity_binding, &network);
             let data = StatusData {
-                summary: identity_summary("healthy", &identity_binding),
+                summary: readiness,
+                identity: identity_summary("healthy", &identity_binding),
                 node_id: identity.short_id(),
                 oasyce_address: identity.oasyce_address(),
                 data_dir: dir.display().to_string(),
@@ -3743,14 +3903,20 @@ async fn main() {
             } else {
                 println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
                 println!();
+                println!("  Status:           {}", data.summary.status);
+                println!("  Meaning:          {}", data.summary.detail);
+                if let Some(step) = &data.summary.next_step {
+                    println!("  Next:             {step}");
+                }
+                println!();
                 println!("  Node ID:          {}", data.node_id);
                 println!("  Oasyce address:   {}", data.oasyce_address);
-                println!("  Device identity:  {}", data.summary.device_identity);
+                println!("  Device identity:  {}", data.identity.device_identity);
                 println!(
                     "  Owner account:    {}",
                     identity_binding.owner_account_or_unbound()
                 );
-                println!("  Binding source:   {}", data.summary.binding_source);
+                println!("  Binding source:   {}", data.identity.binding_source);
                 println!(
                     "  Joined from:      {}",
                     identity_binding.joined_from_device_or_none()

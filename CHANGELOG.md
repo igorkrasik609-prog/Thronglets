@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Onboarding outcome clarity** — `status --json` now separates `identity` details from a top-level readiness summary (`local-only / identity-only / network-paths-ready / network-ready`), and `connection-export / connection-inspect / connection-join` now classify connection files as `identity-only / identity-plus-peer-seeds / trusted-same-owner-ready` with a single human next step instead of forcing users to infer network readiness from raw seed counts
 - **Prebuilt-first install architecture** — GitHub release assets are now the canonical install surface, `cargo install` is no longer the default user path, and the docs now steer ordinary users to prebuilt installers instead of source compilation
 - **Windows release support** — the release workflow now builds a Windows amd64 binary, and npm / Python installers now know how to fetch that asset instead of treating Windows as an unsupported fallback
 - **PowerShell installer** — added `scripts/install.ps1` so Windows users can install Thronglets from the same release surface without touching Rust toolchains or choosing between GNU/MSVC manually

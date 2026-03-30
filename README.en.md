@@ -122,6 +122,9 @@ thronglets status --json
 ```
 
 The response now includes:
+- `summary.status = local-only | identity-only | network-paths-ready | network-ready`
+- `summary.detail`
+- `summary.next_step`
 - `substrate.activity = active | learning | quiet`
 - `recent_interventions_15m`
 - `last_intervention_tool`
@@ -141,6 +144,15 @@ devices get more time to reconnect directly before leaning on VPS.
 
 That gives both operators and other agents a minimal way to tell whether the substrate has been actively shaping recent decisions.
 It also makes current VPS dependence visible instead of implicit.
+In particular, when `status --json` reports:
+
+- `summary.status = identity-only`
+
+it means:
+
+- identity joined successfully
+- this device still has no reusable peer paths
+- the node is still offline, so the next step is to re-export a connection file from the primary device after it has learned peers
 
 If you want that judgment collapsed into one direct answer, run:
 
@@ -257,6 +269,14 @@ thronglets connection-join --file ./thronglets.connection.json
 - users can start with Thronglets first and attach an `owner account` later without disrupting existing local use or device-origin metadata
 - `connection-export` now emits a `24h` connection file by default and supports `--ttl-hours`; `connection-join` verifies both signature and expiry
 - `connection-export` now prefers `trusted peer seeds` and only falls back to generic remembered peers when no trusted path exists. `connection-join` preserves that scope instead of silently promoting fallback remembered peers into trusted seeds
+- `connection-export / connection-inspect / connection-join` now classify the file directly as:
+  - `identity-only`
+  - `identity-plus-peer-seeds`
+  - `trusted-same-owner-ready`
+- These mean:
+  - `identity-only` = transfers identity only, with no reusable peer paths
+  - `identity-plus-peer-seeds` = transfers remembered peer paths, but not a trusted same-owner direct path yet
+  - `trusted-same-owner-ready` = carries trusted same-owner peer seeds and is suitable for multi-device direct recovery
 - when remembered peers already exist, `run / mcp` now try those peers first and only fall back to bootstrap after a short grace period; VPS is no longer the unconditional first touch on every startup
 - `owner-bind` and `connection-join` both refuse to silently overwrite an existing different `owner account`
 - the OpenClaw plugin now auto-runs `runtime-ready` after a successful load, so users usually only need `bootstrap -> restart OpenClaw once`

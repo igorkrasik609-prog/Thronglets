@@ -122,6 +122,9 @@ thronglets status --json
 ```
 
 返回里会带：
+- `summary.status = local-only | identity-only | network-paths-ready | network-ready`
+- `summary.detail`
+- `summary.next_step`
 - `substrate.activity = active | learning | quiet`
 - `recent_interventions_15m`
 - `last_intervention_tool`
@@ -140,6 +143,15 @@ thronglets status --json
 
 也就是说，AI 和操作者都不需要再猜“刚才那次绕路是不是 Thronglets 在起作用”。
 同时也能直接看到当前网络是不是还在实质依赖 VPS。
+特别是当 `status --json` 里出现：
+
+- `summary.status = identity-only`
+
+它的意思是：
+
+- 身份已经加入成功
+- 但这台设备还没有任何可复用的 peer 路径
+- 当前仍然离线，下一步应该回到主设备重新导出带 peer seeds 的 connection file
 
 如果你想把这个判断再压成一个更直接的结论，可以再跑：
 
@@ -256,6 +268,14 @@ thronglets connection-join --file ./thronglets.connection.json
 - 用户可以先用 Thronglets，再在之后补 `owner account`；这不会打断已有本地使用或设备入网来源
 - `connection-export` 默认导出 `24h` 有效的 connection file，可用 `--ttl-hours` 调整；`connection-join` 会同时验证签名和过期时间
 - `connection-export` 优先只写入 `trusted peer seeds`；只有没有 trusted path 时才回退写入普通 remembered peers。`connection-join` 会保留这个 scope：trusted 继续按 trusted 导入，fallback 的 remembered peers 不会被静默升格成 trusted
+- `connection-export / connection-inspect / connection-join` 现在都会直接给出 connection file 的等级：
+  - `identity-only`
+  - `identity-plus-peer-seeds`
+  - `trusted-same-owner-ready`
+- 其中：
+  - `identity-only` = 只能继承身份，不能继承任何 peer 路径
+  - `identity-plus-peer-seeds` = 能继承 remembered peer 路径，但还不是 trusted same-owner 直连
+  - `trusted-same-owner-ready` = 能继承 trusted same-owner peer seeds，适合多设备直连恢复
 - 当本地已经记住 peers 时，`run / mcp` 会先尝试这些 remembered peers，只在短暂 grace period 后才回退到 bootstrap；VPS 不再是每次启动的默认第一跳
 - `owner-bind` 和 `connection-join` 默认都不会静默覆盖成另一个 `owner account`
 - OpenClaw 插件现在会在成功加载后自动执行 `runtime-ready`，所以用户通常只需要 `bootstrap -> 重启一次 OpenClaw`

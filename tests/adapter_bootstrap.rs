@@ -504,7 +504,7 @@ fn doctor_text_stays_summary_first_when_healthy() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Doctor status: restart-pending"));
     assert!(stdout.contains("Pending restart: codex"));
-    assert!(stdout.contains("Restart pending: yes"));
+    assert!(stdout.contains("Restart still pending: yes"));
     assert!(!stdout.contains("Adapter health:"));
 }
 

@@ -155,6 +155,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.4`）：
 - `bootstrap --agent claude / codex / openclaw / generic`
 - 二次执行幂等性
 - “未检测到 adapter 时”的 skip 行为
+- `status` 和 `connection-*` 已经开始优先说用户结果，而不是原始内部状态
 
 剩余完成标准：
 - 如果后面某个 native runtime 在不同平台或不同安装方式下出现分叉，再补对应 matrix case

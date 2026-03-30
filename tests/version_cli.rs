@@ -28,7 +28,7 @@ fn version_json_surfaces_binary_and_schema_versions() {
     );
     assert_eq!(
         data["data"]["summary"]["identity_schema_version"],
-        "thronglets.identity.v1"
+        "thronglets.identity.v2"
     );
     assert!(data["data"]["binary_path"].as_str().is_some());
     assert!(
