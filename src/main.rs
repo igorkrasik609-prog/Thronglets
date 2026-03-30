@@ -20,7 +20,8 @@ use thronglets::eval::{
     LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
 };
 use thronglets::identity::{
-    ConnectionFile, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding, NodeIdentity,
+    ConnectionFile, ConnectionSeedScope, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding,
+    NodeIdentity,
     identity_binding_path,
 };
 use thronglets::mcp::McpContext;
@@ -211,6 +212,7 @@ struct ConnectionExportData {
     output: String,
     primary_device_pubkey: String,
     signed_by_device: String,
+    peer_seed_scope: &'static str,
     trusted_peer_seed_count: usize,
     peer_seed_count: usize,
     ttl_hours: u32,
@@ -222,6 +224,7 @@ struct ConnectionJoinData {
     summary: IdentitySummary,
     file: String,
     signature_verified: bool,
+    peer_seed_scope: &'static str,
     imported_trusted_peer_seed_count: usize,
     imported_peer_seed_count: usize,
     source_expires_at: u64,
@@ -232,6 +235,7 @@ struct ConnectionInspectData {
     summary: IdentitySummary,
     file: String,
     primary_device_pubkey: String,
+    peer_seed_scope: &'static str,
     trusted_peer_seed_count: usize,
     peer_seed_count: usize,
     exported_at: u64,
@@ -2290,20 +2294,38 @@ async fn main() {
             json,
         } => {
             let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
-            let network_status = network_snapshot.to_status();
-            let peer_seeds = network_snapshot.connection_peer_seeds(16);
+            let trusted_peer_seeds = network_snapshot.trusted_peer_seed_addresses(16);
+            let (peer_seed_scope, peer_seeds) = if trusted_peer_seeds.is_empty() {
+                (
+                    ConnectionSeedScope::Remembered,
+                    network_snapshot.peer_seed_addresses(16),
+                )
+            } else {
+                (ConnectionSeedScope::Trusted, trusted_peer_seeds)
+            };
             let connection =
-                ConnectionFile::from_binding(&identity_binding, &identity, ttl_hours, peer_seeds)
-                    .expect("failed to create connection file");
+                ConnectionFile::from_binding(
+                    &identity_binding,
+                    &identity,
+                    ttl_hours,
+                    peer_seed_scope,
+                    peer_seeds,
+                )
+                .expect("failed to create connection file");
             connection
                 .save(&output)
                 .expect("failed to write connection file");
+            let exported_trusted_peer_seed_count = match connection.peer_seed_scope {
+                ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
+                ConnectionSeedScope::Remembered => 0,
+            };
             let data = ConnectionExportData {
                 summary: identity_summary("exported", &identity_binding),
                 output: output.display().to_string(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
                 signed_by_device: connection.primary_device_identity.clone(),
-                trusted_peer_seed_count: network_status.trusted_peer_seed_count,
+                peer_seed_scope: connection.peer_seed_scope_label(),
+                trusted_peer_seed_count: exported_trusted_peer_seed_count,
                 peer_seed_count: connection.peer_seeds.len(),
                 ttl_hours: connection.ttl_hours(),
                 expires_at: connection.expires_at,
@@ -2319,6 +2341,7 @@ async fn main() {
                 );
                 println!("  Primary device:     {}", identity_binding.device_identity);
                 println!("  Signed by device:   {}", data.signed_by_device);
+                println!("  Seed scope:         {}", data.peer_seed_scope);
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
@@ -2334,11 +2357,16 @@ async fn main() {
                 binding_source: "connection_file".into(),
                 joined_from_device: None,
             };
+            let inspected_trusted_peer_seed_count = match connection.peer_seed_scope {
+                ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
+                ConnectionSeedScope::Remembered => 0,
+            };
             let data = ConnectionInspectData {
                 summary,
                 file: file.display().to_string(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
-                trusted_peer_seed_count: connection.peer_seeds.len(),
+                peer_seed_scope: connection.peer_seed_scope_label(),
+                trusted_peer_seed_count: inspected_trusted_peer_seed_count,
                 peer_seed_count: connection.peer_seeds.len(),
                 exported_at: connection.exported_at,
                 expires_at: connection.expires_at,
@@ -2360,6 +2388,7 @@ async fn main() {
                 );
                 println!("  Primary device:     {}", data.summary.device_identity);
                 println!("  Signature verified: yes");
+                println!("  Seed scope:         {}", data.peer_seed_scope);
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
@@ -2379,13 +2408,25 @@ async fn main() {
                 .save(&identity_binding_path(&dir))
                 .expect("failed to save identity binding");
             let mut network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
-            network_snapshot.merge_trusted_peer_seeds(connection.peer_seeds.clone());
+            match connection.peer_seed_scope {
+                ConnectionSeedScope::Trusted => {
+                    network_snapshot.merge_trusted_peer_seeds(connection.peer_seeds.clone());
+                }
+                ConnectionSeedScope::Remembered => {
+                    network_snapshot.merge_peer_seeds(connection.peer_seeds.clone());
+                }
+            }
             network_snapshot.save(&dir);
+            let imported_trusted_peer_seed_count = match connection.peer_seed_scope {
+                ConnectionSeedScope::Trusted => connection.peer_seeds.len(),
+                ConnectionSeedScope::Remembered => 0,
+            };
             let data = ConnectionJoinData {
                 summary: identity_summary("joined", &binding),
                 file: file.display().to_string(),
                 signature_verified: true,
-                imported_trusted_peer_seed_count: connection.peer_seeds.len(),
+                peer_seed_scope: connection.peer_seed_scope_label(),
+                imported_trusted_peer_seed_count,
                 imported_peer_seed_count: connection.peer_seeds.len(),
                 source_expires_at: connection.expires_at,
             };
@@ -2404,6 +2445,7 @@ async fn main() {
                     connection.primary_device_identity
                 );
                 println!("  Signature verified: yes");
+                println!("  Seed scope:         {}", data.peer_seed_scope);
                 println!(
                     "  Imported trusted seeds: {}",
                     data.imported_trusted_peer_seed_count

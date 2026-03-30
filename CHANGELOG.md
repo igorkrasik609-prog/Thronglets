@@ -10,6 +10,7 @@
 - **Bootstrap-offline drill** — `thronglets net-check --bootstrap-offline --json` now evaluates the current node as if bootstrap were gone, so operators can inspect the outage scenario directly instead of inferring it from live status
 - **Actual bootstrap contact tracking** — `network.bootstrap_contacted_recently` now only turns on after a real bootstrap dial attempt; simply configuring bootstrap peers no longer makes a node look like it already touched VPS
 - **Trusted peer-first grace** — same-owner `trusted peer seeds` now dial before generic remembered peers and get a longer bootstrap fallback grace period, so multi-device reconnects have more time to recover directly before touching VPS
+- **Scoped connection-file seeds** — connection files now preserve whether carried peer seeds are `trusted` or fallback `remembered`, so `connection-join` no longer silently upgrades generic discovered peers into trusted same-owner paths
 
 ## v0.4.2 — 2026-03-30
 

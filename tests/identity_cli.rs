@@ -92,6 +92,7 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     assert_eq!(exported["command"], "connection-export");
     assert_eq!(exported["data"]["summary"]["owner_account"], "oasyce1owner");
     assert_eq!(exported["data"]["signed_by_device"], primary_device);
+    assert_eq!(exported["data"]["peer_seed_scope"], "remembered");
     assert_eq!(exported["data"]["trusted_peer_seed_count"], 0);
     assert_eq!(exported["data"]["peer_seed_count"], 0);
     assert_eq!(exported["data"]["ttl_hours"], 24);
@@ -123,6 +124,7 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
         primary_device.as_str()
     );
     assert_eq!(joined["data"]["signature_verified"], true);
+    assert_eq!(joined["data"]["peer_seed_scope"], "remembered");
     assert_eq!(joined["data"]["imported_trusted_peer_seed_count"], 0);
     assert_eq!(joined["data"]["imported_peer_seed_count"], 0);
     assert_ne!(secondary_device, primary_device);
@@ -170,6 +172,7 @@ fn connection_join_imports_peer_seeds_into_local_snapshot() {
         ],
         &primary_dir,
     );
+    assert_eq!(exported["data"]["peer_seed_scope"], "remembered");
     assert_eq!(exported["data"]["trusted_peer_seed_count"], 0);
     assert_eq!(exported["data"]["peer_seed_count"], 2);
 
@@ -182,11 +185,12 @@ fn connection_join_imports_peer_seeds_into_local_snapshot() {
         ],
         &secondary_dir,
     );
-    assert_eq!(joined["data"]["imported_trusted_peer_seed_count"], 2);
+    assert_eq!(joined["data"]["peer_seed_scope"], "remembered");
+    assert_eq!(joined["data"]["imported_trusted_peer_seed_count"], 0);
     assert_eq!(joined["data"]["imported_peer_seed_count"], 2);
 
     let status = run_bin(&["status", "--json"], &secondary_dir);
-    assert_eq!(status["data"]["network"]["trusted_peer_seed_count"], 2);
+    assert_eq!(status["data"]["network"]["trusted_peer_seed_count"], 0);
     assert_eq!(status["data"]["network"]["peer_seed_count"], 2);
 }
 
@@ -216,6 +220,7 @@ fn connection_export_prefers_trusted_peer_seeds() {
         ],
         &primary_dir,
     );
+    assert_eq!(exported["data"]["peer_seed_scope"], "trusted");
     assert_eq!(exported["data"]["trusted_peer_seed_count"], 1);
     assert_eq!(exported["data"]["peer_seed_count"], 1);
 
@@ -228,6 +233,7 @@ fn connection_export_prefers_trusted_peer_seeds() {
         ],
         &primary_dir,
     );
+    assert_eq!(inspected["data"]["peer_seed_scope"], "trusted");
     assert_eq!(inspected["data"]["trusted_peer_seed_count"], 1);
     assert_eq!(inspected["data"]["peer_seed_count"], 1);
 }

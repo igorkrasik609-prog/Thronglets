@@ -281,6 +281,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.2`）：
 - `net-check --bootstrap-offline --json` 现在能直接演练 outage 场景，而不需要 operator 自己推演 live 状态
 - `bootstrap_contacted_recently` 已收紧成“最近真的拨过 bootstrap”，不再把“只是配置了 bootstrap 地址”误算成 VPS 接触
 - `trusted peer seeds` 现在不只排序更靠前，还会拿到更长的 bootstrap 回退宽限期，优先给同 owner 多设备直连恢复机会
+- `connection file` 现在会保留 peer seed scope：trusted 继续 trusted，fallback remembered 不再被静默升级成 trusted
 
 剩余完成标准：
 - 把 relay 继续降级成兜底而不是默认路径

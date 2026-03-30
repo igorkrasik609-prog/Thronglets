@@ -39,12 +39,21 @@ pub struct IdentityBinding {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionSeedScope {
+    Trusted,
+    Remembered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionFile {
     pub schema_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_account: Option<String>,
     pub primary_device_identity: String,
     pub primary_device_pubkey: String,
+    #[serde(default = "default_connection_seed_scope")]
+    pub peer_seed_scope: ConnectionSeedScope,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peer_seeds: Vec<String>,
     pub exported_at: u64,
@@ -264,6 +273,7 @@ impl ConnectionFile {
         binding: &IdentityBinding,
         node_identity: &NodeIdentity,
         ttl_hours: u32,
+        peer_seed_scope: ConnectionSeedScope,
         peer_seeds: Vec<String>,
     ) -> std::io::Result<Self> {
         let owner_account = binding.require_owner_account()?.to_string();
@@ -273,6 +283,7 @@ impl ConnectionFile {
             owner_account: Some(owner_account),
             primary_device_identity: binding.device_identity.clone(),
             primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
+            peer_seed_scope,
             peer_seeds,
             exported_at,
             expires_at: exported_at.saturating_add(ttl_hours as u64 * 60 * 60 * 1000),
@@ -366,6 +377,13 @@ impl ConnectionFile {
         (ttl_ms / (60 * 60 * 1000)) as u32
     }
 
+    pub fn peer_seed_scope_label(&self) -> &'static str {
+        match self.peer_seed_scope {
+            ConnectionSeedScope::Trusted => "trusted",
+            ConnectionSeedScope::Remembered => "remembered",
+        }
+    }
+
     fn sign_with(&mut self, node_identity: &NodeIdentity) {
         let signature = node_identity.sign(&self.signable_bytes());
         self.signature = hex::encode(signature.to_bytes().as_slice());
@@ -377,6 +395,7 @@ impl ConnectionFile {
         push_optional_bytes(&mut buf, Some(self.owner_account.as_deref().unwrap_or("")));
         push_optional_bytes(&mut buf, Some(self.primary_device_identity.as_str()));
         push_optional_bytes(&mut buf, Some(self.primary_device_pubkey.as_str()));
+        push_optional_bytes(&mut buf, Some(self.peer_seed_scope_label()));
         buf.extend_from_slice(&(self.peer_seeds.len() as u32).to_le_bytes());
         for seed in &self.peer_seeds {
             push_optional_bytes(&mut buf, Some(seed.as_str()));
@@ -396,6 +415,10 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn default_connection_seed_scope() -> ConnectionSeedScope {
+    ConnectionSeedScope::Trusted
 }
 
 fn invalid_data(error: impl std::fmt::Display) -> std::io::Error {
@@ -547,6 +570,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            ConnectionSeedScope::Trusted,
             vec!["/ip4/10.0.0.1/tcp/4001".into()],
         )
         .unwrap();
@@ -559,6 +583,7 @@ mod tests {
             loaded.primary_device_pubkey,
             hex::encode(&node.public_key_bytes())
         );
+        assert_eq!(loaded.peer_seed_scope, ConnectionSeedScope::Trusted);
         assert_eq!(loaded.peer_seeds.len(), 1);
         assert!(loaded.expires_at > loaded.exported_at);
     }
@@ -579,6 +604,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            ConnectionSeedScope::Trusted,
             vec!["/ip4/10.0.0.1/tcp/4001".into()],
         )
         .unwrap();
@@ -605,6 +631,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            ConnectionSeedScope::Remembered,
             vec![],
         )
         .unwrap();
@@ -625,6 +652,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            ConnectionSeedScope::Trusted,
             vec![],
         )
         .unwrap_err();
