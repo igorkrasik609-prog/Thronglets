@@ -242,6 +242,17 @@ impl SignalKind {
     }
 }
 
+impl RecommendationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecommendationKind::Avoid => "avoid",
+            RecommendationKind::DoNext => "do_next",
+            RecommendationKind::MaybeAlso => "maybe_also",
+            RecommendationKind::Context => "context",
+        }
+    }
+}
+
 pub fn rank(mut signals: Vec<Signal>, max: usize) -> Vec<Signal> {
     signals.sort_by(|a, b| {
         b.score

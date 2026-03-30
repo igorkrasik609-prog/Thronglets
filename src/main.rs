@@ -21,8 +21,7 @@ use thronglets::eval::{
 };
 use thronglets::identity::{
     ConnectionFile, ConnectionSeedScope, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding,
-    NodeIdentity,
-    identity_binding_path,
+    NodeIdentity, identity_binding_path,
 };
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
@@ -2303,15 +2302,14 @@ async fn main() {
             } else {
                 (ConnectionSeedScope::Trusted, trusted_peer_seeds)
             };
-            let connection =
-                ConnectionFile::from_binding(
-                    &identity_binding,
-                    &identity,
-                    ttl_hours,
-                    peer_seed_scope,
-                    peer_seeds,
-                )
-                .expect("failed to create connection file");
+            let connection = ConnectionFile::from_binding(
+                &identity_binding,
+                &identity,
+                ttl_hours,
+                peer_seed_scope,
+                peer_seeds,
+            )
+            .expect("failed to create connection file");
             connection
                 .save(&output)
                 .expect("failed to write connection file");
@@ -3191,6 +3189,12 @@ async fn main() {
                 outcome_str,
                 session_id.as_deref(),
             );
+            ws.resolve_recommendation_feedback(
+                session_id.as_deref(),
+                tool_name,
+                file_path.as_deref(),
+                outcome_str,
+            );
 
             // Track pending feedback for Edit/Write
             if matches!(tool_name, "Edit" | "Write")
@@ -3231,6 +3235,7 @@ async fn main() {
 
             let tool_name = payload["tool_name"].as_str().unwrap_or("");
             let current_space = payload_string(&payload, "space");
+            let current_mode = payload_string(&payload, "mode");
             let current_session_id = payload_string(&payload, "session_id");
 
             // Skip thronglets' own calls and empty names
@@ -3251,6 +3256,9 @@ async fn main() {
             let mut ws = WorkspaceState::load(&dir);
             let current_file = workspace::extract_file_path(tool_name, &payload["tool_input"]);
             let hook_context = build_hook_context(tool_name, &payload["tool_input"]);
+            let inferred_strategy = ws.infer_strategy();
+            let open_ended_guidance =
+                task_prefers_sparse_guidance(current_mode.as_deref(), inferred_strategy.as_deref());
             let supports_file_guidance =
                 matches!(tool_name, "Edit" | "Write") && current_file.is_some();
             let has_repeated_local_file_actions = supports_file_guidance
@@ -3267,10 +3275,9 @@ async fn main() {
             // If recent edits are mostly reverted, this is a strong warning.
             // Only signal when retention < 50% (anomaly).
             if let Some(retention_warning) = ws.retention_warning(current_file.as_deref()) {
-                signals.push(Signal::danger(
-                    retention_warning.body,
-                    retention_warning.score,
-                ));
+                let score = retention_warning.score
+                    + ws.recommendation_score_adjustment(SignalKind::Danger);
+                signals.push(Signal::danger(retention_warning.body, score));
             }
 
             // ── Alarm pheromone: recent errors with this tool ──
@@ -3286,7 +3293,10 @@ async fn main() {
                     } else {
                         e.error_snippet.clone()
                     };
-                    Signal::danger(format!("  ⚠ recent error: {snippet}"), 360)
+                    Signal::danger(
+                        format!("  ⚠ recent error: {snippet}"),
+                        360 + ws.recommendation_score_adjustment(SignalKind::Danger),
+                    )
                 };
                 has_recent_tool_error = true;
                 signals.push(signal);
@@ -3296,7 +3306,7 @@ async fn main() {
             let explicit_avoid_checked = !hook_context.is_empty();
             if explicit_avoid_checked
                 && let Some(store) = cached_collective_store(&mut collective_store, &dir)
-                && let Some(explicit_avoid) = explicit_avoid_signal(
+                && let Some(mut explicit_avoid) = explicit_avoid_signal(
                     store,
                     &hook_context,
                     current_space.as_deref(),
@@ -3305,6 +3315,7 @@ async fn main() {
                 )
             {
                 has_explicit_avoid = true;
+                explicit_avoid.score += ws.recommendation_score_adjustment(SignalKind::Danger);
                 signals.push(explicit_avoid);
             }
             profiler.stage_or_skip("explicit_avoid", explicit_avoid_checked);
@@ -3315,6 +3326,7 @@ async fn main() {
                     .or_else(|| ws.repair_hints(tool_name))
             {
                 let mut repair_hint = repair_hint;
+                repair_hint.score += ws.recommendation_score_adjustment(SignalKind::Repair);
                 if claim_collective_query(&repair_hint.candidate, &mut collective_queries_remaining)
                     && let Some(store) = cached_collective_store(&mut collective_store, &dir)
                     && let Ok(collective_sources) =
@@ -3339,11 +3351,14 @@ async fn main() {
                 .iter()
                 .any(|s| matches!(s.kind, SignalKind::Repair | SignalKind::Preparation));
             if has_repeated_local_file_actions
+                && !open_ended_guidance
                 && !has_explicit_avoid
                 && !has_do_next_signal
                 && let Some(mut preparation_hint) =
                     ws.preparation_hint(tool_name, current_file.as_deref())
             {
+                preparation_hint.score +=
+                    ws.recommendation_score_adjustment(SignalKind::Preparation);
                 if let (Some(current_file), Some(target)) = (
                     current_file.as_deref(),
                     preparation_hint.candidate.primary_target(),
@@ -3442,7 +3457,10 @@ async fn main() {
             profiler.stage_or_skip("git", git_checked);
 
             // Guardrail: prehook stays short and category-stable.
-            let recommendations = select_signals(signals, PREHOOK_MAX_HINTS);
+            let recommendations = ws.suppress_duplicate_recommendations(
+                current_session_id.as_deref(),
+                select_signals(signals, PREHOOK_MAX_HINTS),
+            );
             if !recommendations.is_empty() {
                 ws.record_intervention(
                     tool_name,
@@ -3450,6 +3468,11 @@ async fn main() {
                         .iter()
                         .map(|recommendation| recommendation.source_kind.as_str().to_string())
                         .collect(),
+                );
+                ws.record_recommendation_emissions(
+                    tool_name,
+                    current_session_id.as_deref(),
+                    &recommendations,
                 );
                 ws.save(&dir);
             }
@@ -4191,6 +4214,15 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn task_prefers_sparse_guidance(mode: Option<&str>, strategy: Option<&str>) -> bool {
+    let mode_prefers_sparse = matches!(mode, Some("explore" | "review"));
+    let strategy_prefers_sparse = matches!(
+        strategy,
+        Some("code-review" | "codebase-exploration" | "delegated-research")
+    );
+    mode_prefers_sparse || strategy_prefers_sparse
 }
 
 fn apply_collective_sources(

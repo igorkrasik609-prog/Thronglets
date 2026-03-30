@@ -33,6 +33,9 @@ PreToolUse 不再追求“把所有上下文都塞进去”。现在它只输出
 设计原则：
 - 默认沉默。没有强信号时，什么都不说。
 - 最多 3 条顶层输出，避免烧 token。
+- 同一 session 的连续 tool calls 会自动去重，避免重复注入同一句话。
+- `do next` 会根据 session mode 收敛；在 `explore / review` 这类开放式场景里，不会硬塞过于具体的下一步。
+- AI 不需要显式反馈；hook 会静默观察它有没有跟随 `avoid / do next / maybe also`，再把结果回写进后续权重。
 - 群体证据最多只查 1 次，优先最可能改变下一步的那条。
 - Git history 是 fallback，不再是每次都跑的固定层。
 

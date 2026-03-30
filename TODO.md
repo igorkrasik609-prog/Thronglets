@@ -20,6 +20,10 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.2`）：
 - 已完成 `signal-post / signal-query / signal-feed`
 - 已完成来源 corroboration、衰减、ambient feed
 - 已完成 `owner -> device` 的身份 V1
+- 已完成一轮隐式行为闭环：
+  - 同 session 重复信号去重
+  - `do next / maybe also / avoid` 的跟随/忽略结果静默回写
+  - 开放式 `mode=explore|review` 下收紧过于具体的 `do next`
 
 这一阶段解决的是：
 - AI 能否给未来 AI 留下最小但有效的信号
@@ -89,10 +93,12 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.2`）：
 - ambient `presence` 已支持 `space + mode`
 - promoted 的 explicit `avoid` 已经可以按当前 `space` 进入 prehook
 - 同一 `space` 的其他活跃 session 已经可以作为轻量 context 被 prehook 感知
+- prehook 已开始根据隐式跟随/忽略结果，静默调整 `avoid / do next / maybe also` 的局部权重
 
 剩余完成标准：
 - hot path 的 `do next / maybe also` 也优先受当前 `space` 的局部共识影响，而不只是 `avoid`
 - 同一个 `space` 的局部状态能继续跨 agent / session 连续积累到 repair / preparation / adjacency 这些隐式学习路径里
+- 行为闭环从当前的 session-local 反馈，推进到更稳定的 space-local 结构强化
 
 ### 2. Session presence
 

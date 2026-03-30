@@ -33,6 +33,9 @@ PreToolUse no longer tries to dump every possible layer of context. It emits at 
 Design constraints:
 - Silence is normal. No strong signal, no output.
 - Max 3 top-level lines to keep token burn bounded.
+- Consecutive tool calls in the same session are deduped, so the same line is not injected over and over.
+- `do next` contracts around session mode; in open-ended `explore / review` work, Thronglets suppresses overly specific next-step steering.
+- The AI does not need to send explicit feedback; the hook layer silently observes whether it followed `avoid / do next / maybe also` and feeds that back into later weighting.
 - At most 1 collective corroboration lookup on the hot path.
 - Git history is lazy fallback, not a fixed layer on every call.
 

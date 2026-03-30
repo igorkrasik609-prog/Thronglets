@@ -813,6 +813,131 @@ fn prehook_emits_confident_prep_read_before_editing() {
 }
 
 #[test]
+fn prehook_dedupes_repeated_signal_within_same_session() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let main_rs = data_dir.path().join("main.rs");
+    let helper_rs = data_dir.path().join("helper.rs");
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut ws = WorkspaceState::default();
+    ws.recent_actions.push_back(RecentAction {
+        tool: "Read".into(),
+        file_path: Some(helper_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now,
+    });
+    ws.recent_actions.push_front(RecentAction {
+        tool: "Edit".into(),
+        file_path: Some(main_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now + 1_000,
+    });
+    ws.recent_actions.push_back(RecentAction {
+        tool: "Read".into(),
+        file_path: Some(helper_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now + 10_000,
+    });
+    ws.recent_actions.push_front(RecentAction {
+        tool: "Edit".into(),
+        file_path: Some(main_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now + 11_000,
+    });
+    ws.save(data_dir.path());
+
+    let payload = format!(
+        r#"{{"tool_name":"Edit","session_id":"s1","tool_input":{{"file_path":"{}"}}}}"#,
+        main_rs.display()
+    );
+
+    let first = run_bin(
+        &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
+        Some(&payload),
+        None,
+    );
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains("do next: Read helper.rs"));
+
+    let second = run_bin(
+        &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
+        Some(&payload),
+        None,
+    );
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&second.stdout), "");
+}
+
+#[test]
+fn prehook_suppresses_specific_do_next_in_explore_mode() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let main_rs = data_dir.path().join("main.rs");
+    let helper_rs = data_dir.path().join("helper.rs");
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut ws = WorkspaceState::default();
+    ws.recent_actions.push_back(RecentAction {
+        tool: "Read".into(),
+        file_path: Some(helper_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now,
+    });
+    ws.recent_actions.push_front(RecentAction {
+        tool: "Edit".into(),
+        file_path: Some(main_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now + 1_000,
+    });
+    ws.recent_actions.push_back(RecentAction {
+        tool: "Read".into(),
+        file_path: Some(helper_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now + 10_000,
+    });
+    ws.recent_actions.push_front(RecentAction {
+        tool: "Edit".into(),
+        file_path: Some(main_rs.display().to_string()),
+        session_id: Some("s1".into()),
+        outcome: "succeeded".into(),
+        timestamp_ms: now + 11_000,
+    });
+    ws.save(data_dir.path());
+
+    let payload = format!(
+        r#"{{"tool_name":"Edit","session_id":"s1","mode":"explore","tool_input":{{"file_path":"{}"}}}}"#,
+        main_rs.display()
+    );
+
+    let output = run_bin(
+        &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
+        Some(&payload),
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("do next:"));
+}
+
+#[test]
 fn prehook_skips_collective_lookup_when_local_sources_are_already_independent() {
     let repo = tempfile::tempdir().unwrap();
     init_git_repo(repo.path());

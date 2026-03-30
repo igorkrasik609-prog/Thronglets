@@ -5,7 +5,7 @@
 //! next session pick up where the last one left off without the AI
 //! needing to re-discover everything.
 
-use crate::signals::{StepAction, StepCandidate};
+use crate::signals::{Recommendation, RecommendationKind, SignalKind, StepAction, StepCandidate};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,16 @@ const MAX_REPAIR_PATTERNS: usize = 20;
 const MAX_PENDING_FEEDBACK: usize = 30;
 /// Maximum number of recent prehook interventions to keep.
 const MAX_RECENT_INTERVENTIONS: usize = 20;
+/// Maximum number of pending recommendation feedback entries.
+const MAX_PENDING_RECOMMENDATION_FEEDBACK: usize = 20;
+/// Maximum number of resolved recommendation feedback events to keep.
+const MAX_RECENT_RECOMMENDATION_FEEDBACK: usize = 40;
+/// Maximum number of recent recommendation emissions to keep for same-turn dedupe.
+const MAX_RECENT_RECOMMENDATION_EMISSIONS: usize = 40;
+/// Dedupe repeated recommendations within the same session over a short window.
+const RECOMMENDATION_DEDUPE_WINDOW_MS: i64 = 30_000;
+/// Pending feedback remains meaningful only within this window.
+const RECOMMENDATION_FEEDBACK_WINDOW_MS: i64 = 600_000;
 
 /// A file that was recently touched by the AI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +98,36 @@ pub struct RepairPattern {
 pub struct RecentIntervention {
     pub tool: String,
     pub kinds: Vec<String>,
+    pub timestamp_ms: i64,
+}
+
+/// A recent recommendation emitted to a specific session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentRecommendationEmission {
+    pub session_id: String,
+    pub fingerprint: String,
+    pub timestamp_ms: i64,
+}
+
+/// A pending recommendation waiting to see what the AI did next.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingRecommendationFeedback {
+    pub session_id: String,
+    pub trigger_tool: String,
+    pub recommendation_kind: String,
+    pub source_kind: String,
+    pub expected_tool: Option<String>,
+    pub expected_target: Option<String>,
+    pub fingerprint: String,
+    pub timestamp_ms: i64,
+}
+
+/// A resolved feedback event derived from what the AI actually did.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecommendationFeedbackEvent {
+    pub recommendation_kind: String,
+    pub source_kind: String,
+    pub positive: bool,
     pub timestamp_ms: i64,
 }
 
@@ -173,6 +213,15 @@ pub struct WorkspaceState {
     /// Recent visible prehook interventions.
     #[serde(default)]
     pub recent_interventions: VecDeque<RecentIntervention>,
+    /// Recent emitted recommendation fingerprints for same-session dedupe.
+    #[serde(default)]
+    pub recent_recommendation_emissions: VecDeque<RecentRecommendationEmission>,
+    /// Pending recommendation feedback waiting for the next meaningful action.
+    #[serde(default)]
+    pub pending_recommendation_feedback: VecDeque<PendingRecommendationFeedback>,
+    /// Resolved recommendation feedback events used to bias future scores.
+    #[serde(default)]
+    pub recent_recommendation_feedback: VecDeque<RecommendationFeedbackEvent>,
     /// Last update timestamp.
     pub updated_ms: i64,
 }
@@ -274,6 +323,206 @@ impl WorkspaceState {
 
     fn independence_bonus(source_count: u32) -> i32 {
         source_count.saturating_sub(1).min(2) as i32 * 10
+    }
+
+    fn file_name_matches(path: Option<&str>, target: Option<&str>) -> bool {
+        match (path, target) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some(path), Some(target)) => Self::file_name(path) == target,
+        }
+    }
+
+    fn recommendation_fingerprint(recommendation: &Recommendation) -> String {
+        let detail = recommendation
+            .candidate
+            .as_ref()
+            .map(StepCandidate::render)
+            .unwrap_or_else(|| recommendation.body.trim().to_string());
+        format!(
+            "{}|{}|{}",
+            recommendation.kind.as_str(),
+            recommendation.source_kind.as_str(),
+            detail
+        )
+    }
+
+    fn push_feedback_event(
+        &mut self,
+        recommendation: &PendingRecommendationFeedback,
+        positive: bool,
+    ) {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.recent_recommendation_feedback
+            .push_front(RecommendationFeedbackEvent {
+                recommendation_kind: recommendation.recommendation_kind.clone(),
+                source_kind: recommendation.source_kind.clone(),
+                positive,
+                timestamp_ms: now,
+            });
+        self.recent_recommendation_feedback
+            .truncate(MAX_RECENT_RECOMMENDATION_FEEDBACK);
+        self.updated_ms = now;
+    }
+
+    fn recommendation_score_step(signal_kind: SignalKind) -> i32 {
+        match signal_kind {
+            SignalKind::Danger => 12,
+            SignalKind::Repair => 14,
+            SignalKind::Preparation => 12,
+            SignalKind::Adjacency => 8,
+            SignalKind::History => 0,
+        }
+    }
+
+    pub fn recommendation_score_adjustment(&self, signal_kind: SignalKind) -> i32 {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut positive = 0;
+        let mut negative = 0;
+        for event in self.recent_recommendation_feedback.iter() {
+            if event.source_kind != signal_kind.as_str() {
+                continue;
+            }
+            if (now - event.timestamp_ms) > 86_400_000 {
+                continue;
+            }
+            if event.positive {
+                positive += 1;
+            } else {
+                negative += 1;
+            }
+        }
+
+        let delta = (positive - negative).clamp(-2, 2);
+        delta * Self::recommendation_score_step(signal_kind)
+    }
+
+    pub fn suppress_duplicate_recommendations(
+        &self,
+        session_id: Option<&str>,
+        recommendations: Vec<Recommendation>,
+    ) -> Vec<Recommendation> {
+        let Some(session_id) = session_id else {
+            return recommendations;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        recommendations
+            .into_iter()
+            .filter(|recommendation| {
+                let fingerprint = Self::recommendation_fingerprint(recommendation);
+                !self.recent_recommendation_emissions.iter().any(|emission| {
+                    emission.session_id == session_id
+                        && emission.fingerprint == fingerprint
+                        && (now - emission.timestamp_ms) < RECOMMENDATION_DEDUPE_WINDOW_MS
+                })
+            })
+            .collect()
+    }
+
+    pub fn record_recommendation_emissions(
+        &mut self,
+        trigger_tool: &str,
+        session_id: Option<&str>,
+        recommendations: &[Recommendation],
+    ) {
+        let Some(session_id) = session_id else {
+            return;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+
+        for recommendation in recommendations {
+            let fingerprint = Self::recommendation_fingerprint(recommendation);
+            self.recent_recommendation_emissions
+                .push_front(RecentRecommendationEmission {
+                    session_id: session_id.to_string(),
+                    fingerprint: fingerprint.clone(),
+                    timestamp_ms: now,
+                });
+            self.recent_recommendation_emissions
+                .truncate(MAX_RECENT_RECOMMENDATION_EMISSIONS);
+
+            let (expected_tool, expected_target) = match recommendation.kind {
+                RecommendationKind::DoNext | RecommendationKind::MaybeAlso => recommendation
+                    .candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.steps.first())
+                    .map(|step| (Some(step.tool.clone()), step.target.clone()))
+                    .unwrap_or((None, None)),
+                RecommendationKind::Avoid => (Some(trigger_tool.to_string()), None),
+                RecommendationKind::Context => continue,
+            };
+
+            self.pending_recommendation_feedback
+                .push_front(PendingRecommendationFeedback {
+                    session_id: session_id.to_string(),
+                    trigger_tool: trigger_tool.to_string(),
+                    recommendation_kind: recommendation.kind.as_str().to_string(),
+                    source_kind: recommendation.source_kind.as_str().to_string(),
+                    expected_tool,
+                    expected_target,
+                    fingerprint,
+                    timestamp_ms: now,
+                });
+        }
+        self.pending_recommendation_feedback
+            .truncate(MAX_PENDING_RECOMMENDATION_FEEDBACK);
+        self.updated_ms = now;
+    }
+
+    pub fn resolve_recommendation_feedback(
+        &mut self,
+        session_id: Option<&str>,
+        tool: &str,
+        file_path: Option<&str>,
+        outcome: &str,
+    ) {
+        let Some(session_id) = session_id else {
+            return;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut retained = VecDeque::new();
+
+        while let Some(recommendation) = self.pending_recommendation_feedback.pop_front() {
+            if recommendation.session_id != session_id {
+                retained.push_back(recommendation);
+                continue;
+            }
+            if (now - recommendation.timestamp_ms) > RECOMMENDATION_FEEDBACK_WINDOW_MS {
+                continue;
+            }
+
+            let same_trigger_tool = recommendation.trigger_tool == tool;
+            match recommendation.recommendation_kind.as_str() {
+                "avoid" => {
+                    if same_trigger_tool {
+                        self.push_feedback_event(&recommendation, outcome == "failed");
+                    } else {
+                        self.push_feedback_event(&recommendation, true);
+                    }
+                }
+                "do_next" | "maybe_also" => {
+                    if same_trigger_tool {
+                        retained.push_back(recommendation);
+                        continue;
+                    }
+
+                    let followed = recommendation.expected_tool.as_deref() == Some(tool)
+                        && Self::file_name_matches(
+                            file_path,
+                            recommendation.expected_target.as_deref(),
+                        );
+                    let positive = if followed {
+                        outcome != "failed"
+                    } else {
+                        outcome == "failed"
+                    };
+                    self.push_feedback_event(&recommendation, positive);
+                }
+                _ => {}
+            }
+        }
+
+        self.pending_recommendation_feedback = retained;
     }
 
     pub fn has_repeated_recent_file_actions(&self, current_file: Option<&str>) -> bool {
@@ -1485,6 +1734,73 @@ mod tests {
         assert_eq!(activity.activity, "learning");
         assert_eq!(activity.recent_interventions_15m, 0);
         assert!(activity.last_intervention_tool.is_none());
+    }
+
+    #[test]
+    fn duplicate_recommendations_are_suppressed_within_same_session_window() {
+        let mut ws = make_ws();
+        let recommendations = vec![Recommendation {
+            kind: RecommendationKind::DoNext,
+            source_kind: SignalKind::Preparation,
+            body: String::new(),
+            candidate: Some(StepCandidate::single(
+                "Read",
+                Some("helper.rs".into()),
+                "medium",
+                2,
+                1,
+            )),
+        }];
+
+        ws.record_recommendation_emissions("Edit", Some("s1"), &recommendations);
+        let suppressed = ws.suppress_duplicate_recommendations(Some("s1"), recommendations.clone());
+        assert!(suppressed.is_empty());
+
+        let other_session = ws.suppress_duplicate_recommendations(Some("s2"), recommendations);
+        assert_eq!(other_session.len(), 1);
+    }
+
+    #[test]
+    fn followed_do_next_increases_preparation_adjustment() {
+        let mut ws = make_ws();
+        let recommendations = vec![Recommendation {
+            kind: RecommendationKind::DoNext,
+            source_kind: SignalKind::Preparation,
+            body: String::new(),
+            candidate: Some(StepCandidate::single(
+                "Read",
+                Some("helper.rs".into()),
+                "medium",
+                2,
+                1,
+            )),
+        }];
+
+        ws.record_recommendation_emissions("Edit", Some("s1"), &recommendations);
+        ws.resolve_recommendation_feedback(Some("s1"), "Edit", Some("/main.rs"), "succeeded");
+        assert_eq!(
+            ws.recommendation_score_adjustment(SignalKind::Preparation),
+            0
+        );
+
+        ws.resolve_recommendation_feedback(Some("s1"), "Read", Some("/tmp/helper.rs"), "succeeded");
+        assert!(ws.recommendation_score_adjustment(SignalKind::Preparation) > 0);
+    }
+
+    #[test]
+    fn ignored_avoid_that_still_fails_increases_danger_adjustment() {
+        let mut ws = make_ws();
+        let recommendations = vec![Recommendation {
+            kind: RecommendationKind::Avoid,
+            source_kind: SignalKind::Danger,
+            body: "  ⚠ recent error: linker failed".into(),
+            candidate: None,
+        }];
+
+        ws.record_recommendation_emissions("Bash", Some("s1"), &recommendations);
+        ws.resolve_recommendation_feedback(Some("s1"), "Bash", None, "failed");
+
+        assert!(ws.recommendation_score_adjustment(SignalKind::Danger) > 0);
     }
 
     // ── record_action ──
