@@ -344,6 +344,47 @@ thronglets connection-join --file ./thronglets.connection.json
 - Thronglets 默认按 `device-first` 集成；`owner account` 是可选升级层，不要求中心化账户服务，也不是基础入网前提
 - 运行节点现在会优先拨号本地已知 peers 和 connection file 继承来的 peer seeds，再回退 VPS bootstrap
 
+## 长期身份蓝图
+
+上面的 `owner -> device` 是当前 V1 现实模型。更长期的抽象层，冻结成下面这 4 个对象：
+
+- `principal`：持续主体
+- `account`：资产与结算容器，不要求天然等于链上账户
+- `delegate`：被 `principal` 授权执行的人 / 设备 / runtime / worker
+- `session`：一次具体运行，永远不是经济主体
+
+四层系统各自只做一件事：
+
+- `Psyche = subjective continuity substrate`
+- `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
+- `Oasyce Net = policy, operations, and resource orchestration`
+- `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
+
+这意味着：
+
+- `chain` 不定义意识，只定义哪些授权、承诺和结算结果算数
+- `account` 是资产容器；`chain` 是当前最重要的公共最终性层，但不是这个抽象唯一可能的承载面
+- `delegate` 在 V1 里主要体现为 `device identity`，但长期不写死成设备
+- `session` 只负责可追踪性和短期协调，不承担连续性或经济身份
+
+未来如果 AI 真要占据 `principal`，判断标准也应该是制度条件，而不是“它像不像人”：
+
+- 可持续的主观连续性证据
+- 独立的资源边界
+- 可审计的承诺历史
+- 可验证且可撤销的授权结构
+- 可归责的执行链
+
+以后任何新概念都先过这道门：
+
+- 它是 `principal`？
+- 它是 `account`？
+- 它是 `delegate`？
+- 它是 `session`？
+- 还是只是 `policy / view / trace`？
+
+如果都不是，先怀疑概念本身，不加新对象类型。
+
 如果目标 runtime 不在原生 adapter 列表里，`install-plan --agent generic --json` 现在还会直接给出 `Python / Node.js / shell` 的最小 `prehook / hook` 示例，不需要再自己拼接调用方式。如果只想拿一份更薄的结果，可以直接加：
 
 ```bash

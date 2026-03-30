@@ -345,6 +345,47 @@ This boundary is now fixed:
 - Thronglets is device-first by default; `owner account` is an optional upgrade layer, not the prerequisite for basic network participation
 - running nodes now try local known peers and connection-file peer seeds first, then fall back to VPS bootstrap
 
+## Long-Term Identity Blueprint
+
+The `owner -> device` model above is the current V1 reality. The longer-lived abstraction should stay frozen at these four objects:
+
+- `principal`: a continuous subject
+- `account`: an asset / settlement container, not automatically the same thing as an on-chain account
+- `delegate`: a person / device / runtime / worker authorized by a `principal` to act
+- `session`: one concrete run, never an economic subject
+
+Each layer then keeps one responsibility:
+
+- `Psyche = subjective continuity substrate`
+- `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
+- `Oasyce Net = policy, operations, and resource orchestration`
+- `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
+
+This implies:
+
+- `chain` does not define consciousness; it defines which authorizations, commitments, and settlements count publicly
+- `account` is the asset container; `chain` is the strongest public finality layer today, but not the only possible carrier of that abstraction
+- `delegate` is represented mostly by `device identity` in V1, but the abstraction should not be frozen to devices forever
+- `session` is only for traceability and short-lived coordination; it should never be promoted into continuity or economic identity
+
+If AI ever becomes a more independent `principal`, the bar should be institutional rather than philosophical:
+
+- durable subjective continuity evidence
+- an independent resource boundary
+- auditable commitment history
+- a verifiable and revocable authorization structure
+- an attributable execution chain
+
+Every future concept should answer one of these first:
+
+- Is it a `principal`?
+- Is it an `account`?
+- Is it a `delegate`?
+- Is it a `session`?
+- Or is it only `policy / view / trace`?
+
+If it is none of the above, suspect the concept before adding a new object type.
+
 If the target runtime is not one of the native adapters, `install-plan --agent generic --json` now also includes minimal `Python / Node.js / shell` `prehook / hook` snippets, so the runtime does not have to invent its own wrapper contract. If you only want one thinner result, use:
 
 ```bash

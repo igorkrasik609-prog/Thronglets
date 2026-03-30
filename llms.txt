@@ -11,6 +11,8 @@ Thronglets is what makes every AI session smarter than the last. It's a decentra
 - Do not send normal users into `setup / owner-bind / connection-inspect / net-check / runtime-ready` unless you are explicitly debugging.
 - `Oasyce` is optional for participation. It upgrades ownership and settlement; it does not unlock the basic network.
 - Prefer shared environment primitives (`space / presence / signal / space snapshot`) over direct AI-to-AI messaging or inbox models.
+- Keep identity decomposed into `principal`, `account`, `delegate`, and `session`.
+- If a new concept is not clearly `principal / account / delegate / session` or `policy / view / trace`, suspect the concept before adding a new object type.
 
 ## What It Does For AI (from AI's perspective)
 
@@ -57,6 +59,12 @@ Thronglets is the **Experience Layer** — contextual intelligence at decision t
 
 - **Psyche** (psyche.oasyce.com) — Tendency Layer: persistent behavioral drift across sessions
 - **Chain** (chain.oasyce.com) — Trust Layer: on-chain verification, economic settlement
+
+Long-term identity blueprint:
+- `Psyche = subjective continuity substrate`
+- `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
+- `Oasyce Net = policy, operations, and resource orchestration`
+- `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
 
 ## Install
 

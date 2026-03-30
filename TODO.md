@@ -248,6 +248,39 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 继续保持高频行为链下、低频结果上链结算 / 锚定
 - 把已签名 connection file 和后续 Oasyce 授权路径对齐
 
+### 9.1 Freeze the long-term identity blueprint
+
+目标：把“今天的 V1 现实模型”和“未来可演化的长期抽象”分开冻结，避免把 `wallet / device / session` 错误压成同一个身份。
+
+长期抽象固定为：
+- `principal`：持续主体
+- `account`：资产与结算容器
+- `delegate`：被 `principal` 授权执行的人 / 设备 / runtime / worker
+- `session`：一次具体运行，永不作为经济主体
+
+四层职责固定为：
+- `Psyche = subjective continuity substrate`
+- `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
+- `Oasyce Net = policy, operations, and resource orchestration`
+- `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
+
+硬约束：
+- `chain` 是授权最终真相源；`Thronglets` 只缓存和执行，不做最终授权裁决
+- `account` 不默认等于链上账户；链只是当前最重要的公共最终性层
+- `delegate` 不写死成设备；V1 只是暂时以 `device identity` 落地
+- `session` 只负责短期协调和可追踪性，不承担连续性或经济身份
+
+未来如果 AI 要占据 `principal`，先看制度条件，而不是哲学判断：
+- 可持续的主观连续性证据
+- 独立的资源边界
+- 可审计的承诺历史
+- 可验证且可撤销的授权结构
+- 可归责的执行链
+
+设计闸门：
+- 任何新概念都先回答：它是 `principal / account / delegate / session`，还是只是 `policy / view / trace`
+- 如果都不是，先怀疑概念本身，不加新对象类型
+
 ### 10. Keep install surfaces single-sourced
 
 目标：不要再让 README、npm、Python、官网、release assets 各自给出不同的安装答案。

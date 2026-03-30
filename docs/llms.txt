@@ -17,6 +17,8 @@ It is optimized for:
 - Do not start normal users with `setup / owner-bind / connection-inspect / net-check / runtime-ready`
 - `Oasyce` is optional for participation and only upgrades ownership / settlement
 - Prefer shared environment primitives over direct AI messaging
+- Keep identity decomposed into `principal`, `account`, `delegate`, and `session`
+- If a new concept is not clearly `principal / account / delegate / session` or `policy / view / trace`, suspect the concept before adding a new object type
 
 ## Install
 
