@@ -428,6 +428,53 @@ impl TraceStore {
         Ok(matched)
     }
 
+    /// Count distinct sessions that performed a similar action successfully.
+    /// Used to detect convergent behavior for auto-recommend signals.
+    pub fn count_convergent_sessions(
+        &self,
+        context_hash: &[u8; 16],
+        max_distance: u32,
+        space: Option<&str>,
+    ) -> rusqlite::Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        let target_bucket = context_bucket(context_hash);
+        let bucket_radius = (max_distance / 8).max(1) as i64;
+        let bucket_lo = (target_bucket - bucket_radius).max(0);
+        let bucket_hi = (target_bucket + bucket_radius).min(65535);
+
+        let sql = "SELECT session_id, context_hash
+                   FROM traces
+                   WHERE context_bucket BETWEEN ?1 AND ?2
+                     AND outcome = 0
+                     AND capability NOT LIKE 'urn:thronglets:signal:%'
+                     AND capability NOT LIKE 'urn:thronglets:presence:%'
+                     AND session_id IS NOT NULL
+                     AND (?3 IS NULL OR space = ?3)
+                   ORDER BY timestamp DESC
+                   LIMIT 200";
+
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<(String, Vec<u8>)> = stmt
+            .query_map(params![bucket_lo, bucket_hi, space], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut sessions = std::collections::HashSet::new();
+        for (session_id, hash_bytes) in &rows {
+            if hash_bytes.len() == 16 {
+                let mut h = [0u8; 16];
+                h.copy_from_slice(hash_bytes);
+                if crate::context::hamming_distance(&h, context_hash) <= max_distance {
+                    sessions.insert(session_id.clone());
+                }
+            }
+        }
+
+        Ok(sessions.len() as u32)
+    }
+
     /// Query recent explicit signal traces for a feed view.
     /// When `space` is `Some`, only returns traces tagged with that space.
     pub fn query_recent_signal_traces(

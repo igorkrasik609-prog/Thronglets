@@ -80,6 +80,14 @@ pub struct RecentAction {
     pub timestamp_ms: i64,
 }
 
+/// An auto-emitted signal record for rate limiting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSignalEmission {
+    pub kind: String,  // "watch" or "recommend"
+    pub key: String,   // unique identifier for dedup
+    pub timestamp_ms: i64,
+}
+
 /// A lightweight local repair pattern.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepairPattern {
@@ -215,6 +223,9 @@ pub struct WorkspaceState {
     /// Pending recommendation feedback waiting for the next meaningful action.
     #[serde(default)]
     pub pending_recommendation_feedback: VecDeque<PendingRecommendationFeedback>,
+    /// Rate limiter for auto-emitted signals (watch, recommend).
+    #[serde(default)]
+    pub auto_signal_emissions: Vec<AutoSignalEmission>,
     /// Resolved recommendation feedback events used to bias future scores.
     #[serde(default)]
     pub recent_recommendation_feedback: VecDeque<RecommendationFeedbackEvent>,
@@ -657,6 +668,46 @@ impl WorkspaceState {
         });
         self.recent_interventions.truncate(MAX_RECENT_INTERVENTIONS);
         self.updated_ms = now;
+    }
+
+    /// Returns repair patterns with 2+ source sessions that haven't been signaled recently.
+    /// Each element is (pattern, dedup_key).
+    pub fn pending_auto_watch_signals(&self) -> Vec<(&RepairPattern, String)> {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.repair_patterns
+            .iter()
+            .filter(|p| p.source_ids.len() >= 2 && (now - p.last_seen_ms) < 86_400_000)
+            .filter_map(|p| {
+                let key = format!("{}:{}:{}", p.error_tool, p.repair_tool,
+                    p.repair_target.as_deref().unwrap_or(""));
+                let recently_emitted = self.auto_signal_emissions.iter().any(|e| {
+                    e.kind == "watch" && e.key == key && (now - e.timestamp_ms) < 86_400_000
+                });
+                if recently_emitted { None } else { Some((p, key)) }
+            })
+            .collect()
+    }
+
+    /// Check whether an auto-signal of given kind+key was emitted within the window.
+    pub fn has_recent_auto_signal(&self, kind: &str, key: &str, window_ms: i64) -> bool {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.auto_signal_emissions.iter().any(|e| {
+            e.kind == kind && e.key == key && (now - e.timestamp_ms) < window_ms
+        })
+    }
+
+    /// Record that an auto-signal was emitted.
+    pub fn record_auto_signal(&mut self, kind: &str, key: &str) {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.auto_signal_emissions.retain(|e| (now - e.timestamp_ms) < 86_400_000);
+        self.auto_signal_emissions.push(AutoSignalEmission {
+            kind: kind.to_string(),
+            key: key.to_string(),
+            timestamp_ms: now,
+        });
+        if self.auto_signal_emissions.len() > 50 {
+            self.auto_signal_emissions.drain(..self.auto_signal_emissions.len() - 50);
+        }
     }
 
     pub fn substrate_activity(&self) -> SubstrateActivity {

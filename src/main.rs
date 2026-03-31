@@ -3454,7 +3454,85 @@ async fn main() {
                         );
                         let _ = store.insert(&auto_signal);
                     }
-                    ws.record_error(tool_name, context_text, err);
+                    ws.record_error(tool_name, context_text.clone(), err);
+                }
+            }
+
+            // Auto-watch: repair patterns across 2+ sessions → watch signal
+            if !is_error {
+                let watch_candidates: Vec<_> = ws
+                    .pending_auto_watch_signals()
+                    .into_iter()
+                    .map(|(p, key)| {
+                        let ctx = ws
+                            .recent_errors
+                            .iter()
+                            .find(|e| e.tool == p.error_tool)
+                            .map(|e| e.context.clone())
+                            .unwrap_or_else(|| p.error_tool.to_lowercase());
+                        let msg = match &p.repair_target {
+                            Some(target) => format!(
+                                "{} errors → {} {} ({} sessions)",
+                                p.error_tool, p.repair_tool, target, p.source_ids.len()
+                            ),
+                            None => format!(
+                                "{} errors → {} ({} sessions)",
+                                p.error_tool, p.repair_tool, p.source_ids.len()
+                            ),
+                        };
+                        (ctx, msg, key)
+                    })
+                    .collect();
+                for (ctx, msg, key) in watch_candidates {
+                    let auto_signal = create_signal_trace(
+                        SignalPostKind::Watch,
+                        &ctx,
+                        &msg,
+                        SignalTraceConfig {
+                            model_id: "thronglets-auto".into(),
+                            session_id: session_id.clone(),
+                            owner_account: identity_binding.owner_account.clone(),
+                            device_identity: Some(identity_binding.device_identity.clone()),
+                            space: current_space.clone(),
+                            ttl_hours: 48,
+                        },
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&auto_signal);
+                    ws.record_auto_signal("watch", &key);
+                }
+            }
+
+            // Auto-recommend: convergent behavior across 3+ sessions
+            if !is_error && matches!(tool_name, "Edit" | "Write" | "Bash") {
+                let rec_hash = simhash(&context_text);
+                if let Ok(convergent) =
+                    store.count_convergent_sessions(&rec_hash, 48, current_space.as_deref())
+                {
+                    if convergent >= 3
+                        && !ws.has_recent_auto_signal("recommend", &context_text, 86_400_000)
+                    {
+                        let msg =
+                            format!("convergent: {} sessions did this successfully", convergent);
+                        let auto_signal = create_signal_trace(
+                            SignalPostKind::Recommend,
+                            &context_text,
+                            &msg,
+                            SignalTraceConfig {
+                                model_id: "thronglets-auto".into(),
+                                session_id: session_id.clone(),
+                                owner_account: identity_binding.owner_account.clone(),
+                                device_identity: Some(identity_binding.device_identity.clone()),
+                                space: current_space.clone(),
+                                ttl_hours: 168,
+                            },
+                            identity.public_key_bytes(),
+                            |msg| identity.sign(msg),
+                        );
+                        let _ = store.insert(&auto_signal);
+                        ws.record_auto_signal("recommend", &context_text);
+                    }
                 }
             }
 
@@ -3554,22 +3632,23 @@ async fn main() {
             }
             profiler.stage("danger");
 
-            let explicit_avoid_checked = !hook_context.is_empty();
-            if explicit_avoid_checked
+            let explicit_signals_checked = !hook_context.is_empty();
+            if explicit_signals_checked
                 && let Some(store) = cached_collective_store(&mut collective_store, &dir)
-                && let Some(mut explicit_avoid) = explicit_avoid_signal(
+            {
+                for mut sig in explicit_signals(
                     store,
                     &hook_context,
                     current_space.as_deref(),
                     &identity_binding.device_identity,
                     identity.public_key_bytes(),
-                )
-            {
-                explicit_avoid.score += ws
-                    .recommendation_score_adjustment(SignalKind::Danger, current_space.as_deref());
-                signals.push(explicit_avoid);
+                ) {
+                    sig.score += ws
+                        .recommendation_score_adjustment(sig.kind, current_space.as_deref());
+                    signals.push(sig);
+                }
             }
-            profiler.stage_or_skip("explicit_avoid", explicit_avoid_checked);
+            profiler.stage_or_skip("explicit_signals", explicit_signals_checked);
 
             if has_recent_tool_error
                 && let Some(repair_hint) = ws
@@ -4309,36 +4388,62 @@ fn apply_collective_sources(
     *score += candidate.upgrade_collective_sources(collective_sources);
 }
 
-fn explicit_avoid_signal(
+/// Query all explicit signal kinds (avoid, watch, recommend) and return matching signals.
+fn explicit_signals(
     store: &TraceStore,
     hook_context: &str,
     space: Option<&str>,
     local_device_identity: &str,
     local_node_pubkey: [u8; 32],
-) -> Option<Signal> {
+) -> Vec<Signal> {
     let context_hash = simhash(hook_context);
-    let traces = store
-        .query_signal_traces(&context_hash, Some(SignalPostKind::Avoid), 48, 3, space)
-        .ok()?;
-    let result = summarize_signal_traces(
+    // Query ALL signal kinds at once (kind: None)
+    let traces = match store.query_signal_traces(&context_hash, None, 48, 10, space) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let results = summarize_signal_traces(
         &traces,
         hook_context,
         local_device_identity,
         local_node_pubkey,
-        3,
-    )
-    .into_iter()
-    .find(|result| result.density_score >= 1 && result.context_similarity >= 0.85)?;
+        6,
+    );
 
-    let mut score = 300 + i32::from(result.density_score) * 20;
-    if result.promotion_state == "collective" {
-        score += 30;
+    let mut signals = Vec::new();
+    for result in results {
+        if result.density_score < 1 || result.context_similarity < 0.85 {
+            continue;
+        }
+        let collective_bonus = if result.promotion_state == "collective" { 30 } else { 0 };
+        let density_bonus = i32::from(result.density_score) * 20;
+
+        match result.kind.as_str() {
+            "avoid" => {
+                let score = 300 + density_bonus + collective_bonus;
+                signals.push(Signal::danger(
+                    format!("  ⚠ avoid: {}", result.message),
+                    score,
+                ));
+            }
+            "watch" => {
+                let score = 200 + density_bonus + collective_bonus;
+                signals.push(Signal::danger(
+                    format!("  👁 watch: {}", result.message),
+                    score,
+                ));
+            }
+            "recommend" => {
+                let score = 150 + density_bonus + collective_bonus;
+                signals.push(Signal::preparation(
+                    format!("  ✦ recommended: {}", result.message),
+                    score,
+                ));
+            }
+            _ => {}
+        }
     }
-
-    Some(Signal::danger(
-        format!("  ⚠ explicit avoid: {}", result.message),
-        score,
-    ))
+    signals
 }
 
 fn presence_context_signal(
@@ -4918,12 +5023,12 @@ mod tests {
     }
 
     #[test]
-    fn explicit_avoid_signal_surfaces_single_source() {
+    fn explicit_signals_surfaces_all_kinds() {
         let local_identity = NodeIdentity::generate();
-        let remote_identity = NodeIdentity::generate();
         let store = TraceStore::in_memory().unwrap();
 
-        let single_avoid = create_signal_trace(
+        // Insert avoid signal
+        let avoid = create_signal_trace(
             SignalPostKind::Avoid,
             "edit file: src/main.rs",
             "skip the generated lockfile",
@@ -4938,106 +5043,120 @@ mod tests {
             local_identity.public_key_bytes(),
             |msg| local_identity.sign(msg),
         );
-        store.insert(&single_avoid).unwrap();
+        store.insert(&avoid).unwrap();
 
-        // Single-source signals surface at candidate density
-        let signal = explicit_avoid_signal(
+        // Insert watch signal
+        let watch = create_signal_trace(
+            SignalPostKind::Watch,
+            "bash: cargo test",
+            "Bash errors → Edit (2 sessions)",
+            SignalTraceConfig {
+                model_id: "thronglets-auto".into(),
+                session_id: Some("local-b".into()),
+                owner_account: None,
+                device_identity: Some(local_identity.device_identity()),
+                space: None,
+                ttl_hours: 48,
+            },
+            local_identity.public_key_bytes(),
+            |msg| local_identity.sign(msg),
+        );
+        store.insert(&watch).unwrap();
+
+        // Insert recommend signal
+        let recommend = create_signal_trace(
+            SignalPostKind::Recommend,
+            "bash: Run full test suite",
+            "convergent: 4 sessions did this",
+            SignalTraceConfig {
+                model_id: "thronglets-auto".into(),
+                session_id: Some("local-c".into()),
+                owner_account: None,
+                device_identity: Some(local_identity.device_identity()),
+                space: None,
+                ttl_hours: 168,
+            },
+            local_identity.public_key_bytes(),
+            |msg| local_identity.sign(msg),
+        );
+        store.insert(&recommend).unwrap();
+
+        // Query avoid
+        let avoid_signals = explicit_signals(
             &store,
             "edit file: src/main.rs",
             None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
-        )
-        .expect("candidate avoid should surface in prehook");
-        assert_eq!(signal.kind, SignalKind::Danger);
+        );
+        assert!(!avoid_signals.is_empty());
+        assert_eq!(avoid_signals[0].kind, SignalKind::Danger);
+        assert!(avoid_signals[0].body.contains("avoid"));
 
-        // Adding a second source from a different node increases score
-        let promoted_avoid = create_signal_trace(
+        // Query watch
+        let watch_signals = explicit_signals(
+            &store,
+            "bash: cargo test",
+            None,
+            &local_identity.device_identity(),
+            local_identity.public_key_bytes(),
+        );
+        assert!(!watch_signals.is_empty());
+        assert!(watch_signals.iter().any(|s| s.body.contains("watch")));
+
+        // Query recommend
+        let rec_signals = explicit_signals(
+            &store,
+            "bash: Run full test suite",
+            None,
+            &local_identity.device_identity(),
+            local_identity.public_key_bytes(),
+        );
+        assert!(!rec_signals.is_empty());
+        assert!(rec_signals.iter().any(|s| s.body.contains("recommended")));
+    }
+
+    #[test]
+    fn explicit_signals_respects_space() {
+        let local_identity = NodeIdentity::generate();
+        let store = TraceStore::in_memory().unwrap();
+
+        let trace = create_signal_trace(
             SignalPostKind::Avoid,
             "edit file: src/main.rs",
             "skip the generated lockfile",
             SignalTraceConfig {
-                model_id: "openclaw".into(),
-                session_id: Some("remote-a".into()),
+                model_id: "codex".into(),
+                session_id: Some("session-local".into()),
                 owner_account: None,
-                device_identity: Some(remote_identity.device_identity()),
-                space: None,
+                device_identity: Some(local_identity.device_identity()),
+                space: Some("other-space".into()),
                 ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
             },
-            remote_identity.public_key_bytes(),
-            |msg| remote_identity.sign(msg),
+            local_identity.public_key_bytes(),
+            |msg| local_identity.sign(msg),
         );
-        store.insert(&promoted_avoid).unwrap();
+        store.insert(&trace).unwrap();
 
-        let promoted_signal = explicit_avoid_signal(
+        // Wrong space → empty
+        let wrong_space = explicit_signals(
             &store,
             "edit file: src/main.rs",
-            None,
+            Some("psyche"),
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
-        )
-        .expect("promoted avoid should surface with higher score");
-        assert_eq!(promoted_signal.kind, SignalKind::Danger);
-        assert!(promoted_signal.score > signal.score);
-        assert!(signal.body.contains("explicit avoid"));
-        assert!(signal.body.contains("skip the generated lockfile"));
-    }
-
-    #[test]
-    fn explicit_avoid_signal_respects_space() {
-        let local_identity = NodeIdentity::generate();
-        let remote_identity = NodeIdentity::generate();
-        let store = TraceStore::in_memory().unwrap();
-
-        for identity in [&local_identity, &remote_identity] {
-            let trace = create_signal_trace(
-                SignalPostKind::Avoid,
-                "edit file: src/main.rs",
-                "skip the generated lockfile",
-                SignalTraceConfig {
-                    model_id: if identity.public_key_bytes() == local_identity.public_key_bytes() {
-                        "codex".into()
-                    } else {
-                        "openclaw".into()
-                    },
-                    session_id: Some(format!(
-                        "session-{}",
-                        if identity.public_key_bytes() == local_identity.public_key_bytes() {
-                            "local"
-                        } else {
-                            "remote"
-                        }
-                    )),
-                    owner_account: None,
-                    device_identity: Some(identity.device_identity()),
-                    space: Some("other-space".into()),
-                    ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-                },
-                identity.public_key_bytes(),
-                |msg| identity.sign(msg),
-            );
-            store.insert(&trace).unwrap();
-        }
-
-        assert!(
-            explicit_avoid_signal(
-                &store,
-                "edit file: src/main.rs",
-                Some("psyche"),
-                &local_identity.device_identity(),
-                local_identity.public_key_bytes(),
-            )
-            .is_none()
         );
+        assert!(wrong_space.is_empty());
 
-        let signal = explicit_avoid_signal(
+        // Right space → found
+        let right_space = explicit_signals(
             &store,
             "edit file: src/main.rs",
             Some("other-space"),
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
-        )
-        .expect("space-matching promoted avoid should surface");
-        assert!(signal.body.contains("skip the generated lockfile"));
+        );
+        assert!(!right_space.is_empty());
+        assert!(right_space[0].body.contains("skip the generated lockfile"));
     }
 }
