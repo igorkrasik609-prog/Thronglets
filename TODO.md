@@ -441,6 +441,25 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 把 relay 继续降级成兜底而不是默认路径
 - 做一次 VPS 掉线后的真实故障演练
 
+### 13.1 Reduce monolith pressure in runtime surfaces
+
+目标：让入口层、编排层、能力层边界更清楚，避免 `main.rs` / `workspace` / `setup_support` 继续充当历史大抽屉。
+
+当前状态：
+- `Run` / `Mcp` 的重复网络 orchestration 已抽到 `src/network_runtime.rs`
+- same-owner trusted-path promotion 和 network event handling 已经不再保留两套实现
+
+下一步：
+- 把 `main.rs` 继续按 `CLI surface / command application / renderers` 拆开
+- 把 `workspace` 按 `state / learning / hint selection` 拆开
+- 把 `setup_support` 按 runtime 适配器拆成更小模块
+- 给 `storage` 增加更薄的 typed trace classifier，减少 product semantics 直接泄漏进 capability string 查询
+
+约束：
+- 不新增身份对象
+- 不改用户默认路径
+- 优先消除重复运行时真相源，再处理文案和局部格式问题
+
 ## Later
 
 ### 14. Network-side corroboration quality

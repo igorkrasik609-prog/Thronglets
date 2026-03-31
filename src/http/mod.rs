@@ -16,7 +16,9 @@
 //! - GET  /v1/authorization — local authorization snapshot
 
 use crate::context::{simhash, similarity};
-use crate::continuity::{ExternalContinuityInput, record_external_continuity};
+use crate::continuity::{
+    ExternalContinuityInput, ExternalContinuityRecordConfig, record_external_continuity,
+};
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::{authorization_check_data, identity_summary};
 use crate::posts::{
@@ -151,12 +153,14 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         match record_external_continuity(
             &ctx.store,
             &ctx.identity,
-            ctx.binding.owner_account.clone(),
-            ctx.binding.device_identity.clone(),
             &input,
-            outcome,
-            model_id,
-            session_id,
+            ExternalContinuityRecordConfig {
+                owner_account: ctx.binding.owner_account.clone(),
+                device_identity: ctx.binding.device_identity.clone(),
+                outcome,
+                model_id,
+                session_id,
+            },
         ) {
             Ok(result) => {
                 return json!({

@@ -467,25 +467,29 @@ pub fn derived_signal_kind(data: &ContinuityRecordData) -> Option<SignalPostKind
         .and_then(|signal| SignalPostKind::parse(&signal.kind))
 }
 
+pub struct ExternalContinuityRecordConfig {
+    pub owner_account: Option<String>,
+    pub device_identity: String,
+    pub outcome: Outcome,
+    pub model_id: String,
+    pub session_id: Option<String>,
+}
+
 pub fn record_external_continuity(
     store: &TraceStore,
     identity: &NodeIdentity,
-    owner_account: Option<String>,
-    device_identity: String,
     input: &ExternalContinuityInput,
-    outcome: Outcome,
-    model_id: String,
-    session_id: Option<String>,
+    config: ExternalContinuityRecordConfig,
 ) -> Result<ExternalContinuityRecordResult, String> {
     input.validate()?;
 
     let trace = create_external_continuity_trace(
         input,
-        outcome,
-        model_id,
-        session_id,
-        owner_account.clone(),
-        Some(device_identity.clone()),
+        config.outcome,
+        config.model_id,
+        config.session_id,
+        config.owner_account.clone(),
+        Some(config.device_identity.clone()),
         identity.public_key_bytes(),
         |msg| identity.sign(msg),
     );
@@ -515,8 +519,8 @@ pub fn record_external_continuity(
             SignalTraceConfig {
                 model_id: "thronglets-continuity".into(),
                 session_id: trace.session_id.clone(),
-                owner_account,
-                device_identity: Some(device_identity),
+                owner_account: config.owner_account,
+                device_identity: Some(config.device_identity),
                 space: signal.space.clone(),
                 ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
             },
@@ -795,19 +799,18 @@ mod tests {
         let result = record_external_continuity(
             &store,
             &identity,
-            None,
-            identity.device_identity(),
             &input,
-            Outcome::Succeeded,
-            "psyche".into(),
-            Some("s1".into()),
+            ExternalContinuityRecordConfig {
+                owner_account: None,
+                device_identity: identity.device_identity(),
+                outcome: Outcome::Succeeded,
+                model_id: "psyche".into(),
+                session_id: Some("s1".into()),
+            },
         )
         .unwrap();
 
-        assert_eq!(
-            result.external_continuity.as_ref().unwrap().local_only_raw,
-            true
-        );
+        assert!(result.external_continuity.as_ref().unwrap().local_only_raw);
         assert_eq!(store.unpublished_traces(10).unwrap().len(), 0);
     }
 }
