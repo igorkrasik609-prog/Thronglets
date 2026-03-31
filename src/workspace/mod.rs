@@ -334,23 +334,24 @@ impl WorkspaceState {
         )
     }
 
-    fn push_feedback_event(
-        &mut self,
+    fn make_feedback_event(
         recommendation: &PendingRecommendationFeedback,
         positive: bool,
-    ) {
-        let now = chrono::Utc::now().timestamp_millis();
-        self.recent_recommendation_feedback
-            .push_front(RecommendationFeedbackEvent {
-                recommendation_kind: recommendation.recommendation_kind.clone(),
-                source_kind: recommendation.source_kind.clone(),
-                space: recommendation.space.clone(),
-                positive,
-                timestamp_ms: now,
-            });
+    ) -> RecommendationFeedbackEvent {
+        RecommendationFeedbackEvent {
+            recommendation_kind: recommendation.recommendation_kind.clone(),
+            source_kind: recommendation.source_kind.clone(),
+            space: recommendation.space.clone(),
+            positive,
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+
+    fn push_feedback_event(&mut self, event: RecommendationFeedbackEvent) {
+        self.recent_recommendation_feedback.push_front(event);
         self.recent_recommendation_feedback
             .truncate(MAX_RECENT_RECOMMENDATION_FEEDBACK);
-        self.updated_ms = now;
+        self.updated_ms = chrono::Utc::now().timestamp_millis();
     }
 
     fn recommendation_score_step(signal_kind: SignalKind) -> i32 {
@@ -476,12 +477,13 @@ impl WorkspaceState {
         tool: &str,
         file_path: Option<&str>,
         outcome: &str,
-    ) {
+    ) -> Vec<RecommendationFeedbackEvent> {
         let Some(session_id) = session_id else {
-            return;
+            return Vec::new();
         };
         let now = chrono::Utc::now().timestamp_millis();
         let mut retained = VecDeque::new();
+        let mut resolved = Vec::new();
 
         while let Some(recommendation) = self.pending_recommendation_feedback.pop_front() {
             if recommendation.session_id != session_id {
@@ -499,11 +501,14 @@ impl WorkspaceState {
             let same_trigger_tool = recommendation.trigger_tool == tool;
             match recommendation.recommendation_kind.as_str() {
                 "avoid" => {
-                    if same_trigger_tool {
-                        self.push_feedback_event(&recommendation, outcome == "failed");
+                    let positive = if same_trigger_tool {
+                        outcome == "failed"
                     } else {
-                        self.push_feedback_event(&recommendation, true);
-                    }
+                        true
+                    };
+                    let event = Self::make_feedback_event(&recommendation, positive);
+                    self.push_feedback_event(event.clone());
+                    resolved.push(event);
                 }
                 "do_next" | "maybe_also" => {
                     if same_trigger_tool {
@@ -521,13 +526,16 @@ impl WorkspaceState {
                     } else {
                         outcome == "failed"
                     };
-                    self.push_feedback_event(&recommendation, positive);
+                    let event = Self::make_feedback_event(&recommendation, positive);
+                    self.push_feedback_event(event.clone());
+                    resolved.push(event);
                 }
                 _ => {}
             }
         }
 
         self.pending_recommendation_feedback = retained;
+        resolved
     }
 
     fn record_repair_pattern(

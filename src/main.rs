@@ -3409,13 +3409,36 @@ async fn main() {
                 outcome_str,
                 session_id.as_deref(),
             );
-            ws.resolve_recommendation_feedback(
+            let feedback_events = ws.resolve_recommendation_feedback(
                 session_id.as_deref(),
                 current_space.as_deref(),
                 tool_name,
                 file_path.as_deref(),
                 outcome_str,
             );
+
+            // Feedback → trace: make signal evaluation visible to the substrate
+            for event in &feedback_events {
+                let polarity = if event.positive { "positive" } else { "negative" };
+                let feedback_context = format!(
+                    "feedback:{} {} {}",
+                    polarity, event.recommendation_kind, event.source_kind,
+                );
+                let feedback_trace = Trace::new_with_identity(
+                    "urn:thronglets:signal:feedback".into(),
+                    if event.positive { Outcome::Succeeded } else { Outcome::Failed },
+                    0, 0,
+                    simhash(&feedback_context),
+                    Some(feedback_context),
+                    session_id.clone(),
+                    identity_binding.owner_account.clone(),
+                    Some(identity_binding.device_identity.clone()),
+                    "thronglets-feedback".into(),
+                    identity.public_key_bytes(),
+                    |msg| identity.sign(msg),
+                );
+                let _ = store.insert(&feedback_trace);
+            }
 
             // Track pending feedback for Edit/Write
             if matches!(tool_name, "Edit" | "Write")
