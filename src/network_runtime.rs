@@ -56,14 +56,25 @@ pub async fn start_network_runtime(
     options: NetworkRuntimeOptions,
 ) -> Result<mpsc::Sender<NetworkCommand>, Box<dyn Error>> {
     let mut network_snapshot = NetworkSnapshot::load(data_dir);
-    network_snapshot.configure_bootstrap(bootstrap.len());
+    if !bootstrap.is_empty() {
+        network_snapshot.remember_bootstrap_seeds(bootstrap.iter().cloned());
+    }
+    let effective_bootstrap = if bootstrap.is_empty() {
+        network_snapshot.bootstrap_seed_addresses(16)
+    } else {
+        bootstrap.to_vec()
+    };
+    network_snapshot.configure_bootstrap(effective_bootstrap.len());
     network_snapshot.save(data_dir);
 
     let libp2p_keypair =
         libp2p::identity::Keypair::ed25519_from_bytes(&mut identity.secret_key_bytes())
             .map_err(|error| format!("failed to create libp2p keypair: {error}"))?;
 
-    let bootstrap_addrs: Vec<Multiaddr> = bootstrap.iter().filter_map(|s| s.parse().ok()).collect();
+    let bootstrap_addrs: Vec<Multiaddr> = effective_bootstrap
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
     let trusted_peer_addrs: Vec<Multiaddr> = network_snapshot
         .trusted_peer_seed_addresses(8)
         .into_iter()

@@ -257,6 +257,8 @@ The default user entry points are now:
 
 `thronglets share` writes the connection file to `~/Desktop/thronglets.connection.json` by default and tells you whether that file is still `identity-only`, already carries peer seeds, or has reached `trusted-same-owner-ready`. The second device also looks for `~/Desktop/thronglets.connection.json` by default, so normal users do not need to type a file argument on the join path.
 
+If this device has learned how to get back onto the network before, `thronglets share` now briefly tries to refresh peer paths before exporting, so ordinary users no longer need to reason about when bootstrap addresses matter.
+
 Advanced users can still call `setup / connection-export / connection-inspect / connection-join / owner-bind` directly, but normal user onboarding should not require understanding those internal commands first.
 
 Architecture principle:
@@ -265,7 +267,7 @@ Architecture principle:
 - MCP is a thin optional adapter for runtimes that support or require it
 - if the ecosystem later shifts from MCP to CLI / HTTP, the substrate, history, P2P, and signals all remain intact
 - human cognitive load is a performance budget, just like hot-path token burn
-- normal users should only see `start / join / status`
+- normal users should only see `start / share / join / status`
 - `Oasyce` upgrades ownership and settlement; it does not unlock basic participation
 - shared environment comes before direct AI messaging; prefer `space / presence / signal / space snapshot` over agent chat abstractions
 

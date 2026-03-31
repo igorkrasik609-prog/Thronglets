@@ -458,3 +458,72 @@ async fn first_connection_attempt_promotes_same_owner_path_to_trusted_seed() {
 
     drop(cmd_tx_a);
 }
+
+#[tokio::test]
+async fn first_connection_attempt_can_use_persisted_bootstrap_seed() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("thronglets=debug")
+        .with_test_writer()
+        .try_init();
+
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("secondary-data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let port_a = free_loopback_port();
+
+    let id_a = NodeIdentity::generate();
+    let mut secret_a = id_a.secret_key_bytes();
+    let keypair_a =
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_a).expect("keypair A");
+    let peer_id_a = libp2p::PeerId::from(keypair_a.public());
+    let config_a = NetworkConfig {
+        listen_port: port_a,
+        ..Default::default()
+    };
+    let (cmd_tx_a, mut event_rx_a) = thronglets::network::start(keypair_a, config_a)
+        .await
+        .expect("start node A");
+
+    let id_b = NodeIdentity::generate();
+    let binding_b = IdentityBinding::new(id_b.device_identity());
+    let bootstrap_a: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_a}/p2p/{peer_id_a}")
+        .parse()
+        .expect("bootstrap addr");
+
+    let mut snapshot = NetworkSnapshot::begin(0);
+    snapshot.remember_bootstrap_seeds([bootstrap_a.to_string()]);
+    snapshot.save(&data_dir);
+
+    let result = attempt_first_connection(
+        &data_dir,
+        &id_b,
+        &binding_b,
+        std::sync::Arc::new(TraceStore::open(&data_dir.join("traces.db")).unwrap()),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("attempt first connection");
+
+    assert!(result.connected_once);
+    assert!(!result.trusted_same_owner_ready);
+    assert!(
+        wait_for_peer_connection(&mut event_rx_a, Duration::from_secs(2)).await,
+        "Primary node should observe the connection that came from persisted bootstrap memory"
+    );
+
+    let snapshot = NetworkSnapshot::load(&data_dir);
+    assert_eq!(snapshot.peer_count, 0);
+    assert_eq!(
+        snapshot.bootstrap_seed_addresses(8),
+        vec![bootstrap_a.to_string()]
+    );
+    assert!(
+        snapshot
+            .remembered_peer_addresses(8)
+            .contains(&bootstrap_a.to_string()),
+        "first connection attempt should learn a reusable remembered peer path"
+    );
+
+    drop(cmd_tx_a);
+}

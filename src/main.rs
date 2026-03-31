@@ -2375,6 +2375,7 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "thronglets=info".parse().unwrap()),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -2432,6 +2433,20 @@ async fn main() {
             ttl_hours,
             json,
         } => {
+            let status = collect_status_data(&dir, &identity, &identity_binding);
+            let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
+            if !status.summary.network_path_ready
+                && !network_snapshot.bootstrap_seed_addresses(8).is_empty()
+            {
+                let _ = attempt_first_connection(
+                    &dir,
+                    &identity,
+                    &identity_binding,
+                    Arc::new(open_store(&dir)),
+                    std::time::Duration::from_secs(12),
+                )
+                .await;
+            }
             let output = output.unwrap_or_else(default_share_output_path);
             let exported =
                 export_connection_file(&output, ttl_hours, &identity_binding, &identity, &dir);

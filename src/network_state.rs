@@ -7,6 +7,7 @@ const MAX_KNOWN_PEERS: usize = 64;
 const MAX_PEER_ADDRESSES: usize = 8;
 const MAX_PEER_SEEDS: usize = 64;
 const MAX_TRUSTED_PEER_SEEDS: usize = 16;
+const MAX_BOOTSTRAP_SEEDS: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservedPeer {
@@ -29,6 +30,8 @@ pub struct NetworkSnapshot {
     pub last_peer_connected_at_ms: Option<i64>,
     pub last_trace_received_at_ms: Option<i64>,
     pub peers: Vec<ObservedPeer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bootstrap_seeds: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted_peer_seeds: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -70,6 +73,25 @@ impl NetworkSnapshot {
     pub fn configure_bootstrap(&mut self, bootstrap_targets: usize) {
         self.updated_at_ms = now_ms();
         self.bootstrap_targets = bootstrap_targets;
+    }
+
+    pub fn remember_bootstrap_seeds<I>(&mut self, seeds: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let now = now_ms();
+        self.updated_at_ms = now;
+        for seed in seeds {
+            let trimmed = seed.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            push_unique_front(
+                &mut self.bootstrap_seeds,
+                trimmed.to_string(),
+                MAX_BOOTSTRAP_SEEDS,
+            );
+        }
     }
 
     pub fn mark_bootstrap_contact(&mut self, bootstrap_targets: usize) {
@@ -195,6 +217,12 @@ impl NetworkSnapshot {
         for seed in self.trusted_peer_seeds.iter().rev() {
             push_unique_front(&mut seeds, seed.clone(), MAX_PEER_SEEDS.max(limit));
         }
+        seeds.truncate(limit);
+        seeds
+    }
+
+    pub fn bootstrap_seed_addresses(&self, limit: usize) -> Vec<String> {
+        let mut seeds = self.bootstrap_seeds.clone();
         seeds.truncate(limit);
         seeds
     }
@@ -443,6 +471,7 @@ mod tests {
     #[test]
     fn snapshot_tracks_peer_seed_addresses() {
         let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.remember_bootstrap_seeds(["/ip4/10.0.0.99/tcp/4001".to_string()]);
         snapshot.merge_peer_seeds([
             "/ip4/10.0.0.1/tcp/4001".to_string(),
             "/ip4/10.0.0.2/tcp/4001".to_string(),
@@ -460,6 +489,10 @@ mod tests {
         let seeds = snapshot.peer_seed_addresses(4);
         assert_eq!(seeds.len(), 4);
         assert_eq!(seeds[0], "/ip4/10.0.0.42/tcp/4001");
+        assert_eq!(
+            snapshot.bootstrap_seed_addresses(4),
+            vec!["/ip4/10.0.0.99/tcp/4001".to_string()]
+        );
     }
 
     #[test]
@@ -548,6 +581,7 @@ mod tests {
         let mut snapshot = NetworkSnapshot::begin(1);
         snapshot.mark_peer_connected("peer-a", 1);
         snapshot.observe_peer_address("peer-a", "/ip4/10.0.0.9/tcp/4001");
+        snapshot.remember_bootstrap_seeds(["/ip4/10.0.0.99/tcp/4001".to_string()]);
 
         snapshot.clear_live_connections();
 
@@ -557,5 +591,9 @@ mod tests {
         assert_eq!(snapshot.peers.len(), 1);
         assert!(!snapshot.peers[0].connected);
         assert_eq!(snapshot.peers[0].addresses.len(), 1);
+        assert_eq!(
+            snapshot.bootstrap_seed_addresses(8),
+            vec!["/ip4/10.0.0.99/tcp/4001".to_string()]
+        );
     }
 }

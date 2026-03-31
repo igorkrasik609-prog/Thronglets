@@ -257,6 +257,8 @@ thronglets start
 
 `thronglets share` 默认会把连接文件写到 `~/Desktop/thronglets.connection.json`，并直接告诉你这份文件现在只是 `identity-only`、已经带 `peer seeds`，还是已经到了 `trusted-same-owner-ready`。第二台设备默认也会去 `~/Desktop/thronglets.connection.json` 读这份文件，所以正常用户路径不需要再手敲文件参数。
 
+如果这台设备以前已经知道怎么回到网络，`thronglets share` 现在还会先短暂尝试把 peer 路径学出来，再导出更好的连接文件；正常用户不需要再手动理解 bootstrap 地址该什么时候输入。
+
 高级用户和调试时仍然可以直接使用 `setup / connection-export / connection-inspect / connection-join / owner-bind`，但默认用户路径不再要求先理解这些内部命令。
 
 架构原则是：
@@ -265,7 +267,7 @@ thronglets start
 - MCP 只是给支持 MCP 的 runtime 用的薄适配器
 - 就算外部生态以后从 MCP 转向 CLI / HTTP，核心 substrate、历史数据、P2P、signals 都不用重写
 - 人的认知负担和热路径 token 一样，都是性能预算
-- 默认用户只应看到 `start / join / status`
+- 默认用户只应看到 `start / share / join / status`
 - `Oasyce` 只升级 ownership / settlement，不解锁基础参与
 - 共享环境优先于 AI 互发消息；优先做 `space / presence / signal / space snapshot`，不把产品做成 agent chat
 

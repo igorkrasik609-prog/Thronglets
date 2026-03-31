@@ -264,7 +264,7 @@ pub(crate) fn summarize_share_flow(
         },
         _ => OnboardingSummary {
             status: "share-limited",
-            detail: "This device exported a connection file, but it only carries identity right now. A second device can join the same identity, but may still start offline.".into(),
+            detail: "This device exported the best connection file it could right now, but it still only carries identity. A second device can join the same identity, but may still start offline.".into(),
             next_step: Some(
                 "Keep this device online until it learns peers, then run `thronglets share` again before onboarding the second device.".into(),
             ),
