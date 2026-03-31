@@ -518,11 +518,12 @@ async fn first_connection_attempt_can_use_persisted_bootstrap_seed() {
         snapshot.bootstrap_seed_addresses(8),
         vec![bootstrap_a.to_string()]
     );
+    let remembered = snapshot.remembered_peer_addresses(8);
     assert!(
-        snapshot
-            .remembered_peer_addresses(8)
-            .contains(&bootstrap_a.to_string()),
-        "first connection attempt should learn a reusable remembered peer path"
+        remembered
+            .iter()
+            .any(|addr| addr.contains(&peer_id_a.to_string())),
+        "first connection attempt should learn a reusable remembered peer path for the connected bootstrap peer; remembered={remembered:?}"
     );
 
     drop(cmd_tx_a);

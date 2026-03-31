@@ -261,7 +261,7 @@ fn handle_network_event(
             network_snapshot.save(data_dir);
         }
         NetworkEvent::PeerObserved { peer_id, address } => {
-            network_snapshot.observe_peer_address(peer_id.to_string(), address.to_string());
+            observe_reusable_peer_address(network_snapshot, &peer_id, &address);
             network_snapshot.save(data_dir);
         }
         NetworkEvent::PeerIdentified {
@@ -270,7 +270,7 @@ fn handle_network_event(
             listen_addrs,
         } => {
             for address in listen_addrs {
-                network_snapshot.observe_peer_address(peer_id.to_string(), address.to_string());
+                observe_reusable_peer_address(network_snapshot, &peer_id, &address);
             }
             let promoted = maybe_promote_joined_primary_peer(
                 network_snapshot,
@@ -290,7 +290,7 @@ fn handle_network_event(
         NetworkEvent::PeerConnected { peer_id, address } => {
             info!(peer=%peer_id, "Peer connected");
             if let Some(address) = address {
-                network_snapshot.observe_peer_address(peer_id.to_string(), address.to_string());
+                observe_reusable_peer_address(network_snapshot, &peer_id, &address);
             }
             network_snapshot.mark_peer_connected(
                 peer_id.to_string(),
@@ -339,6 +339,30 @@ fn handle_network_event(
             }
         }
     }
+}
+
+fn observe_reusable_peer_address(
+    network_snapshot: &mut NetworkSnapshot,
+    peer_id: &libp2p::PeerId,
+    address: &Multiaddr,
+) {
+    let rendered = address.to_string();
+    network_snapshot.observe_peer_address(peer_id.to_string(), rendered.clone());
+    if let Some(dialable) = normalize_dialable_peer_address(&rendered, peer_id)
+        && dialable != rendered
+    {
+        network_snapshot.observe_peer_address(peer_id.to_string(), dialable);
+    }
+}
+
+fn normalize_dialable_peer_address(address: &str, peer_id: &libp2p::PeerId) -> Option<String> {
+    if address.contains("/p2p/") {
+        return Some(address.to_string());
+    }
+
+    let dialable = format!("{address}/p2p/{peer_id}");
+    dialable.parse::<Multiaddr>().ok()?;
+    Some(dialable)
 }
 
 async fn wait_on_interval(enabled: bool, interval: &mut tokio::time::Interval) {
@@ -437,6 +461,7 @@ mod tests {
     use super::{
         DEFAULT_PUBLIC_BOOTSTRAP_SEEDS, effective_bootstrap_seeds,
         maybe_promote_joined_primary_peer, maybe_promote_same_owner_trace_source,
+        normalize_dialable_peer_address, observe_reusable_peer_address,
     };
     use crate::context::simhash;
     use crate::identity::{IdentityBinding, NodeIdentity};
@@ -545,5 +570,37 @@ mod tests {
         snapshot.remember_bootstrap_seeds(["/ip4/10.0.0.99/tcp/4001".to_string()]);
         let bootstrap = effective_bootstrap_seeds(&[], &snapshot);
         assert_eq!(bootstrap, vec!["/ip4/10.0.0.99/tcp/4001".to_string()]);
+    }
+
+    #[test]
+    fn normalize_dialable_peer_address_appends_peer_id_when_missing() {
+        let local_identity = NodeIdentity::generate();
+        let mut secret = local_identity.secret_key_bytes();
+        let keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut secret).unwrap();
+        let peer_id = keypair.public().to_peer_id();
+
+        let normalized =
+            normalize_dialable_peer_address("/ip4/127.0.0.1/tcp/4001", &peer_id).unwrap();
+
+        assert_eq!(normalized, format!("/ip4/127.0.0.1/tcp/4001/p2p/{peer_id}"));
+    }
+
+    #[test]
+    fn observed_reusable_peer_address_keeps_dialable_variant() {
+        let local_identity = NodeIdentity::generate();
+        let mut secret = local_identity.secret_key_bytes();
+        let keypair = libp2p::identity::Keypair::ed25519_from_bytes(&mut secret).unwrap();
+        let peer_id = keypair.public().to_peer_id();
+
+        let mut snapshot = NetworkSnapshot::begin(0);
+        let address: libp2p::Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+        observe_reusable_peer_address(&mut snapshot, &peer_id, &address);
+
+        assert!(
+            snapshot
+                .remembered_peer_addresses(8)
+                .iter()
+                .any(|addr| addr == &format!("/ip4/127.0.0.1/tcp/4001/p2p/{peer_id}"))
+        );
     }
 }
