@@ -1828,6 +1828,10 @@ mod tests {
         let first_parsed: Value =
             serde_json::from_str(&first_text).expect("response text should be valid JSON");
         assert_eq!(first_parsed["external_continuity"]["local_only_raw"], true);
+        assert_eq!(
+            first_parsed["external_continuity"]["runtime"]["state"],
+            "local-only"
+        );
         assert!(first_parsed["external_continuity"]["derived_signal"].is_null());
 
         let second = JsonRpcRequest {
@@ -1866,6 +1870,18 @@ mod tests {
         assert_eq!(
             second_parsed["external_continuity"]["derived_signal"]["kind"],
             "avoid"
+        );
+        assert_eq!(
+            second_parsed["external_continuity"]["runtime"]["state"],
+            "summary-candidate"
+        );
+        assert_eq!(
+            second_parsed["external_continuity"]["runtime"]["derived_signal_rule"],
+            "writeback-calibration.repeated-failure-avoid"
+        );
+        assert_eq!(
+            second_parsed["external_continuity"]["runtime"]["summary_candidate_rule"],
+            "writeback-calibration.repeated-failure-summary"
         );
 
         let queried = ctx

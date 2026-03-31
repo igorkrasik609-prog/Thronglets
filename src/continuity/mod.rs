@@ -13,12 +13,27 @@ pub const EXTERNAL_CONTINUITY_PROVIDER: &str = "thronglets";
 pub const EXTERNAL_CONTINUITY_MODE: &str = "optional";
 pub const EXTERNAL_CONTINUITY_VERSION: u32 = 1;
 pub const CONTINUITY_SUMMARY_HORIZON_HOURS: u32 = 168;
+pub const CONTINUITY_RULESET_VERSION: u32 = 1;
 
 const COORDINATION_TTL_HOURS: u32 = 72;
 const CONTINUITY_TTL_HOURS: u32 = 168;
 const CALIBRATION_TTL_HOURS: u32 = 168;
-const DURABLE_MIN_AGE_MS: u64 = 2 * 3_600_000;
+const STABLE_MIN_AGE_MS: u64 = 2 * 3_600_000;
+const STABLE_MIN_TRACE_COUNT: u32 = 2;
 const OPEN_LOOP_SIGNAL_MIN_AGE_MS: u64 = 3_600_000;
+const OPEN_LOOP_SIGNAL_MIN_TRACE_COUNT: u32 = 2;
+const CALIBRATION_REPEATED_FAILURE_THRESHOLD: u32 = 2;
+
+const RULE_RELATION_INFO: &str = "relation-milestone.stable-info";
+const RULE_RELATION_WATCH: &str = "relation-milestone.stable-auditable-watch";
+const RULE_OPEN_LOOP_WATCH: &str = "open-loop-anchor.repeated-or-aged-watch";
+const RULE_CONTINUITY_INFO: &str = "continuity-anchor.stable-auditable-info";
+const RULE_WRITEBACK_AVOID: &str = "writeback-calibration.repeated-failure-avoid";
+
+const RULE_RELATION_SUMMARY: &str = "relation-milestone.stable-auditable-summary";
+const RULE_OPEN_LOOP_SUMMARY: &str = "open-loop-anchor.stable-auditable-summary";
+const RULE_CONTINUITY_SUMMARY: &str = "continuity-anchor.stable-auditable-summary";
+const RULE_WRITEBACK_SUMMARY: &str = "writeback-calibration.repeated-failure-summary";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -112,11 +127,7 @@ impl ExternalContinuityInput {
     }
 
     pub fn ttl_hours(&self) -> u32 {
-        match self.taxonomy {
-            ContinuityTaxonomy::Coordination => COORDINATION_TTL_HOURS,
-            ContinuityTaxonomy::Continuity => CONTINUITY_TTL_HOURS,
-            ContinuityTaxonomy::Calibration => CALIBRATION_TTL_HOURS,
-        }
+        retention_hours_for_taxonomy(self.taxonomy)
     }
 
     pub fn capability(&self) -> String {
@@ -176,6 +187,7 @@ pub struct ContinuityTraceSummary {
     pub local_only: bool,
     pub derived_signal: Option<ContinuityDerivedSignal>,
     pub net_summary_candidate: bool,
+    pub runtime: ContinuityRuntimeDisposition,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -189,6 +201,37 @@ pub struct ContinuityNetSummaryCandidate {
     pub session_count: u32,
     pub latest_timestamp: u64,
     pub reason: String,
+    pub trigger_rule: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContinuityRuleSet {
+    pub version: u32,
+    pub retention_hours: ContinuityRetentionHours,
+    pub stable_min_age_hours: u32,
+    pub stable_min_trace_count: u32,
+    pub open_loop_watch_min_age_hours: u32,
+    pub open_loop_watch_min_trace_count: u32,
+    pub calibration_repeated_failure_threshold: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContinuityRetentionHours {
+    pub coordination: u32,
+    pub continuity: u32,
+    pub calibration: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContinuityRuntimeDisposition {
+    pub state: &'static str,
+    pub local_retention_hours: u32,
+    pub stable_evidence: bool,
+    pub auditable_evidence: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_signal_rule: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_candidate_rule: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -200,6 +243,7 @@ pub struct ContinuitySnapshotSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ContinuitySpaceData {
+    pub rules: ContinuityRuleSet,
     pub summary: ContinuitySnapshotSummary,
     pub traces: Vec<ContinuityTraceSummary>,
     pub net_summary_candidates: Vec<ContinuityNetSummaryCandidate>,
@@ -214,6 +258,7 @@ pub struct ContinuityRecordData {
     pub expires_at: u64,
     pub derived_signal: Option<ContinuityDerivedSignal>,
     pub net_summary_candidate: bool,
+    pub runtime: ContinuityRuntimeDisposition,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -373,13 +418,15 @@ pub fn summarize_recent_continuity(
     let mut trace_summaries: Vec<ContinuityTraceSummary> = groups
         .values()
         .map(|group| {
-            let derived_signal = derived_signal_for_group(group, now_ms).map(|(kind, message)| {
-                ContinuityDerivedSignal {
-                    kind: kind.as_str().to_string(),
-                    message,
-                    space: group.space.clone(),
-                }
-            });
+            let derived_signal =
+                derived_signal_for_group(group, now_ms).map(|(_, kind, message)| {
+                    ContinuityDerivedSignal {
+                        kind: kind.as_str().to_string(),
+                        message,
+                        space: group.space.clone(),
+                    }
+                });
+            let net_summary_candidate = summary_candidate_rule_for_group(group, now_ms).is_some();
             ContinuityTraceSummary {
                 taxonomy: group.taxonomy.as_str().to_string(),
                 event: group.event.as_str().to_string(),
@@ -393,7 +440,8 @@ pub fn summarize_recent_continuity(
                 expires_at: group.expires_at,
                 local_only: true,
                 derived_signal,
-                net_summary_candidate: is_net_summary_candidate(group, now_ms),
+                net_summary_candidate,
+                runtime: runtime_disposition_for_group(group, now_ms),
             }
         })
         .collect();
@@ -408,17 +456,20 @@ pub fn summarize_recent_continuity(
 
     let net_summary_candidates: Vec<_> = groups
         .values()
-        .filter(|group| is_net_summary_candidate(group, now_ms))
-        .map(|group| ContinuityNetSummaryCandidate {
-            taxonomy: group.taxonomy.as_str().to_string(),
-            event: group.event.as_str().to_string(),
-            summary: group.summary.clone(),
-            space: group.space.clone(),
-            audit_ref: group.audit_ref.clone(),
-            trace_count: group.trace_count,
-            session_count: group.sessions.len() as u32,
-            latest_timestamp: group.latest_timestamp,
-            reason: net_summary_reason(group, now_ms),
+        .filter_map(|group| {
+            let trigger_rule = summary_candidate_rule_for_group(group, now_ms)?;
+            Some(ContinuityNetSummaryCandidate {
+                taxonomy: group.taxonomy.as_str().to_string(),
+                event: group.event.as_str().to_string(),
+                summary: group.summary.clone(),
+                space: group.space.clone(),
+                audit_ref: group.audit_ref.clone(),
+                trace_count: group.trace_count,
+                session_count: group.sessions.len() as u32,
+                latest_timestamp: group.latest_timestamp,
+                reason: net_summary_reason(group, now_ms),
+                trigger_rule,
+            })
         })
         .collect();
 
@@ -429,6 +480,7 @@ pub fn summarize_recent_continuity(
     trace_summaries.truncate(limit);
 
     ContinuitySpaceData {
+        rules: continuity_rule_set(),
         summary: ContinuitySnapshotSummary {
             trace_count: trace_summaries.len(),
             derived_signal_count,
@@ -458,6 +510,7 @@ pub fn continuity_record_data(
         expires_at: matching.expires_at,
         derived_signal: matching.derived_signal.clone(),
         net_summary_candidate: matching.net_summary_candidate,
+        runtime: matching.runtime.clone(),
     })
 }
 
@@ -505,7 +558,7 @@ pub fn record_external_continuity(
     let continuity_traces = store
         .query_recent_continuity_traces(CONTINUITY_SUMMARY_HORIZON_HOURS, 200)
         .map_err(|e| format!("storage: {e}"))?;
-    let continuity = summarize_recent_continuity(&continuity_traces, input.space.as_deref(), 10);
+    let continuity = summarize_recent_continuity(&continuity_traces, input.space.as_deref(), 200);
     let continuity_data = continuity_record_data(&trace, &continuity);
 
     if let Some(data) = &continuity_data
@@ -542,40 +595,55 @@ pub fn record_external_continuity(
 fn derived_signal_for_group(
     group: &ContinuityGroup,
     now_ms: u64,
-) -> Option<(SignalPostKind, String)> {
+) -> Option<(&'static str, SignalPostKind, String)> {
     group.space.as_ref()?;
     let age_ms = now_ms.saturating_sub(group.earliest_timestamp);
-    let durable = is_durable(group, now_ms);
+    let stable = has_stable_evidence(group, now_ms);
     match group.event {
         ContinuityEvent::RelationMilestone => {
-            if durable {
-                let kind = if is_auditable(group) {
-                    SignalPostKind::Watch
+            if stable {
+                let auditable = is_auditable(group);
+                let (rule, kind) = if auditable {
+                    (RULE_RELATION_WATCH, SignalPostKind::Watch)
                 } else {
-                    SignalPostKind::Info
+                    (RULE_RELATION_INFO, SignalPostKind::Info)
                 };
-                Some((kind, group.summary.clone()))
+                Some((rule, kind, group.summary.clone()))
             } else {
                 None
             }
         }
         ContinuityEvent::OpenLoopAnchor => {
-            if group.trace_count >= 2 || age_ms >= OPEN_LOOP_SIGNAL_MIN_AGE_MS {
-                Some((SignalPostKind::Watch, group.summary.clone()))
+            if group.trace_count >= OPEN_LOOP_SIGNAL_MIN_TRACE_COUNT
+                || age_ms >= OPEN_LOOP_SIGNAL_MIN_AGE_MS
+            {
+                Some((
+                    RULE_OPEN_LOOP_WATCH,
+                    SignalPostKind::Watch,
+                    group.summary.clone(),
+                ))
             } else {
                 None
             }
         }
         ContinuityEvent::ContinuityAnchor => {
-            if durable && is_auditable(group) {
-                Some((SignalPostKind::Info, group.summary.clone()))
+            if stable && is_auditable(group) {
+                Some((
+                    RULE_CONTINUITY_INFO,
+                    SignalPostKind::Info,
+                    group.summary.clone(),
+                ))
             } else {
                 None
             }
         }
         ContinuityEvent::WritebackCalibration => {
-            if group.failed_count >= 2 && durable {
-                Some((SignalPostKind::Avoid, group.summary.clone()))
+            if group.failed_count >= CALIBRATION_REPEATED_FAILURE_THRESHOLD && stable {
+                Some((
+                    RULE_WRITEBACK_AVOID,
+                    SignalPostKind::Avoid,
+                    group.summary.clone(),
+                ))
             } else {
                 None
             }
@@ -583,15 +651,17 @@ fn derived_signal_for_group(
     }
 }
 
-fn is_net_summary_candidate(group: &ContinuityGroup, now_ms: u64) -> bool {
-    if !is_durable(group, now_ms) || !is_auditable(group) {
-        return false;
+fn summary_candidate_rule_for_group(group: &ContinuityGroup, now_ms: u64) -> Option<&'static str> {
+    if !has_stable_evidence(group, now_ms) || !is_auditable(group) {
+        return None;
     }
     match group.event {
-        ContinuityEvent::WritebackCalibration => group.failed_count >= 2,
-        ContinuityEvent::RelationMilestone
-        | ContinuityEvent::ContinuityAnchor
-        | ContinuityEvent::OpenLoopAnchor => true,
+        ContinuityEvent::WritebackCalibration => (group.failed_count
+            >= CALIBRATION_REPEATED_FAILURE_THRESHOLD)
+            .then_some(RULE_WRITEBACK_SUMMARY),
+        ContinuityEvent::RelationMilestone => Some(RULE_RELATION_SUMMARY),
+        ContinuityEvent::ContinuityAnchor => Some(RULE_CONTINUITY_SUMMARY),
+        ContinuityEvent::OpenLoopAnchor => Some(RULE_OPEN_LOOP_SUMMARY),
     }
 }
 
@@ -615,8 +685,9 @@ fn net_summary_reason(group: &ContinuityGroup, now_ms: u64) -> String {
     }
 }
 
-fn is_durable(group: &ContinuityGroup, now_ms: u64) -> bool {
-    group.trace_count >= 2 || now_ms.saturating_sub(group.earliest_timestamp) >= DURABLE_MIN_AGE_MS
+fn has_stable_evidence(group: &ContinuityGroup, now_ms: u64) -> bool {
+    group.trace_count >= STABLE_MIN_TRACE_COUNT
+        || now_ms.saturating_sub(group.earliest_timestamp) >= STABLE_MIN_AGE_MS
 }
 
 fn is_auditable(group: &ContinuityGroup) -> bool {
@@ -627,6 +698,53 @@ fn matches_space(candidate: Option<&str>, space: Option<&str>) -> bool {
     match space {
         Some(space) => candidate == Some(space),
         None => true,
+    }
+}
+
+fn continuity_rule_set() -> ContinuityRuleSet {
+    ContinuityRuleSet {
+        version: CONTINUITY_RULESET_VERSION,
+        retention_hours: ContinuityRetentionHours {
+            coordination: COORDINATION_TTL_HOURS,
+            continuity: CONTINUITY_TTL_HOURS,
+            calibration: CALIBRATION_TTL_HOURS,
+        },
+        stable_min_age_hours: (STABLE_MIN_AGE_MS / 3_600_000) as u32,
+        stable_min_trace_count: STABLE_MIN_TRACE_COUNT,
+        open_loop_watch_min_age_hours: (OPEN_LOOP_SIGNAL_MIN_AGE_MS / 3_600_000) as u32,
+        open_loop_watch_min_trace_count: OPEN_LOOP_SIGNAL_MIN_TRACE_COUNT,
+        calibration_repeated_failure_threshold: CALIBRATION_REPEATED_FAILURE_THRESHOLD,
+    }
+}
+
+fn retention_hours_for_taxonomy(taxonomy: ContinuityTaxonomy) -> u32 {
+    match taxonomy {
+        ContinuityTaxonomy::Coordination => COORDINATION_TTL_HOURS,
+        ContinuityTaxonomy::Continuity => CONTINUITY_TTL_HOURS,
+        ContinuityTaxonomy::Calibration => CALIBRATION_TTL_HOURS,
+    }
+}
+
+fn runtime_disposition_for_group(
+    group: &ContinuityGroup,
+    now_ms: u64,
+) -> ContinuityRuntimeDisposition {
+    let derived_signal_rule = derived_signal_for_group(group, now_ms).map(|(rule, _, _)| rule);
+    let summary_candidate_rule = summary_candidate_rule_for_group(group, now_ms);
+    let state = if summary_candidate_rule.is_some() {
+        "summary-candidate"
+    } else if derived_signal_rule.is_some() {
+        "derived-signal"
+    } else {
+        "local-only"
+    };
+    ContinuityRuntimeDisposition {
+        state,
+        local_retention_hours: retention_hours_for_taxonomy(group.taxonomy),
+        stable_evidence: has_stable_evidence(group, now_ms),
+        auditable_evidence: is_auditable(group),
+        derived_signal_rule,
+        summary_candidate_rule,
     }
 }
 
@@ -697,7 +815,7 @@ mod tests {
             input.clone(),
             Outcome::Failed,
             Some("s1"),
-            now - DURABLE_MIN_AGE_MS,
+            now - STABLE_MIN_AGE_MS,
         );
         let summary = summarize_recent_continuity(std::slice::from_ref(&one), Some("psyche"), 10);
         assert_eq!(summary.summary.derived_signal_count, 0);
@@ -706,6 +824,15 @@ mod tests {
         let summary = summarize_recent_continuity(&[one, two], Some("psyche"), 10);
         let derived = summary.traces[0].derived_signal.as_ref().unwrap();
         assert_eq!(derived.kind, "avoid");
+        assert_eq!(summary.traces[0].runtime.state, "summary-candidate");
+        assert_eq!(
+            summary.traces[0].runtime.derived_signal_rule,
+            Some(RULE_WRITEBACK_AVOID)
+        );
+        assert_eq!(
+            summary.traces[0].runtime.summary_candidate_rule,
+            Some(RULE_WRITEBACK_SUMMARY)
+        );
     }
 
     #[test]
@@ -725,14 +852,32 @@ mod tests {
             input.clone(),
             Outcome::Succeeded,
             Some("s1"),
-            now - DURABLE_MIN_AGE_MS,
+            now - STABLE_MIN_AGE_MS,
         );
         let two = make_trace(input, Outcome::Succeeded, Some("s2"), now - 1000);
         let summary = summarize_recent_continuity(&[one, two], Some("psyche"), 10);
         assert_eq!(summary.summary.net_summary_candidate_count, 1);
+        assert_eq!(summary.rules.version, CONTINUITY_RULESET_VERSION);
+        assert_eq!(
+            summary.rules.retention_hours.coordination,
+            COORDINATION_TTL_HOURS
+        );
+        assert_eq!(
+            summary.rules.retention_hours.continuity,
+            CONTINUITY_TTL_HOURS
+        );
+        assert_eq!(
+            summary.rules.retention_hours.calibration,
+            CALIBRATION_TTL_HOURS
+        );
         assert_eq!(
             summary.traces[0].derived_signal.as_ref().unwrap().kind,
             "info"
+        );
+        assert_eq!(summary.traces[0].runtime.state, "summary-candidate");
+        assert_eq!(
+            summary.net_summary_candidates[0].trigger_rule,
+            RULE_CONTINUITY_SUMMARY
         );
     }
 
@@ -753,12 +898,17 @@ mod tests {
             input.clone(),
             Outcome::Succeeded,
             Some("s1"),
-            now - DURABLE_MIN_AGE_MS,
+            now - STABLE_MIN_AGE_MS,
         );
         let summary = summarize_recent_continuity(std::slice::from_ref(&one), Some("psyche"), 10);
         let derived = summary.traces[0].derived_signal.as_ref().unwrap();
         assert_eq!(derived.kind, "info");
         assert!(!summary.traces[0].net_summary_candidate);
+        assert_eq!(summary.traces[0].runtime.state, "derived-signal");
+        assert_eq!(
+            summary.traces[0].runtime.derived_signal_rule,
+            Some(RULE_RELATION_INFO)
+        );
     }
 
     #[test]
@@ -811,6 +961,10 @@ mod tests {
         .unwrap();
 
         assert!(result.external_continuity.as_ref().unwrap().local_only_raw);
+        assert_eq!(
+            result.external_continuity.as_ref().unwrap().runtime.state,
+            "local-only"
+        );
         assert_eq!(store.unpublished_traces(10).unwrap().len(), 0);
     }
 }

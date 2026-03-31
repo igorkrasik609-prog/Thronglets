@@ -146,7 +146,41 @@ Thronglets 不再新增身份对象。session trace 只保留 3 类：
   - `continuity-anchor -> info`
   - repeated `writeback-calibration -> avoid`
 - `recommend` 不会由 Psyche 直接产生
-- `space --json` 现在会给出本地 continuity 摘要和 Net-facing summary candidates，但仍不外发原始事件流
+- `space --json` 现在会给出本地 continuity 摘要、固定 ruleset、每条 trace 当前是 `local-only / derived-signal / summary-candidate`，以及具体触发的 rule id；原始事件流仍不外发
+
+固定 retention / threshold：
+
+| taxonomy | local retention | stable evidence | extra rule |
+|---|---:|---|---|
+| `coordination` | `72h` | `>= 2 traces` 或 `>= 2h` | `open-loop-anchor` 在 `>= 2 traces` 或 `>= 1h` 时可降成 `watch` |
+| `continuity` | `168h` | `>= 2 traces` 或 `>= 2h` | 还需要 `audit_ref` 或 `>= 2 sessions` 才算可审计 |
+| `calibration` | `168h` | `>= 2 traces` 或 `>= 2h` | `failed_count >= 2` 才有聚合意义，才可降成 `avoid` |
+
+固定 degradation / summary 规则：
+
+- `relation-milestone`
+  - stable + auditable -> `watch`
+  - stable but not auditable -> `info`
+  - stable + auditable -> Net-facing summary candidate
+- `open-loop-anchor`
+  - `>= 2 traces` 或 `>= 1h` -> `watch`
+  - stable + auditable -> Net-facing summary candidate
+- `continuity-anchor`
+  - stable + auditable -> `info`
+  - stable + auditable -> Net-facing summary candidate
+- `writeback-calibration`
+  - repeated failures (`failed_count >= 2`) + stable -> `avoid`
+  - repeated failures + stable + auditable -> Net-facing summary candidate
+
+最小 runtime introspection：
+
+- `trace_record` / `POST /v1/traces` 返回的 `external_continuity.runtime` 现在会明确告诉宿主：
+  - `state = local-only | derived-signal | summary-candidate`
+  - `local_retention_hours`
+  - `stable_evidence`
+  - `auditable_evidence`
+  - `derived_signal_rule`
+  - `summary_candidate_rule`
 
 Thronglets 现有 signal 类别保持不扩：
 

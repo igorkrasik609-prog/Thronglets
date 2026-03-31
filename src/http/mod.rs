@@ -929,6 +929,10 @@ mod tests {
             first_response["external_continuity"]["local_only_raw"],
             true
         );
+        assert_eq!(
+            first_response["external_continuity"]["runtime"]["state"],
+            "local-only"
+        );
         assert!(first_response["external_continuity"]["derived_signal"].is_null());
 
         let second = concat!(
@@ -942,6 +946,18 @@ mod tests {
         assert_eq!(
             second_response["external_continuity"]["derived_signal"]["kind"],
             "avoid"
+        );
+        assert_eq!(
+            second_response["external_continuity"]["runtime"]["state"],
+            "summary-candidate"
+        );
+        assert_eq!(
+            second_response["external_continuity"]["runtime"]["derived_signal_rule"],
+            "writeback-calibration.repeated-failure-avoid"
+        );
+        assert_eq!(
+            second_response["external_continuity"]["runtime"]["summary_candidate_rule"],
+            "writeback-calibration.repeated-failure-summary"
         );
 
         let signals = parse_body(&handle_http_request(

@@ -156,13 +156,19 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.7`）：
 当前状态：
 - `trace_record` / `POST /v1/traces` 已接受 `external_continuity` payload
 - raw external continuity traces 现在默认只在本地缓存并衰减，不直接进入 gossip / DHT summary
-- `space --json` 已能返回 continuity 的本地摘要和 Net-facing summary candidates
+- `space --json` 已能返回 continuity 的本地摘要、固定 ruleset、每条 trace 的 `local-only / derived-signal / summary-candidate` 状态，以及触发 rule id
 - 条件性降级规则已落地：
   - `relation-milestone -> watch / info`
   - `open-loop-anchor -> watch`
   - `continuity-anchor -> info`
   - repeated `writeback-calibration -> avoid`
 - `recommend` 仍然不会由 Psyche 直接产生
+- `trace_record` / `POST /v1/traces` / MCP `trace_record` 现在都会返回最小 runtime introspection：
+  - `local_retention_hours`
+  - `stable_evidence`
+  - `auditable_evidence`
+  - `derived_signal_rule`
+  - `summary_candidate_rule`
 
 ### 2. Session presence
 

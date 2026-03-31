@@ -146,7 +146,41 @@ The runtime rules are now implemented:
   - `continuity-anchor -> info`
   - repeated `writeback-calibration -> avoid`
 - Psyche never emits `recommend` directly
-- `space --json` now exposes local continuity summaries and Net-facing summary candidates without shipping the raw event stream
+- `space --json` now exposes local continuity summaries, the fixed ruleset, each trace's current `local-only / derived-signal / summary-candidate` state, and the rule id that triggered it; the raw event stream still stays local-first
+
+Fixed retention / threshold rules:
+
+| taxonomy | local retention | stable evidence | extra rule |
+|---|---:|---|---|
+| `coordination` | `72h` | `>= 2 traces` or `>= 2h` | `open-loop-anchor` can degrade into `watch` after `>= 2 traces` or `>= 1h` |
+| `continuity` | `168h` | `>= 2 traces` or `>= 2h` | it still needs `audit_ref` or `>= 2 sessions` to count as auditable |
+| `calibration` | `168h` | `>= 2 traces` or `>= 2h` | `failed_count >= 2` is required before the pattern has aggregate meaning and can degrade into `avoid` |
+
+Fixed degradation / summary rules:
+
+- `relation-milestone`
+  - stable + auditable -> `watch`
+  - stable but not auditable -> `info`
+  - stable + auditable -> Net-facing summary candidate
+- `open-loop-anchor`
+  - `>= 2 traces` or `>= 1h` -> `watch`
+  - stable + auditable -> Net-facing summary candidate
+- `continuity-anchor`
+  - stable + auditable -> `info`
+  - stable + auditable -> Net-facing summary candidate
+- `writeback-calibration`
+  - repeated failures (`failed_count >= 2`) + stable -> `avoid`
+  - repeated failures + stable + auditable -> Net-facing summary candidate
+
+Minimal runtime introspection:
+
+- `trace_record` / `POST /v1/traces` now return `external_continuity.runtime`, which tells a host:
+  - `state = local-only | derived-signal | summary-candidate`
+  - `local_retention_hours`
+  - `stable_evidence`
+  - `auditable_evidence`
+  - `derived_signal_rule`
+  - `summary_candidate_rule`
 
 Signal classes stay fixed:
 
