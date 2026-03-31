@@ -294,7 +294,7 @@ fn prehook_profile_keeps_stdout_shape_when_signals_exist() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains(PREHOOK_HEADER));
-    assert!(stdout.contains("avoid: recent error: parser exploded"));
+    assert!(stdout.contains("recent error: parser exploded"));
     assert!(stdout.contains("do next: Read helper.rs (medium, 2x, 2 sources)"));
     assert!(stderr.contains("[thronglets:prehook]"));
     assert!(stderr.contains("tool=Edit"));
@@ -482,7 +482,7 @@ fn prehook_ranks_danger_and_repair_above_history() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(stdout.contains(PREHOOK_HEADER));
-    assert!(stdout.contains("avoid: recent error: parser exploded"));
+    assert!(stdout.contains("recent error: parser exploded"));
     assert!(stdout.contains("do next: Read helper.rs (medium, 2x)"));
     assert!(
         !stdout.contains("git history for main.rs"),
@@ -679,7 +679,7 @@ fn prehook_upgrades_repair_with_collective_sources() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(PREHOOK_HEADER));
-    assert!(stdout.contains("avoid: recent error: linker failed"));
+    assert!(stdout.contains("recent error: linker failed"));
     assert!(stdout.contains("do next: Read Cargo.toml, then Bash (medium, 2x, 2 sources)"));
 }
 

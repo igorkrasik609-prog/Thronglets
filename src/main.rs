@@ -3619,13 +3619,14 @@ async fn main() {
                     } else {
                         e.error_snippet.clone()
                     };
-                    Signal::danger(
-                        format!("  ⚠ recent error: {snippet}"),
-                        360 + ws.recommendation_score_adjustment(
-                            SignalKind::Danger,
-                            current_space.as_deref(),
-                        ),
-                    )
+                    // Informational, not prescriptive — "be careful" not "don't go".
+                    // History kind → Context recommendation → no feedback loop.
+                    Signal {
+                        kind: SignalKind::History,
+                        score: 360,
+                        body: format!("  ⚠ recent error: {snippet}"),
+                        candidate: None,
+                    }
                 };
                 has_recent_tool_error = true;
                 signals.push(signal);
@@ -4428,10 +4429,13 @@ fn explicit_signals(
             }
             "watch" => {
                 let score = 200 + density_bonus + collective_bonus;
-                signals.push(Signal::danger(
-                    format!("  👁 watch: {}", result.message),
+                // Informational — "be careful" not "don't do it".
+                signals.push(Signal {
+                    kind: SignalKind::History,
                     score,
-                ));
+                    body: format!("  👁 watch: {}", result.message),
+                    candidate: None,
+                });
             }
             "recommend" => {
                 let score = 150 + density_bonus + collective_bonus;
