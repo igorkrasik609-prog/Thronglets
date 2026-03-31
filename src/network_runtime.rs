@@ -11,9 +11,18 @@ use std::error::Error;
 use std::future::pending;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+
+const FIRST_CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const FIRST_CONNECTION_GRACE_AFTER_CONNECT: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InitialConnectionAttempt {
+    pub connected_once: bool,
+    pub trusted_same_owner_ready: bool,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct NetworkRuntimeOptions {
@@ -92,6 +101,72 @@ pub async fn start_network_runtime(
     });
 
     Ok(command_tx)
+}
+
+pub async fn attempt_first_connection(
+    data_dir: &Path,
+    identity: &NodeIdentity,
+    binding: &IdentityBinding,
+    store: Arc<TraceStore>,
+    timeout: Duration,
+) -> Result<InitialConnectionAttempt, Box<dyn Error>> {
+    let before = NetworkSnapshot::load(data_dir);
+    let baseline_bootstrap_targets = before.bootstrap_targets;
+    let baseline_bootstrap_contact_at_ms = before.last_bootstrap_contact_at_ms;
+    let baseline_last_peer_connected_at_ms = before.last_peer_connected_at_ms;
+    let baseline_trusted_peer_seed_count = before.trusted_peer_seeds.len();
+
+    let command_tx = start_network_runtime(
+        data_dir,
+        identity,
+        binding,
+        store,
+        0,
+        &[],
+        NetworkRuntimeOptions::embedded(),
+    )
+    .await?;
+
+    let started_at = Instant::now();
+    let mut first_connected_at = None;
+    while started_at.elapsed() < timeout {
+        tokio::time::sleep(FIRST_CONNECTION_POLL_INTERVAL).await;
+        let snapshot = NetworkSnapshot::load(data_dir);
+        let connected_once = snapshot.peer_count > 0
+            || snapshot.last_peer_connected_at_ms != baseline_last_peer_connected_at_ms;
+        if connected_once && first_connected_at.is_none() {
+            first_connected_at = Some(Instant::now());
+        }
+        let trusted_same_owner_ready =
+            snapshot.trusted_peer_seeds.len() > baseline_trusted_peer_seed_count;
+        if trusted_same_owner_ready {
+            break;
+        }
+        if let Some(connected_at) = first_connected_at
+            && connected_at.elapsed() >= FIRST_CONNECTION_GRACE_AFTER_CONNECT
+        {
+            break;
+        }
+    }
+
+    let _ = command_tx.send(NetworkCommand::Shutdown).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut snapshot = NetworkSnapshot::load(data_dir);
+    let connected_once = snapshot.peer_count > 0
+        || snapshot.last_peer_connected_at_ms != baseline_last_peer_connected_at_ms;
+    let trusted_same_owner_ready =
+        snapshot.trusted_peer_seeds.len() > baseline_trusted_peer_seed_count;
+
+    snapshot.bootstrap_targets = baseline_bootstrap_targets;
+    snapshot.last_bootstrap_contact_at_ms = baseline_bootstrap_contact_at_ms;
+    snapshot.clear_live_connections();
+    snapshot.save(data_dir);
+
+    Ok(InitialConnectionAttempt {
+        connected_once,
+        trusted_same_owner_ready,
+    })
 }
 
 async fn run_network_runtime_loop(

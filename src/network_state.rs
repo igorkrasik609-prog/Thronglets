@@ -260,6 +260,17 @@ impl NetworkSnapshot {
         self.last_trace_received_at_ms = Some(now);
     }
 
+    pub fn clear_live_connections(&mut self) {
+        let now = now_ms();
+        self.updated_at_ms = now;
+        self.peer_count = 0;
+        self.direct_peer_count = 0;
+        self.relay_peer_count = 0;
+        for peer in &mut self.peers {
+            peer.connected = false;
+        }
+    }
+
     pub fn to_status(&self) -> NetworkStatus {
         let now = now_ms();
         let has_remembered_peer_paths = !self.trusted_peer_seeds.is_empty()
@@ -530,5 +541,21 @@ mod tests {
             snapshot.remembered_peer_addresses(8),
             vec!["/ip4/10.0.0.1/tcp/4001".to_string()]
         );
+    }
+
+    #[test]
+    fn clear_live_connections_keeps_peer_memory_but_resets_live_counts() {
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.mark_peer_connected("peer-a", 1);
+        snapshot.observe_peer_address("peer-a", "/ip4/10.0.0.9/tcp/4001");
+
+        snapshot.clear_live_connections();
+
+        assert_eq!(snapshot.peer_count, 0);
+        assert_eq!(snapshot.direct_peer_count, 0);
+        assert_eq!(snapshot.relay_peer_count, 0);
+        assert_eq!(snapshot.peers.len(), 1);
+        assert!(!snapshot.peers[0].connected);
+        assert_eq!(snapshot.peers[0].addresses.len(), 1);
     }
 }

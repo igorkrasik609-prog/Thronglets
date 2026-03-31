@@ -10,6 +10,7 @@ use thronglets::identity::{
     NodeIdentity,
 };
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
+use thronglets::network_runtime::attempt_first_connection;
 use thronglets::network_state::NetworkSnapshot;
 use thronglets::storage::TraceStore;
 use thronglets::trace::{Outcome, Trace};
@@ -384,6 +385,76 @@ async fn secondary_node_recovers_via_signed_connection_file_without_bootstrap() 
         wait_for_peer_connection(&mut event_rx_b, Duration::from_secs(10)).await,
         "Secondary node should connect to primary via signed connection file without bootstrap"
     );
+
+    drop(cmd_tx_a);
+}
+
+#[tokio::test]
+async fn first_connection_attempt_promotes_same_owner_path_to_trusted_seed() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("thronglets=debug")
+        .with_test_writer()
+        .try_init();
+
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("secondary-data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let port_a = free_loopback_port();
+
+    let id_a = NodeIdentity::generate();
+    let mut secret_a = id_a.secret_key_bytes();
+    let keypair_a =
+        libp2p::identity::Keypair::ed25519_from_bytes(&mut secret_a).expect("keypair A");
+    let peer_id_a = libp2p::PeerId::from(keypair_a.public());
+    let config_a = NetworkConfig {
+        listen_port: port_a,
+        ..Default::default()
+    };
+    let (cmd_tx_a, mut event_rx_a) = thronglets::network::start(keypair_a, config_a)
+        .await
+        .expect("start node A");
+
+    let id_b = NodeIdentity::generate();
+    let binding_b = IdentityBinding::new(id_b.device_identity())
+        .joined_via_connection(Some("oasyce1owner".into()), id_a.device_identity())
+        .unwrap();
+
+    let remembered_a: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_a}/p2p/{peer_id_a}")
+        .parse()
+        .expect("remembered addr");
+    let mut snapshot = NetworkSnapshot::begin(0);
+    snapshot.merge_peer_seeds([remembered_a.to_string()]);
+    snapshot.save(&data_dir);
+
+    let result = attempt_first_connection(
+        &data_dir,
+        &id_b,
+        &binding_b,
+        std::sync::Arc::new(TraceStore::open(&data_dir.join("traces.db")).unwrap()),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("attempt first connection");
+
+    assert!(result.connected_once);
+    assert!(result.trusted_same_owner_ready);
+    assert!(
+        wait_for_peer_connection(&mut event_rx_a, Duration::from_secs(2)).await,
+        "Primary node should observe the attempted same-owner connection"
+    );
+
+    let snapshot = NetworkSnapshot::load(&data_dir);
+    assert_eq!(
+        snapshot.peer_count, 0,
+        "ephemeral probe should not leave fake live peers behind"
+    );
+    let trusted = snapshot.trusted_peer_seed_addresses(8);
+    assert!(
+        trusted.contains(&remembered_a.to_string()),
+        "trusted seeds should contain the remembered same-owner path"
+    );
+    assert!(!trusted.is_empty());
 
     drop(cmd_tx_a);
 }

@@ -5,8 +5,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use onboarding_surface::{
     JoinFlowData, ReadinessSummary, ShareFlowData, StartData, collect_status_data,
     connection_readiness_summary, default_share_output_path, export_connection_file,
-    render_join_flow_report, render_share_flow_report, render_start_report,
-    render_status_report, summarize_join_flow, summarize_share_flow, summarize_start_flow,
+    render_join_flow_report, render_share_flow_report, render_start_report, render_status_report,
+    summarize_join_flow, summarize_share_flow, summarize_start_flow,
 };
 use serde::Serialize;
 use setup_support::{
@@ -38,7 +38,9 @@ use thronglets::identity_surface::{
     identity_blueprint, identity_summary,
 };
 use thronglets::mcp::McpContext;
-use thronglets::network_runtime::{NetworkRuntimeOptions, start_network_runtime};
+use thronglets::network_runtime::{
+    NetworkRuntimeOptions, attempt_first_connection, start_network_runtime,
+};
 use thronglets::posts::{
     DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind,
     SignalScopeFilter, SignalTraceConfig, create_feed_reinforcement_traces,
@@ -2482,7 +2484,24 @@ async fn main() {
                 }
             }
             network_snapshot.save(&dir);
-            let status = collect_status_data(&dir, &identity, &binding);
+            let mut status = collect_status_data(&dir, &identity, &binding);
+            if report.summary.healthy
+                && !report.summary.restart_required
+                && !report.summary.restart_pending
+                && status.summary.network_path_ready
+                && !status.summary.connected
+                && !status.summary.trusted_same_owner_ready
+            {
+                let _ = attempt_first_connection(
+                    &dir,
+                    &identity,
+                    &binding,
+                    Arc::new(open_store(&dir)),
+                    std::time::Duration::from_secs(12),
+                )
+                .await;
+                status = collect_status_data(&dir, &identity, &binding);
+            }
             let data = JoinFlowData {
                 summary: summarize_join_flow(&report.summary, &status.summary),
                 setup: report.summary.clone(),
@@ -3123,7 +3142,9 @@ async fn main() {
                 .await
                 .expect("failed to wait for shutdown signal");
             info!("Shutting down...");
-            drop(command_tx);
+            let _ = command_tx
+                .send(thronglets::network::NetworkCommand::Shutdown)
+                .await;
         }
 
         Commands::Mcp { port, bootstrap } => {

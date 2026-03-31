@@ -415,6 +415,19 @@ fn status_readiness_summary(
                     .into(),
             ),
         }
+    } else if network.trusted_peer_seed_count > 0 {
+        ReadinessSummary {
+            status: "trusted-same-owner-ready",
+            detail: "Identity is ready and this device has already proven a trusted same-owner recovery path.".into(),
+            identity_ready: true,
+            network_path_ready: true,
+            trusted_same_owner_ready: true,
+            connected: false,
+            next_step: Some(
+                "Start your AI runtime normally; this device should reconnect through the trusted same-owner path."
+                    .into(),
+            ),
+        }
     } else if network.known_peer_count > 0 || network.peer_seed_count > 0 {
         ReadinessSummary {
             status: "network-paths-ready",
@@ -486,5 +499,49 @@ fn human_onboarding_label(summary: &OnboardingSummary) -> &'static str {
         "network-paths-ready" => "waiting for the first live connection",
         "network-ready" => "ready now",
         _ => summary.status,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_readiness_summary;
+    use thronglets::identity::{IdentityBinding, NodeIdentity};
+    use thronglets::network_state::NetworkStatus;
+
+    fn base_network_status() -> NetworkStatus {
+        NetworkStatus {
+            activity: "offline",
+            transport_mode: "offline",
+            vps_dependency_level: "offline",
+            bootstrap_fallback_mode: "disabled",
+            peer_count: 0,
+            direct_peer_count: 0,
+            relay_peer_count: 0,
+            bootstrap_targets: 0,
+            bootstrap_contacted_recently: false,
+            known_peer_count: 0,
+            trusted_peer_seed_count: 0,
+            peer_seed_count: 0,
+            last_peer_connected_age_ms: None,
+            last_trace_received_age_ms: None,
+            last_bootstrap_contact_age_ms: None,
+        }
+    }
+
+    #[test]
+    fn trusted_same_owner_paths_upgrade_readiness_without_live_peer_count() {
+        let identity = NodeIdentity::generate();
+        let binding = IdentityBinding::new(identity.device_identity())
+            .bind_owner_account("oasyce1owner".into())
+            .unwrap();
+        let mut network = base_network_status();
+        network.known_peer_count = 1;
+        network.trusted_peer_seed_count = 1;
+        network.peer_seed_count = 1;
+
+        let summary = status_readiness_summary(&binding, &network);
+        assert_eq!(summary.status, "trusted-same-owner-ready");
+        assert!(summary.trusted_same_owner_ready);
+        assert!(!summary.connected);
     }
 }

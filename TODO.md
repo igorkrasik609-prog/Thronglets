@@ -96,6 +96,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 高层 `thronglets start`
 - 高层 `thronglets share`
 - 高层 `thronglets join`
+- `join` 在已经继承 peer 路径时，会自己短暂尝试第一次 live connection，并在成功时把 same-owner 路径沉淀成 trusted recovery path
 - `status` 已经能返回一个顶层结果和一个 `next_step`
 
 剩余完成标准：

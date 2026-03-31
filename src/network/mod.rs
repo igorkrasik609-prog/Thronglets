@@ -71,6 +71,8 @@ pub enum NetworkCommand {
     PublishTrace(Box<Trace>),
     /// Get the list of connected peers.
     GetPeers(tokio::sync::oneshot::Sender<Vec<PeerId>>),
+    /// Shut down the network event loop.
+    Shutdown,
     /// Publish a capability summary to the DHT.
     PublishSummary {
         capability: String,
@@ -392,6 +394,10 @@ pub async fn start(
                         NetworkCommand::GetPeers(reply) => {
                             let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
                             let _ = reply.send(peers);
+                        }
+                        NetworkCommand::Shutdown => {
+                            debug!("Shutting down network event loop");
+                            break;
                         }
                         NetworkCommand::PublishSummary { capability, stats } => {
                             let key_str = format!("{DHT_CAP_PREFIX}{capability}");
