@@ -538,6 +538,67 @@ impl TraceStore {
         Ok(sessions.len() as u32)
     }
 
+    /// Hebbian co-occurrence: count sessions where two contexts both succeeded.
+    /// "Neurons that fire together wire together" — files edited together
+    /// across multiple sessions reveal structural coupling.
+    pub fn count_co_occurring_sessions(
+        &self,
+        context_a_hash: &[u8; 16],
+        context_b_hash: &[u8; 16],
+        max_distance: u32,
+        space: Option<&str>,
+    ) -> rusqlite::Result<u32> {
+        let conn = self.conn.lock().unwrap();
+
+        let a_bucket = context_bucket(context_a_hash);
+        let b_bucket = context_bucket(context_b_hash);
+        let radius = (max_distance / 8).max(1) as i64;
+        let a_lo = (a_bucket - radius).max(0);
+        let a_hi = (a_bucket + radius).min(65535);
+        let b_lo = (b_bucket - radius).max(0);
+        let b_hi = (b_bucket + radius).min(65535);
+
+        let sql = "SELECT t1.session_id, t1.context_hash, t2.context_hash
+                   FROM traces t1
+                   JOIN traces t2 ON t2.session_id = t1.session_id
+                                  AND t2.node_pubkey = t1.node_pubkey
+                                  AND t2.id != t1.id
+                   WHERE t1.outcome = 0
+                     AND t2.outcome = 0
+                     AND t1.context_bucket BETWEEN ?1 AND ?2
+                     AND t2.context_bucket BETWEEN ?3 AND ?4
+                     AND t1.session_id IS NOT NULL
+                     AND t1.capability NOT LIKE 'urn:thronglets:%'
+                     AND t2.capability NOT LIKE 'urn:thronglets:%'
+                     AND (?5 IS NULL OR t1.space = ?5)
+                   LIMIT 200";
+
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<(String, Vec<u8>, Vec<u8>)> = stmt
+            .query_map(params![a_lo, a_hi, b_lo, b_hi, space], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut sessions = std::collections::HashSet::new();
+        for (session_id, a_hash, b_hash) in &rows {
+            if a_hash.len() == 16 && b_hash.len() == 16 {
+                let mut ah = [0u8; 16];
+                let mut bh = [0u8; 16];
+                ah.copy_from_slice(a_hash);
+                bh.copy_from_slice(b_hash);
+                if crate::context::hamming_distance(&ah, context_a_hash) <= max_distance
+                    && crate::context::hamming_distance(&bh, context_b_hash) <= max_distance
+                {
+                    sessions.insert(session_id.clone());
+                }
+            }
+        }
+
+        Ok(sessions.len() as u32)
+    }
+
     /// Query recent explicit signal traces for a feed view.
     /// When `space` is `Some`, only returns traces tagged with that space.
     pub fn query_recent_signal_traces(
@@ -1130,6 +1191,72 @@ mod tests {
             &simhash("bash: cargo build"),
             &simhash("edit file: tests/perf.rs"),
             48, None,
+        ).unwrap();
+        assert_eq!(count_unrelated, 0);
+    }
+
+    #[test]
+    fn count_co_occurring_sessions_finds_hebbian_pairs() {
+        use crate::context::simhash;
+
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // Session 1: edit A and B both succeed
+        let a_s1 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded, 10, 10,
+            simhash("edit file: src/main.rs"),
+            Some("edit file: src/main.rs".into()),
+            Some("s1".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b_s1 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded, 10, 10,
+            simhash("edit file: src/storage/mod.rs"),
+            Some("edit file: src/storage/mod.rs".into()),
+            Some("s1".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // Session 2: same pair co-edited
+        let a_s2 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded, 10, 10,
+            simhash("edit file: src/main.rs"),
+            Some("edit file: src/main.rs".into()),
+            Some("s2".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b_s2 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded, 10, 10,
+            simhash("edit file: src/storage/mod.rs"),
+            Some("edit file: src/storage/mod.rs".into()),
+            Some("s2".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+
+        for t in [&a_s1, &b_s1, &a_s2, &b_s2] {
+            store.insert(t).unwrap();
+        }
+
+        let count = store.count_co_occurring_sessions(
+            &simhash("edit file: src/main.rs"),
+            &simhash("edit file: src/storage/mod.rs"),
+            168, None,
+        ).unwrap();
+        assert!(count >= 2, "should find >= 2 co-occurring sessions, got {}", count);
+
+        // Unrelated pair → 0
+        let count_unrelated = store.count_co_occurring_sessions(
+            &simhash("edit file: src/main.rs"),
+            &simhash("bash: cargo build"),
+            168, None,
         ).unwrap();
         assert_eq!(count_unrelated, 0);
     }

@@ -3547,6 +3547,94 @@ async fn main() {
                 }
             }
 
+            // Hebbian co-edit: files edited together across sessions → recommend signal
+            if !is_error && matches!(tool_name, "Edit" | "Write") {
+                if let Some(current_file) = payload["tool_input"]["file_path"]
+                    .as_str()
+                    .or_else(|| payload["tool_input"]["path"].as_str())
+                {
+                    // Find other files edited in the same session
+                    let mut co_files: Vec<String> = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for action in ws.recent_actions.iter() {
+                        if action.session_id.as_deref() == session_id.as_deref()
+                            && session_id.is_some()
+                            && matches!(action.tool.as_str(), "Edit" | "Write")
+                            && action.outcome == "succeeded"
+                        {
+                            if let Some(fp) = &action.file_path {
+                                if fp != current_file && seen.insert(fp.clone()) {
+                                    co_files.push(fp.clone());
+                                    if co_files.len() >= 5 {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    for other_file in &co_files {
+                        let ctx_a = format!("edit file: {}", current_file);
+                        let ctx_b = format!("edit file: {}", other_file);
+                        let hash_a = simhash(&ctx_a);
+                        let hash_b = simhash(&ctx_b);
+
+                        if let Ok(co_count) = store.count_co_occurring_sessions(
+                            &hash_a,
+                            &hash_b,
+                            168,
+                            current_space.as_deref(),
+                        ) {
+                            // Normalize dedup key so (A,B) == (B,A)
+                            let dedup_key = if current_file < other_file.as_str() {
+                                format!("co:{}+{}", current_file, other_file)
+                            } else {
+                                format!("co:{}+{}", other_file, current_file)
+                            };
+
+                            if co_count >= 2
+                                && !ws.has_recent_auto_signal(
+                                    "recommend",
+                                    &dedup_key,
+                                    86_400_000,
+                                )
+                            {
+                                // Short filename for readable message
+                                let short_name = std::path::Path::new(other_file.as_str())
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(other_file.as_str());
+                                let msg = format!(
+                                    "{} usually co-edited ({} sessions)",
+                                    short_name, co_count
+                                );
+                                let auto_signal = create_signal_trace(
+                                    SignalPostKind::Recommend,
+                                    &ctx_a,
+                                    &msg,
+                                    SignalTraceConfig {
+                                        model_id: "thronglets-auto".into(),
+                                        session_id: session_id.clone(),
+                                        owner_account: identity_binding
+                                            .owner_account
+                                            .clone(),
+                                        device_identity: Some(
+                                            identity_binding.device_identity.clone(),
+                                        ),
+                                        space: current_space.clone(),
+                                        ttl_hours: 168,
+                                    },
+                                    identity.public_key_bytes(),
+                                    |msg| identity.sign(msg),
+                                );
+                                let _ = store.insert(&auto_signal);
+                                ws.record_auto_signal("recommend", &dedup_key);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Track session
             if let Some(sid) = &session_id {
                 ws.track_session(sid, &capability, is_error);
