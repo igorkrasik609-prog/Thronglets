@@ -1,5 +1,8 @@
 use crate::context::simhash;
+use crate::identity::NodeIdentity;
 use crate::posts::SignalPostKind;
+use crate::posts::{DEFAULT_SIGNAL_TTL_HOURS, SignalTraceConfig, create_signal_trace};
+use crate::storage::TraceStore;
 use crate::trace::{Outcome, Trace};
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
@@ -211,6 +214,13 @@ pub struct ContinuityRecordData {
     pub expires_at: u64,
     pub derived_signal: Option<ContinuityDerivedSignal>,
     pub net_summary_candidate: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalContinuityRecordResult {
+    pub trace_id: String,
+    pub capability: String,
+    pub external_continuity: Option<ContinuityRecordData>,
 }
 
 #[derive(Debug, Clone)]
@@ -457,6 +467,74 @@ pub fn derived_signal_kind(data: &ContinuityRecordData) -> Option<SignalPostKind
         .and_then(|signal| SignalPostKind::parse(&signal.kind))
 }
 
+pub fn record_external_continuity(
+    store: &TraceStore,
+    identity: &NodeIdentity,
+    owner_account: Option<String>,
+    device_identity: String,
+    input: &ExternalContinuityInput,
+    outcome: Outcome,
+    model_id: String,
+    session_id: Option<String>,
+) -> Result<ExternalContinuityRecordResult, String> {
+    input.validate()?;
+
+    let trace = create_external_continuity_trace(
+        input,
+        outcome,
+        model_id,
+        session_id,
+        owner_account.clone(),
+        Some(device_identity.clone()),
+        identity.public_key_bytes(),
+        |msg| identity.sign(msg),
+    );
+    let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
+
+    store.insert(&trace).map_err(|e| format!("storage: {e}"))?;
+    // Raw external continuity traces are local-only evidence. Mark them as
+    // published immediately so they never enter the regular P2P gossip path.
+    store
+        .mark_published(&[trace.id])
+        .map_err(|e| format!("storage: {e}"))?;
+
+    let continuity_traces = store
+        .query_recent_continuity_traces(CONTINUITY_SUMMARY_HORIZON_HOURS, 200)
+        .map_err(|e| format!("storage: {e}"))?;
+    let continuity = summarize_recent_continuity(&continuity_traces, input.space.as_deref(), 10);
+    let continuity_data = continuity_record_data(&trace, &continuity);
+
+    if let Some(data) = &continuity_data
+        && let Some(kind) = derived_signal_kind(data)
+        && let Some(signal) = &data.derived_signal
+    {
+        let signal_trace = create_signal_trace(
+            kind,
+            &signal.message,
+            &signal.message,
+            SignalTraceConfig {
+                model_id: "thronglets-continuity".into(),
+                session_id: trace.session_id.clone(),
+                owner_account,
+                device_identity: Some(device_identity),
+                space: signal.space.clone(),
+                ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+            },
+            identity.public_key_bytes(),
+            |msg| identity.sign(msg),
+        );
+        store
+            .insert(&signal_trace)
+            .map_err(|e| format!("storage: {e}"))?;
+    }
+
+    Ok(ExternalContinuityRecordResult {
+        trace_id: trace_id_hex,
+        capability: trace.capability,
+        external_continuity: continuity_data,
+    })
+}
+
 fn derived_signal_for_group(
     group: &ContinuityGroup,
     now_ms: u64,
@@ -652,5 +730,84 @@ mod tests {
             summary.traces[0].derived_signal.as_ref().unwrap().kind,
             "info"
         );
+    }
+
+    #[test]
+    fn durable_relation_milestone_without_audit_becomes_info_not_watch() {
+        let now = now_ms();
+        let input = ExternalContinuityInput {
+            provider: EXTERNAL_CONTINUITY_PROVIDER.into(),
+            mode: EXTERNAL_CONTINUITY_MODE.into(),
+            version: EXTERNAL_CONTINUITY_VERSION,
+            taxonomy: ContinuityTaxonomy::Coordination,
+            event: ContinuityEvent::RelationMilestone,
+            summary: "relation boundary shifted to familiar".into(),
+            space: Some("psyche".into()),
+            audit_ref: None,
+        };
+        let one = make_trace(
+            input.clone(),
+            Outcome::Succeeded,
+            Some("s1"),
+            now - DURABLE_MIN_AGE_MS,
+        );
+        let summary = summarize_recent_continuity(std::slice::from_ref(&one), Some("psyche"), 10);
+        let derived = summary.traces[0].derived_signal.as_ref().unwrap();
+        assert_eq!(derived.kind, "info");
+        assert!(!summary.traces[0].net_summary_candidate);
+    }
+
+    #[test]
+    fn short_lived_open_loop_stays_local_only_without_signal() {
+        let now = now_ms();
+        let input = ExternalContinuityInput {
+            provider: EXTERNAL_CONTINUITY_PROVIDER.into(),
+            mode: EXTERNAL_CONTINUITY_MODE.into(),
+            version: EXTERNAL_CONTINUITY_VERSION,
+            taxonomy: ContinuityTaxonomy::Coordination,
+            event: ContinuityEvent::OpenLoopAnchor,
+            summary: "an open loop remains but is still too fresh".into(),
+            space: Some("psyche".into()),
+            audit_ref: None,
+        };
+        let one = make_trace(input, Outcome::Succeeded, Some("s1"), now - 1000);
+        let summary = summarize_recent_continuity(std::slice::from_ref(&one), Some("psyche"), 10);
+        assert!(summary.traces[0].derived_signal.is_none());
+        assert!(!summary.traces[0].net_summary_candidate);
+        assert!(summary.traces[0].local_only);
+    }
+
+    #[test]
+    fn recording_external_continuity_marks_raw_trace_as_local_only() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let input = ExternalContinuityInput {
+            provider: EXTERNAL_CONTINUITY_PROVIDER.into(),
+            mode: EXTERNAL_CONTINUITY_MODE.into(),
+            version: EXTERNAL_CONTINUITY_VERSION,
+            taxonomy: ContinuityTaxonomy::Continuity,
+            event: ContinuityEvent::ContinuityAnchor,
+            summary: "continuity stayed externally legible across handoff".into(),
+            space: Some("psyche".into()),
+            audit_ref: Some("anchor-42".into()),
+        };
+
+        let result = record_external_continuity(
+            &store,
+            &identity,
+            None,
+            identity.device_identity(),
+            &input,
+            Outcome::Succeeded,
+            "psyche".into(),
+            Some("s1".into()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.external_continuity.as_ref().unwrap().local_only_raw,
+            true
+        );
+        assert_eq!(store.unpublished_traces(10).unwrap().len(), 0);
     }
 }

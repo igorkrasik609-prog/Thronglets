@@ -17,10 +17,7 @@ use tracing::{debug, warn};
 
 use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
-use crate::continuity::{
-    CONTINUITY_SUMMARY_HORIZON_HOURS, ExternalContinuityInput, continuity_record_data,
-    create_external_continuity_trace, derived_signal_kind, summarize_recent_continuity,
-};
+use crate::continuity::{ExternalContinuityInput, record_external_continuity};
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::authorization_check_data;
 use crate::network::NetworkCommand;
@@ -493,68 +490,36 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
             .get("session_id")
             .and_then(|v| v.as_str())
             .map(String::from);
-        let trace = create_external_continuity_trace(
+        match record_external_continuity(
+            &ctx.store,
+            &ctx.identity,
+            ctx.binding.owner_account.clone(),
+            ctx.binding.device_identity.clone(),
             &input,
             outcome,
             model_id,
             session_id,
-            ctx.binding.owner_account.clone(),
-            Some(ctx.binding.device_identity.clone()),
-            ctx.identity.public_key_bytes(),
-            |msg| ctx.identity.sign(msg),
-        );
-        let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
-        if let Err(e) = ctx.store.insert(&trace) {
-            return JsonRpcResponse::error(id, -32000, format!("Storage error: {e}"));
-        }
-        let _ = ctx.store.mark_published(&[trace.id]);
-        let continuity_traces = match ctx
-            .store
-            .query_recent_continuity_traces(CONTINUITY_SUMMARY_HORIZON_HOURS, 200)
-        {
-            Ok(traces) => traces,
-            Err(e) => return JsonRpcResponse::error(id, -32000, format!("Storage error: {e}")),
-        };
-        let continuity =
-            summarize_recent_continuity(&continuity_traces, input.space.as_deref(), 10);
-        let continuity_data = continuity_record_data(&trace, &continuity);
-        if let Some(data) = &continuity_data
-            && let Some(kind) = derived_signal_kind(data)
-            && let Some(signal) = &data.derived_signal
-        {
-            let signal_trace = create_signal_trace(
-                kind,
-                &signal.message,
-                &signal.message,
-                SignalTraceConfig {
-                    model_id: "thronglets-continuity".into(),
-                    session_id: trace.session_id.clone(),
-                    owner_account: ctx.binding.owner_account.clone(),
-                    device_identity: Some(ctx.binding.device_identity.clone()),
-                    space: signal.space.clone(),
-                    ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
-                },
-                ctx.identity.public_key_bytes(),
-                |msg| ctx.identity.sign(msg),
-            );
-            let _ = ctx.store.insert(&signal_trace);
-        }
-        let response_json = json!({
-            "recorded": true,
-            "trace_id": trace_id_hex,
-            "capability": trace.capability,
-            "external_continuity": continuity_data,
-        });
+        ) {
+            Ok(result) => {
+                let response_json = json!({
+                    "recorded": true,
+                    "trace_id": result.trace_id,
+                    "capability": result.capability,
+                    "external_continuity": result.external_continuity,
+                });
 
-        return JsonRpcResponse::success(
-            id,
-            json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::to_string(&response_json).unwrap()
-                }]
-            }),
-        );
+                return JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&response_json).unwrap()
+                        }]
+                    }),
+                );
+            }
+            Err(error) => return JsonRpcResponse::error(id, -32000, error),
+        }
     }
 
     let capability = match args.get("capability").and_then(|v| v.as_str()) {

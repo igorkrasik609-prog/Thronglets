@@ -39,7 +39,7 @@ fn space_snapshot_is_quiet_when_no_recent_activity_exists() {
 
     let data = run_bin(&["space", "--space", "psyche", "--json"], &data_dir);
 
-    assert_eq!(data["schema_version"], "thronglets.space.v1");
+    assert_eq!(data["schema_version"], "thronglets.space.v2");
     assert_eq!(data["command"], "space");
     assert_eq!(data["data"]["summary"]["status"], "quiet");
     assert_eq!(data["data"]["summary"]["active_sessions"], 0);
