@@ -72,13 +72,26 @@ impl TraceStore {
             "ALTER TABLE traces ADD COLUMN published INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Phase B: space as first-class column for SQL-level isolation
+        let _ = conn.execute("ALTER TABLE traces ADD COLUMN space TEXT", []);
+        // Backfill space from signal trace JSON payloads (idempotent)
+        let _ = conn.execute(
+            "UPDATE traces SET space = json_extract(context_text, '$.space')
+             WHERE space IS NULL
+               AND context_text IS NOT NULL
+               AND capability LIKE 'urn:thronglets:signal:%'
+               AND json_extract(context_text, '$.space') IS NOT NULL",
+            [],
+        );
         // Now create indexes (columns guaranteed to exist after migration)
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_traces_capability ON traces(capability);
             CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
             CREATE INDEX IF NOT EXISTS idx_traces_model_id ON traces(model_id);
             CREATE INDEX IF NOT EXISTS idx_traces_session_id ON traces(session_id);
-            CREATE INDEX IF NOT EXISTS idx_traces_context_bucket ON traces(context_bucket);",
+            CREATE INDEX IF NOT EXISTS idx_traces_context_bucket ON traces(context_bucket);
+            CREATE INDEX IF NOT EXISTS idx_traces_space ON traces(space);
+            CREATE INDEX IF NOT EXISTS idx_traces_space_capability ON traces(space, capability);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -91,12 +104,14 @@ impl TraceStore {
     }
 
     /// Insert a trace. Returns false if duplicate (content-addressed dedup).
+    /// Auto-extracts `space` from JSON payload in context_text when present.
     pub fn insert(&self, trace: &Trace) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().unwrap();
         let bucket = context_bucket(&trace.context_hash);
+        let space = extract_space(&trace.context_text);
         let result = conn.execute(
-            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature, context_bucket)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature, context_bucket, space)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 trace.id.as_slice(),
                 trace.capability,
@@ -113,6 +128,7 @@ impl TraceStore {
                 trace.node_pubkey.as_slice(),
                 trace.signature.to_bytes().as_slice(),
                 bucket,
+                space,
             ],
         )?;
         Ok(result > 0)
@@ -441,12 +457,15 @@ impl TraceStore {
     }
 
     /// Query explicit signal traces by context similarity and optional kind.
+    /// When `space` is `Some`, only returns traces tagged with that space (SQL-level isolation).
+    /// When `space` is `None`, returns all signals regardless of space.
     pub fn query_signal_traces(
         &self,
         context_hash: &[u8; 16],
         kind: Option<SignalPostKind>,
         max_distance: u32,
         limit: usize,
+        space: Option<&str>,
     ) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
         let target_bucket = context_bucket(context_hash);
@@ -455,46 +474,35 @@ impl TraceStore {
         let bucket_hi = (target_bucket + bucket_radius).min(65535);
         let query_limit = (limit.max(1) * 20) as i64;
 
-        let mut candidates = if let Some(kind) = kind {
-            let mut traces = Vec::new();
-            for capability in [kind.capability(), kind.reinforcement_capability()] {
-                let mut stmt = conn.prepare(
-                    "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                            context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
-                     FROM traces
-                     WHERE context_bucket BETWEEN ?1 AND ?2
-                       AND capability = ?3
-                     ORDER BY timestamp DESC
-                     LIMIT ?4",
-                )?;
-                traces.extend(Self::collect_traces(
-                    &mut stmt,
-                    params![bucket_lo, bucket_hi, capability, query_limit],
-                )?);
-            }
-            traces
+        let caps: Vec<String> = if let Some(kind) = kind {
+            vec![kind.capability().to_string(), kind.reinforcement_capability().to_string()]
         } else {
-            let mut traces = Vec::new();
-            for like in [
+            vec![
                 format!("{SIGNAL_CAPABILITY_PREFIX}%"),
                 format!("{SIGNAL_REINFORCEMENT_CAPABILITY_PREFIX}%"),
-            ] {
-                let mut stmt = conn.prepare(
-                    "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                            context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
-                     FROM traces
-                     WHERE context_bucket BETWEEN ?1 AND ?2
-                       AND capability LIKE ?3
-                     ORDER BY timestamp DESC
-                     LIMIT ?4",
-                )?;
-                traces.extend(Self::collect_traces(
-                    &mut stmt,
-                    params![bucket_lo, bucket_hi, like, query_limit],
-                )?);
-            }
-            traces
+            ]
         };
+        let use_like = kind.is_none();
+
+        let mut candidates = Vec::new();
+        for cap in &caps {
+            let cap_filter = if use_like { "capability LIKE ?3" } else { "capability = ?3" };
+            let sql = format!(
+                "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
+                        context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
+                 FROM traces
+                 WHERE context_bucket BETWEEN ?1 AND ?2
+                   AND {cap_filter}
+                   AND (?5 IS NULL OR space = ?5)
+                 ORDER BY timestamp DESC
+                 LIMIT ?4"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            candidates.extend(Self::collect_traces(
+                &mut stmt,
+                params![bucket_lo, bucket_hi, cap, query_limit, space],
+            )?);
+        }
         candidates.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
         let mut matched: Vec<Trace> = candidates
@@ -508,56 +516,47 @@ impl TraceStore {
     }
 
     /// Query recent explicit signal traces for a feed view.
+    /// When `space` is `Some`, only returns traces tagged with that space.
     pub fn query_recent_signal_traces(
         &self,
         hours: u32,
         kind: Option<SignalPostKind>,
         limit: usize,
+        space: Option<&str>,
     ) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let query_limit = (limit.max(1) * 20) as i64;
 
-        let mut traces = if let Some(kind) = kind {
-            let mut traces = Vec::new();
-            for capability in [kind.capability(), kind.reinforcement_capability()] {
-                let mut stmt = conn.prepare(
-                    "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                            context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
-                     FROM traces
-                     WHERE capability = ?1
-                       AND timestamp >= ?2
-                     ORDER BY timestamp DESC
-                     LIMIT ?3",
-                )?;
-                traces.extend(Self::collect_traces(
-                    &mut stmt,
-                    params![capability, cutoff_ms, query_limit],
-                )?);
-            }
-            traces
+        let caps: Vec<String> = if let Some(kind) = kind {
+            vec![kind.capability().to_string(), kind.reinforcement_capability().to_string()]
         } else {
-            let mut traces = Vec::new();
-            for like in [
+            vec![
                 format!("{SIGNAL_CAPABILITY_PREFIX}%"),
                 format!("{SIGNAL_REINFORCEMENT_CAPABILITY_PREFIX}%"),
-            ] {
-                let mut stmt = conn.prepare(
-                    "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                            context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
-                     FROM traces
-                     WHERE capability LIKE ?1
-                       AND timestamp >= ?2
-                     ORDER BY timestamp DESC
-                     LIMIT ?3",
-                )?;
-                traces.extend(Self::collect_traces(
-                    &mut stmt,
-                    params![like, cutoff_ms, query_limit],
-                )?);
-            }
-            traces
+            ]
         };
+        let use_like = kind.is_none();
+
+        let mut traces = Vec::new();
+        for cap in &caps {
+            let cap_filter = if use_like { "capability LIKE ?1" } else { "capability = ?1" };
+            let sql = format!(
+                "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
+                        context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
+                 FROM traces
+                 WHERE {cap_filter}
+                   AND timestamp >= ?2
+                   AND (?4 IS NULL OR space = ?4)
+                 ORDER BY timestamp DESC
+                 LIMIT ?3"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            traces.extend(Self::collect_traces(
+                &mut stmt,
+                params![cap, cutoff_ms, query_limit, space],
+            )?);
+        }
         traces.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         traces.truncate(limit);
         Ok(traces)
@@ -756,6 +755,13 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
         let frac = idx - lower as f64;
         sorted[lower] * (1.0 - frac) + sorted[upper] * frac
     }
+}
+
+/// Try to extract `$.space` from a JSON context_text. Returns None for non-JSON or missing key.
+fn extract_space(context_text: &Option<String>) -> Option<String> {
+    let text = context_text.as_ref()?;
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+    parsed.get("space")?.as_str().map(String::from)
 }
 
 fn step_match(step: &StepAction) -> (String, Option<String>, Option<String>) {
@@ -1454,7 +1460,7 @@ mod tests {
 
         let target = crate::context::simhash("repair flaky ci");
         let results = store
-            .query_signal_traces(&target, Some(SignalPostKind::Avoid), 48, 10)
+            .query_signal_traces(&target, Some(SignalPostKind::Avoid), 48, 10, None)
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].capability, SignalPostKind::Avoid.capability());
@@ -1501,7 +1507,7 @@ mod tests {
 
         let target = crate::context::simhash("repair flaky ci");
         let results = store
-            .query_signal_traces(&target, Some(SignalPostKind::Avoid), 48, 10)
+            .query_signal_traces(&target, Some(SignalPostKind::Avoid), 48, 10, None)
             .unwrap();
         assert_eq!(results.len(), 2);
         assert!(
@@ -1561,7 +1567,7 @@ mod tests {
         old.timestamp = old.timestamp.saturating_sub(48 * 3_600_000);
         store.insert(&old).unwrap();
 
-        let results = store.query_recent_signal_traces(24, None, 10).unwrap();
+        let results = store.query_recent_signal_traces(24, None, 10, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session_id.as_deref(), Some("recent"));
     }

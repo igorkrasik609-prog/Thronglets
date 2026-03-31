@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v0.5.0 — 2026-03-31
+
+- **SQL-level space isolation** — signal queries now filter by `space` at the SQL layer instead of fetching globally and filtering in Rust; the `traces` table gains a `space` column auto-extracted from JSON payloads on insert, with indexes for `space` and `(space, capability)`; `summarize_signal_traces` and `summarize_recent_signal_feed` no longer accept a `space` parameter since the responsibility has moved to the query layer; the now-redundant `matches_signal_space` post-hoc filter and all `fetch_limit` over-fetch workarounds have been removed — net code reduction
 - **Front-door launcher now prefers repo-local source** — the ordinary `thronglets` install surfaces now behave more like the managed adapter launcher: npm, the shell installer, and the PowerShell installer all prefer a local repo checkout first (via `cargo run` or a local debug binary) before they fall back to the installed release binary, so same-machine AI sessions stop drifting onto stale PATH binaries while working inside the Thronglets repo
 - **External continuity runtime rules are now explicit** — `external_continuity` traces now expose a fixed ruleset version, taxonomy retention windows, stable/auditable evidence flags, `local-only / derived-signal / summary-candidate` disposition, and the exact degradation / summary rule id that fired; `space --json`, HTTP `POST /v1/traces`, and MCP `trace_record` now all surface the same minimal runtime introspection without adding new identity objects or upgrading `session`
 - **Restart now auto-clears on real runtime proof** — `Codex` now clears persisted `restart-pending` as soon as its managed MCP server is genuinely relaunched, and `OpenClaw` clears the same state on the first successful `prehook / hook` contact after reload; `runtime-ready` remains available as an advanced fallback instead of staying on the default user path

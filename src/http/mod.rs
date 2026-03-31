@@ -459,14 +459,9 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
     let space = params.get("space").map(String::as_str);
-    let fetch_limit = if space.is_some() {
-        limit.max(1).saturating_mul(10)
-    } else {
-        limit
-    };
     let traces = match ctx
         .store
-        .query_recent_signal_traces(hours, kind, fetch_limit)
+        .query_recent_signal_traces(hours, kind, limit, space)
     {
         Ok(traces) => traces,
         Err(e) => return json!({"error": format!("query: {e}")}).to_string(),
@@ -474,7 +469,6 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
     let results = filter_signal_feed_results(
         summarize_recent_signal_feed(
             &traces,
-            space,
             &ctx.binding.device_identity,
             ctx.identity.public_key_bytes(),
             limit,
@@ -544,14 +538,9 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
         .unwrap_or(5);
     let space = params.get("space").map(String::as_str);
     let context_hash = simhash(context_str);
-    let fetch_limit = if space.is_some() {
-        limit.max(1).saturating_mul(10)
-    } else {
-        limit
-    };
     let traces = match ctx
         .store
-        .query_signal_traces(&context_hash, kind, 48, fetch_limit)
+        .query_signal_traces(&context_hash, kind, 48, limit, space)
     {
         Ok(traces) => traces,
         Err(e) => return json!({"error": format!("query: {e}")}).to_string(),
@@ -560,7 +549,6 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
     let results = summarize_signal_traces(
         &traces,
         context_str,
-        space,
         &ctx.binding.device_identity,
         ctx.identity.public_key_bytes(),
         limit,

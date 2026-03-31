@@ -2918,18 +2918,12 @@ async fn main() {
         } => {
             let store = open_store(&dir);
             let query_hash = simhash(&context);
-            let fetch_limit = if space.is_some() {
-                limit.max(1).saturating_mul(10)
-            } else {
-                limit
-            };
             let traces = store
-                .query_signal_traces(&query_hash, kind.map(Into::into), 48, fetch_limit)
+                .query_signal_traces(&query_hash, kind.map(Into::into), 48, limit, space.as_deref())
                 .expect("failed to query signal traces");
             let results = summarize_signal_traces(
                 &traces,
                 &context,
-                space.as_deref(),
                 &identity_binding.device_identity,
                 identity.public_key_bytes(),
                 limit,
@@ -2961,18 +2955,12 @@ async fn main() {
             limit,
         } => {
             let store = open_store(&dir);
-            let fetch_limit = if space.is_some() {
-                limit.max(1).saturating_mul(10)
-            } else {
-                limit
-            };
             let traces = store
-                .query_recent_signal_traces(hours, kind.map(Into::into), fetch_limit)
+                .query_recent_signal_traces(hours, kind.map(Into::into), limit, space.as_deref())
                 .expect("failed to query recent signal traces");
             let results = filter_signal_feed_results(
                 summarize_recent_signal_feed(
                     &traces,
-                    space.as_deref(),
                     &identity_binding.device_identity,
                     identity.public_key_bytes(),
                     limit,
@@ -3094,9 +3082,8 @@ async fn main() {
         } => {
             let store = open_store(&dir);
             let workspace = WorkspaceState::load(&dir);
-            let fetch_limit = limit.max(1).saturating_mul(10);
             let presence_traces = store
-                .query_recent_presence_traces(hours, fetch_limit)
+                .query_recent_presence_traces(hours, limit.max(1).saturating_mul(10))
                 .expect("failed to query recent presence traces");
             let sessions = summarize_recent_presence(
                 &presence_traces,
@@ -3106,11 +3093,10 @@ async fn main() {
                 limit,
             );
             let signal_traces = store
-                .query_recent_signal_traces(hours, None, fetch_limit)
+                .query_recent_signal_traces(hours, None, limit, Some(&space))
                 .expect("failed to query recent signal traces");
             let signals = summarize_recent_signal_feed(
                 &signal_traces,
-                Some(&space),
                 &identity_binding.device_identity,
                 identity.public_key_bytes(),
                 limit,
@@ -3132,7 +3118,7 @@ async fn main() {
             }
             let local_feedback = workspace.space_feedback_summary(Some(&space));
             let continuity_traces = store
-                .query_recent_continuity_traces(hours, fetch_limit)
+                .query_recent_continuity_traces(hours, limit.max(1).saturating_mul(10))
                 .expect("failed to query recent continuity traces");
             let continuity = summarize_recent_continuity(&continuity_traces, Some(&space), limit);
             let data = SpaceSnapshotData {
@@ -4395,12 +4381,11 @@ fn explicit_avoid_signal(
 ) -> Option<Signal> {
     let context_hash = simhash(hook_context);
     let traces = store
-        .query_signal_traces(&context_hash, Some(SignalPostKind::Avoid), 48, 3)
+        .query_signal_traces(&context_hash, Some(SignalPostKind::Avoid), 48, 3, space)
         .ok()?;
     let result = summarize_signal_traces(
         &traces,
         hook_context,
-        space,
         local_device_identity,
         local_node_pubkey,
         3,

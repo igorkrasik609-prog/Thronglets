@@ -1121,14 +1121,9 @@ fn handle_signals(
     limit: usize,
 ) -> JsonRpcResponse {
     let context_hash = simhash(context_str);
-    let fetch_limit = if space.is_some() {
-        limit.max(1).saturating_mul(10)
-    } else {
-        limit.max(1)
-    };
     let traces = match ctx
         .store
-        .query_signal_traces(&context_hash, kind, 48, fetch_limit)
+        .query_signal_traces(&context_hash, kind, 48, limit, space)
     {
         Ok(traces) => traces,
         Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
@@ -1136,7 +1131,6 @@ fn handle_signals(
     let results = summarize_signal_traces(
         &traces,
         context_str,
-        space,
         &ctx.binding.device_identity,
         ctx.identity.public_key_bytes(),
         limit,
@@ -1195,14 +1189,9 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
     };
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let space = args.get("space").and_then(|v| v.as_str());
-    let fetch_limit = if space.is_some() {
-        limit.max(1).saturating_mul(10)
-    } else {
-        limit.max(1)
-    };
     let traces = match ctx
         .store
-        .query_recent_signal_traces(hours, kind, fetch_limit)
+        .query_recent_signal_traces(hours, kind, limit, space)
     {
         Ok(traces) => traces,
         Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
@@ -1210,7 +1199,6 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
     let results = filter_signal_feed_results(
         summarize_recent_signal_feed(
             &traces,
-            space,
             &ctx.binding.device_identity,
             ctx.identity.public_key_bytes(),
             limit,
@@ -1891,6 +1879,7 @@ mod tests {
                 Some(SignalPostKind::Avoid),
                 48,
                 5,
+                None,
             )
             .unwrap();
         assert_eq!(queried.len(), 1);

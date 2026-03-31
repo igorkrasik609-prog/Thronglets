@@ -302,7 +302,6 @@ fn create_signal_trace_with_capability(
 pub fn summarize_signal_traces(
     traces: &[Trace],
     query_context: &str,
-    space: Option<&str>,
     local_device_identity: &str,
     local_node_pubkey: [u8; 32],
     limit: usize,
@@ -316,9 +315,6 @@ pub fn summarize_signal_traces(
             continue;
         };
         if decoded.expires_at <= now_ms {
-            continue;
-        }
-        if !matches_signal_space(decoded.space.as_deref(), space) {
             continue;
         }
 
@@ -430,7 +426,6 @@ pub fn summarize_signal_traces(
 
 pub fn summarize_recent_signal_feed(
     traces: &[Trace],
-    space: Option<&str>,
     local_device_identity: &str,
     local_node_pubkey: [u8; 32],
     limit: usize,
@@ -443,9 +438,6 @@ pub fn summarize_recent_signal_feed(
             continue;
         };
         if decoded.expires_at <= now_ms {
-            continue;
-        }
-        if !matches_signal_space(decoded.space.as_deref(), space) {
             continue;
         }
 
@@ -653,12 +645,6 @@ fn decode_signal_trace(trace: &Trace) -> Option<DecodedSignalTrace> {
     })
 }
 
-fn matches_signal_space(trace_space: Option<&str>, requested_space: Option<&str>) -> bool {
-    match requested_space {
-        Some(requested_space) => trace_space == Some(requested_space),
-        None => true,
-    }
-}
 
 pub fn expires_at_ms(now_ms: u64, ttl_hours: u32) -> u64 {
     now_ms.saturating_add((ttl_hours as u64).saturating_mul(60 * 60 * 1000))
@@ -937,7 +923,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[trace_a, trace_b],
             "fix flaky ci workflow",
-            None,
             &identity.device_identity(),
             identity.public_key_bytes(),
             10,
@@ -982,27 +967,29 @@ mod tests {
             |msg| identity.sign(msg),
         );
 
-        let all_results = summarize_signal_traces(
+        // Same message in different spaces → two separate signal groups
+        let results = summarize_signal_traces(
             &[psyche.clone(), thronglets.clone()],
             "repair parser regressions",
-            None,
             &identity.device_identity(),
             identity.public_key_bytes(),
             10,
         );
-        assert_eq!(all_results.len(), 2);
+        assert_eq!(results.len(), 2);
+        let spaces: Vec<_> = results.iter().map(|r| r.space.as_deref()).collect();
+        assert!(spaces.contains(&Some("psyche")));
+        assert!(spaces.contains(&Some("thronglets")));
 
-        let psyche_results = summarize_signal_traces(
-            &[psyche, thronglets],
+        // When SQL pre-filters to only psyche traces, only one group remains
+        let psyche_only = summarize_signal_traces(
+            &[psyche],
             "repair parser regressions",
-            Some("psyche"),
             &identity.device_identity(),
             identity.public_key_bytes(),
             10,
         );
-        assert_eq!(psyche_results.len(), 1);
-        assert_eq!(psyche_results[0].space.as_deref(), Some("psyche"));
-        assert_eq!(psyche_results[0].total_posts, 1);
+        assert_eq!(psyche_only.len(), 1);
+        assert_eq!(psyche_only[0].space.as_deref(), Some("psyche"));
     }
 
     #[test]
@@ -1045,7 +1032,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[expired, fresh],
             "ship the current branch",
-            None,
             &identity.device_identity(),
             identity.public_key_bytes(),
             10,
@@ -1080,7 +1066,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[local, remote],
             "repair release flow",
-            None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
@@ -1140,7 +1125,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[signal, reinforcement_a, reinforcement_b],
             "repair release flow",
-            None,
             &identity.device_identity(),
             identity.public_key_bytes(),
             10,
@@ -1176,7 +1160,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[reinforcement],
             "ship the current branch",
-            None,
             &identity.device_identity(),
             identity.public_key_bytes(),
             10,
@@ -1218,7 +1201,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[recommend, avoid_a, avoid_b],
             "repair release flow",
-            None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
@@ -1264,7 +1246,6 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[local_signal, collective_a, collective_b],
-            None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
@@ -1305,9 +1286,9 @@ mod tests {
             |msg| identity.sign(msg),
         );
 
+        // SQL-level space filter would return only core traces
         let results = summarize_recent_signal_feed(
-            &[psyche, core],
-            Some("core"),
+            &[core],
             &identity.device_identity(),
             identity.public_key_bytes(),
             10,
@@ -1364,7 +1345,6 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[single_model_a, single_model_b, multi_model_a, multi_model_b],
-            None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
@@ -1449,7 +1429,6 @@ mod tests {
                 multi_model_a,
                 multi_model_b,
             ],
-            None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
@@ -1535,7 +1514,6 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[old_a, old_b, old_c, fresh_a, fresh_b, fresh_c],
-            None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
@@ -1592,7 +1570,6 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[recommend, avoid_a, avoid_b],
-            None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
             10,
