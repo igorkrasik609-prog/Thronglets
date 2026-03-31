@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Single-source architecture blueprint** — added `ARCHITECTURE.md` as the canonical architecture document, trimmed duplicated long-form strategy prose out of `README` / `README.en`, and made `llms.txt` plus local agent memory explicitly prefer that document when strategic wording drifts
 - **Optional external continuity runtime** — `trace_record` and HTTP `POST /v1/traces` now accept a frozen `external_continuity` payload (`provider=thronglets`, `mode=optional`, `version=1`) for the three allowed trace taxonomies only; raw continuity traces stay local-first, can conditionally degrade into existing sparse `watch / info / avoid` signals, and surface local continuity summaries plus Net-facing summary candidates through `space --json` without introducing any new identity objects or promoting `session` into an economic subject
 - **Explicit authorization truth split** — machine identity JSON now distinguishes the locally cached owner-binding state from `Oasyce Chain` as the final authorization source of truth, while honestly marking current authoritative authorization status as `not-checked` until chain verification is wired in
 - **Shared authorization-check surface** — CLI `authorization-check --json`, HTTP `/v1/authorization`, and MCP `authorization_check` now expose the same thin machine contract for local binding state vs `Oasyce Chain` as the final authorization truth source, without adding any new user-facing identity concepts

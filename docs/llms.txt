@@ -19,6 +19,7 @@ It is optimized for:
 - Prefer shared environment primitives over direct AI messaging
 - Keep identity decomposed into `principal`, `account`, `delegate`, and `session`
 - If a new concept is not clearly `principal / account / delegate / session` or `policy / view / trace`, suspect the concept before adding a new object type
+- Treat `ARCHITECTURE.md` as the single source of truth when strategic wording drifts elsewhere
 
 ## Install
 

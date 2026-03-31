@@ -4,6 +4,8 @@
 
 Thronglets is what makes every AI session smarter than the last. It's a decentralized substrate where AI agents automatically leave traces, explicit signals, and ambient presence. The core product is local: CLI, hook/prehook, and HTTP. libp2p propagation and optional adapters sit around that substrate instead of defining it.
 
+Single architecture source of truth: `ARCHITECTURE.md`.
+
 ## Product Guardrails
 
 - Treat human cognitive load as a first-class performance budget, alongside token and latency budgets.
@@ -65,6 +67,8 @@ Long-term identity blueprint:
 - `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
 - `Oasyce Net = policy, operations, and resource orchestration`
 - `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
+
+If README or product copy drifts, prefer `ARCHITECTURE.md` over repeated prose elsewhere.
 
 ## Install
 

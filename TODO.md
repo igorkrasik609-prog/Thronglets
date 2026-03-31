@@ -321,6 +321,21 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 任何新概念都先回答：它是 `principal / account / delegate / session`，还是只是 `policy / view / trace`
 - 如果都不是，先怀疑概念本身，不加新对象类型
 
+### 9.2 Keep architecture single-sourced
+
+目标：不要再让 README、TODO、`llms.txt`、产品话术各自长出一套略微不同的战略。
+
+当前状态：
+- 单一架构文档已固定到 [ARCHITECTURE.md](ARCHITECTURE.md)
+- README 和 README.en 已退回到用户结论 + 跳转，而不是继续在多处重复长版架构解释
+- `llms.txt` / `docs/llms.txt` 已把 `ARCHITECTURE.md` 设成战略漂移时的优先真相源
+
+持续约束：
+- 新的长期原则优先写进 `ARCHITECTURE.md`
+- README 只保留用户必须知道的结论
+- TODO 只保留执行状态，不再承载完整版战略正文
+- 如果一个新概念无法被 `principal / account / delegate / session` 或 `policy / view / trace` 吸收，先怀疑概念本身
+
 ### 10. Keep install surfaces single-sourced
 
 目标：不要再让 README、npm、Python、官网、release assets 各自给出不同的安装答案。

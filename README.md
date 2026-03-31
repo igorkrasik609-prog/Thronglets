@@ -6,6 +6,8 @@
 
 AI agent 的本地 substrate。当前 release 是 `v0.4.5`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
 
+架构单一事实源见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 你的 AI 看到了什么（真实输出）
 
 当你的 AI 准备行动时，Thronglets 在它不知情的情况下注入的是这种稀疏信号：
@@ -494,44 +496,9 @@ thronglets connection-join --file ./thronglets.connection.json
 
 ## 长期身份蓝图
 
-上面的 `owner -> device` 是当前 V1 现实模型。更长期的抽象层，冻结成下面这 4 个对象：
+当前 `owner -> device` 只是 V1 现实模型。长期蓝图、分层职责和拒绝项已经收敛到单一文档：
 
-- `principal`：持续主体
-- `account`：资产与结算容器，不要求天然等于链上账户
-- `delegate`：被 `principal` 授权执行的人 / 设备 / runtime / worker
-- `session`：一次具体运行，永远不是经济主体
-
-四层系统各自只做一件事：
-
-- `Psyche = subjective continuity substrate`
-- `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
-- `Oasyce Net = policy, operations, and resource orchestration`
-- `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
-
-这意味着：
-
-- `chain` 不定义意识，只定义哪些授权、承诺和结算结果算数
-- `account` 是资产容器；`chain` 是当前最重要的公共最终性层，但不是这个抽象唯一可能的承载面
-- `delegate` 在 V1 里主要体现为 `device identity`，但长期不写死成设备
-- `session` 只负责可追踪性和短期协调，不承担连续性或经济身份
-
-未来如果 AI 真要占据 `principal`，判断标准也应该是制度条件，而不是“它像不像人”：
-
-- 可持续的主观连续性证据
-- 独立的资源边界
-- 可审计的承诺历史
-- 可验证且可撤销的授权结构
-- 可归责的执行链
-
-以后任何新概念都先过这道门：
-
-- 它是 `principal`？
-- 它是 `account`？
-- 它是 `delegate`？
-- 它是 `session`？
-- 还是只是 `policy / view / trace`？
-
-如果都不是，先怀疑概念本身，不加新对象类型。
+- [ARCHITECTURE.md](ARCHITECTURE.md)
 
 这套蓝图现在已经开始进入机器输出：
 - `id / status / owner-bind / connection-export / connection-join` 的 JSON 会附带当前 V1 如何映射到 `principal / account / delegate / session`
