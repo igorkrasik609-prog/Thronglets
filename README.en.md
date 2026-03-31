@@ -389,6 +389,10 @@ If it is none of the above, suspect the concept before adding a new object type.
 That blueprint is now beginning to land in machine-facing output:
 - the JSON surfaces for `id / status / owner-bind / connection-export / connection-join` now carry how the current V1 reality maps into `principal / account / delegate / session`
 - automation and other AIs can start consuming identity through the longer-lived abstraction without mistaking today’s `owner / device / session` split for the final ontology
+- the same JSON now also distinguishes:
+  - the locally cached owner-binding state
+  - `Oasyce Chain` as the final authorization truth source
+  - whether the authorization result has actually been checked against chain truth yet (currently this stays honestly at `not-checked`)
 
 If the target runtime is not one of the native adapters, `install-plan --agent generic --json` now also includes minimal `Python / Node.js / shell` `prehook / hook` snippets, so the runtime does not have to invent its own wrapper contract. If you only want one thinner result, use:
 

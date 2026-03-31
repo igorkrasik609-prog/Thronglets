@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Explicit authorization truth split** — machine identity JSON now distinguishes the locally cached owner-binding state from `Oasyce Chain` as the final authorization source of truth, while honestly marking current authoritative authorization status as `not-checked` until chain verification is wired in
 - **Machine-facing identity blueprint** — `id / status / owner-bind / connection-export / connection-join` JSON now carry the current V1 mapping into `principal / account / delegate / session`, so automation can consume the long-term identity abstraction without mistaking today’s `owner / device / session` split for the final model
 - **High-level primary-device sharing** — added `thronglets share`, which exports a connection file to the default desktop path and tells the operator whether it is still `identity-only`, already carries reusable peer seeds, or has reached `trusted-same-owner-ready`, so the normal user path no longer has to start with raw `connection-export`
 - **First-principles simplification guardrails** — docs, AI-facing guides, and roadmap now explicitly treat human cognitive load as a first-class performance budget, keep the normal user path at `start / share / join / status`, position `Oasyce` as an optional ownership upgrade instead of a participation prerequisite, and reaffirm shared `space / presence / signal / space snapshot` primitives over direct agent messaging

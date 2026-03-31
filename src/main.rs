@@ -240,6 +240,15 @@ struct IdentityBlueprint {
 }
 
 #[derive(Clone, Serialize)]
+struct AuthorizationSummary {
+    final_truth_source: &'static str,
+    local_binding_status: &'static str,
+    local_binding_source: String,
+    authoritative_status: &'static str,
+    execution_boundary: &'static str,
+}
+
+#[derive(Clone, Serialize)]
 struct IdentitySummary {
     status: &'static str,
     owner_account: Option<String>,
@@ -247,6 +256,7 @@ struct IdentitySummary {
     binding_source: String,
     joined_from_device: Option<String>,
     identity_model: IdentityBlueprint,
+    authorization: AuthorizationSummary,
 }
 
 #[derive(Clone, Serialize)]
@@ -1185,6 +1195,20 @@ fn identity_blueprint(owner_account: Option<String>, device_identity: String) ->
     }
 }
 
+fn authorization_summary(binding: &IdentityBinding) -> AuthorizationSummary {
+    AuthorizationSummary {
+        final_truth_source: "oasyce_chain",
+        local_binding_status: if binding.owner_account.is_some() {
+            "owner-bound"
+        } else {
+            "unbound"
+        },
+        local_binding_source: binding.binding_source_or_local().to_string(),
+        authoritative_status: "not-checked",
+        execution_boundary: "device_identity",
+    }
+}
+
 fn identity_summary(status: &'static str, binding: &IdentityBinding) -> IdentitySummary {
     IdentitySummary {
         status,
@@ -1196,6 +1220,7 @@ fn identity_summary(status: &'static str, binding: &IdentityBinding) -> Identity
             binding.owner_account.clone(),
             binding.device_identity.clone(),
         ),
+        authorization: authorization_summary(binding),
     }
 }
 
@@ -3124,6 +3149,14 @@ async fn main() {
 
         Commands::ConnectionInspect { file, json } => {
             let connection = ConnectionFile::load(&file).expect("failed to read connection file");
+            let inspected_binding = IdentityBinding {
+                schema_version: "thronglets.identity.v1".into(),
+                owner_account: connection.owner_account.clone(),
+                device_identity: connection.primary_device_identity.clone(),
+                binding_source: Some("connection_file".into()),
+                joined_from_device: None,
+                updated_at: connection.exported_at,
+            };
             let identity = IdentitySummary {
                 status: "valid",
                 owner_account: connection.owner_account.clone(),
@@ -3134,6 +3167,7 @@ async fn main() {
                     connection.owner_account.clone(),
                     connection.primary_device_identity.clone(),
                 ),
+                authorization: authorization_summary(&inspected_binding),
             };
             let inspected_trusted_peer_seed_count = match connection.peer_seed_scope {
                 ConnectionSeedScope::Trusted => connection.peer_seeds.len(),

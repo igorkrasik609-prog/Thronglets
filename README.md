@@ -388,6 +388,10 @@ thronglets connection-join --file ./thronglets.connection.json
 这套蓝图现在已经开始进入机器输出：
 - `id / status / owner-bind / connection-export / connection-join` 的 JSON 会附带当前 V1 如何映射到 `principal / account / delegate / session`
 - 自动化和其他 AI 可以开始按长期抽象消费身份信息，而不需要把今天的 `owner / device / session` 误当成终局
+- 同一批 JSON 现在还会明确区分：
+  - 本地缓存的 owner 绑定状态
+  - `Oasyce Chain` 作为最终授权真相源
+  - 当前授权结果是否已经被 chain 侧验证（当前阶段会诚实显示为 `not-checked`）
 
 如果目标 runtime 不在原生 adapter 列表里，`install-plan --agent generic --json` 现在还会直接给出 `Python / Node.js / shell` 的最小 `prehook / hook` 示例，不需要再自己拼接调用方式。如果只想拿一份更薄的结果，可以直接加：
 

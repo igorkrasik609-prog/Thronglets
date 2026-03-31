@@ -261,6 +261,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 当前状态：
 - 文档和长期记忆已经冻结这 4 个对象
 - 机器输出已经开始附带当前 V1 到 `principal / account / delegate / session` 的映射
+- 机器输出现在也明确区分了本地缓存的 owner 绑定状态与 chain 作为最终授权真相源；真正链上校验仍待接入
 
 四层职责固定为：
 - `Psyche = subjective continuity substrate`

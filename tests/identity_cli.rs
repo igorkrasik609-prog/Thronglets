@@ -93,6 +93,18 @@ fn id_json_surfaces_identity_summary() {
         data["data"]["summary"]["identity_model"]["account"]["current_id"],
         Value::Null
     );
+    assert_eq!(
+        data["data"]["summary"]["authorization"]["final_truth_source"],
+        "oasyce_chain"
+    );
+    assert_eq!(
+        data["data"]["summary"]["authorization"]["local_binding_status"],
+        "unbound"
+    );
+    assert_eq!(
+        data["data"]["summary"]["authorization"]["authoritative_status"],
+        "not-checked"
+    );
     assert_eq!(data["data"]["summary"]["joined_from_device"], Value::Null);
     assert!(
         data["data"]["summary"]["device_identity"]
@@ -647,6 +659,18 @@ fn owner_bind_after_ownerless_connection_join_preserves_join_origin() {
     assert_eq!(
         bound["data"]["summary"]["identity_model"]["delegate"]["current_id"],
         bound["data"]["summary"]["device_identity"]
+    );
+    assert_eq!(
+        bound["data"]["summary"]["authorization"]["local_binding_status"],
+        "owner-bound"
+    );
+    assert_eq!(
+        bound["data"]["summary"]["authorization"]["local_binding_source"],
+        "connection_file"
+    );
+    assert_eq!(
+        bound["data"]["summary"]["authorization"]["authoritative_status"],
+        "not-checked"
     );
 }
 
