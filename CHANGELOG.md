@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Join now prioritizes the user task result** — when a second device successfully reaches `network-paths-ready` or `network-ready`, `thronglets join` now keeps that readiness result as the top-level summary and demotes any remaining runtime restart into a secondary follow-up reminder instead of letting `restart once` overwrite the main onboarding outcome
+
 ## v0.4.7 — 2026-03-31
 
 - **Remembered peer path stability** — runtime peer observation now normalizes reusable dial addresses by appending `/p2p/<peer_id>` when needed, so first-connection attempts that succeed through persisted bootstrap memory reliably learn a reusable remembered peer path instead of depending on timing-sensitive raw address strings in CI and future reconnects

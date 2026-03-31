@@ -358,12 +358,6 @@ pub(crate) fn summarize_join_flow(
             detail: "This device joined the identity flow, but the local AI runtime integration still needs fixing before the device is fully usable.".into(),
             next_step: onboarding_next_step(setup, readiness),
         }
-    } else if setup.restart_required || setup.restart_pending {
-        OnboardingSummary {
-            status: "restart-required",
-            detail: "This device joined successfully, but the local AI runtime still needs one restart before Thronglets is fully loaded.".into(),
-            next_step: onboarding_next_step(setup, readiness),
-        }
     } else {
         OnboardingSummary {
             status: readiness.status,
@@ -421,6 +415,9 @@ pub(crate) fn render_join_flow_report(data: &JoinFlowData) {
     println!("  Meaning: {}", data.summary.detail);
     if let Some(step) = &data.summary.next_step {
         println!("  Next:    {step}");
+    }
+    if let Some(step) = join_runtime_follow_up(&data.setup) {
+        println!("  Also:    {step}");
     }
     println!("  File:    {}", data.file);
     println!("  State:   {}", human_readiness_label(&data.readiness));
@@ -614,13 +611,29 @@ fn status_readiness_summary(
 }
 
 fn onboarding_next_step(setup: &BootstrapSummary, readiness: &ReadinessSummary) -> Option<String> {
-    if let Some(command) = setup.restart_commands.first() {
-        Some(format!("Restart your AI runtime once: {command}"))
+    if let Some(step) = runtime_follow_up_next_step(setup) {
+        Some(step)
     } else if let Some(step) = setup.next_steps.first() {
         Some(step.clone())
     } else {
         readiness.next_step.clone()
     }
+}
+
+fn join_runtime_follow_up(setup: &BootstrapSummary) -> Option<String> {
+    if !setup.healthy {
+        None
+    } else if setup.restart_required || setup.restart_pending {
+        runtime_follow_up_next_step(setup)
+    } else {
+        None
+    }
+}
+
+fn runtime_follow_up_next_step(setup: &BootstrapSummary) -> Option<String> {
+    setup.restart_commands
+        .first()
+        .map(|command| format!("Restart your AI runtime once: {command}"))
 }
 
 pub(crate) fn human_readiness_label(summary: &ReadinessSummary) -> &'static str {
@@ -654,6 +667,7 @@ fn human_onboarding_label(summary: &OnboardingSummary) -> &'static str {
         "identity-only" => "waiting for a better share file",
         "network-paths-ready" => "waiting for the first live connection",
         "network-ready" => "ready now",
+        "trusted-same-owner-ready" => "ready now, with fast recovery",
         _ => summary.status,
     }
 }
@@ -683,7 +697,7 @@ fn join_human_agents(agents: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::status_readiness_summary;
+    use super::{BootstrapSummary, ReadinessSummary, status_readiness_summary, summarize_join_flow};
     use thronglets::identity::{IdentityBinding, NodeIdentity};
     use thronglets::network_state::NetworkStatus;
 
@@ -722,5 +736,31 @@ mod tests {
         assert_eq!(summary.status, "trusted-same-owner-ready");
         assert!(summary.trusted_same_owner_ready);
         assert!(!summary.connected);
+    }
+
+    #[test]
+    fn join_flow_keeps_network_ready_as_top_level_result_when_restart_is_pending() {
+        let setup = BootstrapSummary {
+            status: "restart-required",
+            healthy: true,
+            restart_pending: true,
+            restart_required: true,
+            restart_commands: vec!["codex restart".into()],
+            next_steps: vec![],
+        };
+        let readiness = ReadinessSummary {
+            status: "network-ready",
+            detail: "Identity is ready and this device already has live peer connectivity.".into(),
+            identity_ready: true,
+            network_path_ready: true,
+            trusted_same_owner_ready: false,
+            connected: true,
+            next_step: Some("Optional: run `thronglets net-check --bootstrap-offline --json` to confirm bootstrap-free recovery.".into()),
+        };
+
+        let summary = summarize_join_flow(&setup, &readiness);
+        assert_eq!(summary.status, "network-ready");
+        assert_eq!(summary.detail, readiness.detail);
+        assert_eq!(summary.next_step, readiness.next_step);
     }
 }

@@ -529,6 +529,48 @@ fn join_text_hides_inspect_stage_details() {
 }
 
 #[test]
+fn join_prioritizes_network_result_over_runtime_restart_in_summary() {
+    let temp = TempDir::new().unwrap();
+    let primary_home = temp.path().join("primary-home");
+    let secondary_home = temp.path().join("secondary-home");
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
+
+    std::fs::create_dir_all(primary_home.join("Desktop")).unwrap();
+    std::fs::create_dir_all(secondary_home.join("Desktop")).unwrap();
+    std::fs::create_dir_all(secondary_home.join(".codex")).unwrap();
+
+    run_bin_in_home(&["start", "--json"], &primary_home, &primary_dir);
+
+    let mut snapshot = NetworkSnapshot::begin(1);
+    snapshot.observe_peer_address("12D3KooWAlpha", "/ip4/10.0.0.1/tcp/4001");
+    snapshot.merge_peer_seeds(["/ip4/10.0.0.9/tcp/4001".to_string()]);
+    snapshot.save(&primary_dir);
+
+    run_bin_in_home(&["share", "--json"], &primary_home, &primary_dir);
+
+    std::fs::copy(
+        primary_home
+            .join("Desktop")
+            .join("thronglets.connection.json"),
+        secondary_home
+            .join("Desktop")
+            .join("thronglets.connection.json"),
+    )
+    .unwrap();
+
+    let joined = run_bin_in_home(&["join", "--json"], &secondary_home, &secondary_dir);
+    assert_eq!(joined["data"]["summary"]["status"], "network-paths-ready");
+    assert_eq!(joined["data"]["readiness"]["status"], "network-paths-ready");
+    assert_eq!(joined["data"]["setup"]["restart_required"], true);
+
+    let output = run_bin_text_in_home(&["join"], &secondary_home, &secondary_dir);
+    assert!(output.contains("Thronglets: waiting for the first live connection"));
+    assert!(output.contains("Also:"));
+    assert!(output.contains("Restart your AI runtime once:"));
+}
+
+#[test]
 fn connection_export_prefers_trusted_peer_seeds() {
     let temp = TempDir::new().unwrap();
     let primary_dir = temp.path().join("primary");
