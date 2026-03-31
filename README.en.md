@@ -842,11 +842,11 @@ thronglets status
 By default, Thronglets now remembers and reuses the official public bootstrap path automatically, so ordinary users do not need to type a bootstrap multiaddr. Only pass `--bootstrap ...` when you intentionally want to override the default public infrastructure.
 
 ```
-Thronglets v0.4.7
+Thronglets v0.5.2
   Node ID:          5adeb778
   Oasyce address:   oasyce10kdfxpxharvmr03egrdujc2sqm4m83udfqwnvx
-  Trace count:      3,100
-  Capabilities:     17
+  Trace count:      17,391
+  Capabilities:     135
 ```
 
 ## MCP Tools (optional adapter layer)
