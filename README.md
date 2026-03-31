@@ -791,11 +791,13 @@ AI 调用 Edit(main.rs)
 
 ```bash
 # 加入网络
-thronglets run --bootstrap /ip4/47.93.32.88/tcp/4001
+thronglets run
 
 # 查看节点状态
 thronglets status
 ```
+
+默认情况下，Thronglets 会自动记住并复用官方 public bootstrap，不要求普通用户手动输入 bootstrap multiaddr。只有在你要覆盖默认公共基础设施时，才需要显式传 `--bootstrap ...`。
 
 ```
 Thronglets v0.4.1

@@ -109,8 +109,10 @@ cargo run --quiet -- start
 
 ```
 claude mcp add thronglets -- thronglets mcp
-claude mcp add thronglets -- thronglets mcp --port 0 --bootstrap /ip4/47.93.32.88/tcp/4001
+claude mcp add thronglets -- thronglets mcp --port 0
 ```
+
+Default networked runtimes now remember and reuse the official public bootstrap path automatically. Only add `--bootstrap ...` when you intentionally want to override the default public infrastructure.
 
 ## MCP Tools (adapter surface)
 

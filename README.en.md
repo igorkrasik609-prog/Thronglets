@@ -792,11 +792,13 @@ Traces propagate across nodes via libp2p gossipsub. Each node independently aggr
 
 ```bash
 # Join the network
-thronglets run --bootstrap /ip4/47.93.32.88/tcp/4001
+thronglets run
 
 # Check node status
 thronglets status
 ```
+
+By default, Thronglets now remembers and reuses the official public bootstrap path automatically, so ordinary users do not need to type a bootstrap multiaddr. Only pass `--bootstrap ...` when you intentionally want to override the default public infrastructure.
 
 ```
 Thronglets v0.4.1

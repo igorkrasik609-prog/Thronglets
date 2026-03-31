@@ -17,6 +17,7 @@ use tracing::{info, warn};
 
 const FIRST_CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FIRST_CONNECTION_GRACE_AFTER_CONNECT: Duration = Duration::from_secs(2);
+const DEFAULT_PUBLIC_BOOTSTRAP_SEEDS: &[&str] = &["/ip4/47.93.32.88/tcp/4001"];
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InitialConnectionAttempt {
@@ -59,11 +60,10 @@ pub async fn start_network_runtime(
     if !bootstrap.is_empty() {
         network_snapshot.remember_bootstrap_seeds(bootstrap.iter().cloned());
     }
-    let effective_bootstrap = if bootstrap.is_empty() {
-        network_snapshot.bootstrap_seed_addresses(16)
-    } else {
-        bootstrap.to_vec()
-    };
+    let effective_bootstrap = effective_bootstrap_seeds(bootstrap, &network_snapshot);
+    if !effective_bootstrap.is_empty() {
+        network_snapshot.remember_bootstrap_seeds(effective_bootstrap.iter().cloned());
+    }
     network_snapshot.configure_bootstrap(effective_bootstrap.len());
     network_snapshot.save(data_dir);
 
@@ -112,6 +112,25 @@ pub async fn start_network_runtime(
     });
 
     Ok(command_tx)
+}
+
+fn effective_bootstrap_seeds(
+    explicit_bootstrap: &[String],
+    snapshot: &NetworkSnapshot,
+) -> Vec<String> {
+    if !explicit_bootstrap.is_empty() {
+        return explicit_bootstrap.to_vec();
+    }
+
+    let remembered = snapshot.bootstrap_seed_addresses(16);
+    if !remembered.is_empty() {
+        return remembered;
+    }
+
+    DEFAULT_PUBLIC_BOOTSTRAP_SEEDS
+        .iter()
+        .map(|seed| (*seed).to_string())
+        .collect()
 }
 
 pub async fn attempt_first_connection(
@@ -415,7 +434,10 @@ pub fn maybe_promote_same_owner_trace_source(
 
 #[cfg(test)]
 mod tests {
-    use super::{maybe_promote_joined_primary_peer, maybe_promote_same_owner_trace_source};
+    use super::{
+        DEFAULT_PUBLIC_BOOTSTRAP_SEEDS, effective_bootstrap_seeds,
+        maybe_promote_joined_primary_peer, maybe_promote_same_owner_trace_source,
+    };
     use crate::context::simhash;
     use crate::identity::{IdentityBinding, NodeIdentity};
     use crate::network_state::NetworkSnapshot;
@@ -502,5 +524,26 @@ mod tests {
             snapshot.trusted_peer_seed_addresses(8),
             vec!["/ip4/10.0.0.9/tcp/4001".to_string()]
         );
+    }
+
+    #[test]
+    fn effective_bootstrap_seeds_fall_back_to_default_public_seed() {
+        let snapshot = NetworkSnapshot::default();
+        let bootstrap = effective_bootstrap_seeds(&[], &snapshot);
+        assert_eq!(
+            bootstrap,
+            DEFAULT_PUBLIC_BOOTSTRAP_SEEDS
+                .iter()
+                .map(|seed| (*seed).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn effective_bootstrap_seeds_prefer_remembered_over_default() {
+        let mut snapshot = NetworkSnapshot::default();
+        snapshot.remember_bootstrap_seeds(["/ip4/10.0.0.99/tcp/4001".to_string()]);
+        let bootstrap = effective_bootstrap_seeds(&[], &snapshot);
+        assert_eq!(bootstrap, vec!["/ip4/10.0.0.99/tcp/4001".to_string()]);
     }
 }

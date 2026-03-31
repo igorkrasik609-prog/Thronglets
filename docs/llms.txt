@@ -95,8 +95,10 @@ thronglets release-check --eval-scope both --json
 
 ## Network
 
-thronglets run --bootstrap /ip4/47.93.32.88/tcp/4001
+thronglets run
 
 ## Seed Node
 
 /ip4/47.93.32.88/tcp/4001
+
+Default nodes now remember and reuse the official public bootstrap automatically. Only pass an explicit bootstrap multiaddr when you intentionally want to override that public infrastructure path.
