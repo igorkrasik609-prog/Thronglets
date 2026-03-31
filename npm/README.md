@@ -9,15 +9,17 @@ This npm package installs the `thronglets` CLI wrapper and downloads a matching 
 ```bash
 npm install -g thronglets
 thronglets version --json
-thronglets setup
+thronglets start
 ```
 
 That is the whole local bootstrap path.
 
-`thronglets setup` now:
+`thronglets start` now:
 - configures known local adapters for Claude Code, Codex, and OpenClaw
 - runs the same bootstrap health pass used by the machine-facing flow
 - reports `restart required` and `next steps` directly
+
+If you invoke `thronglets` from inside a local Thronglets repo checkout, the wrapper now prefers the repo-local source path before it falls back to the installed release binary. That keeps local AI sessions from accidentally using a stale global binary while they work inside the repo.
 
 ## What The Agent Gets
 

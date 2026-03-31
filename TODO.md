@@ -97,6 +97,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.7`）：
 - 高层 `thronglets start`
 - 高层 `thronglets share`
 - 高层 `thronglets join`
+- 安装面前门 `thronglets` 现在会在本地仓库内优先选择 repo-local 源码路径，再回退到已安装 release binary，减少同机 AI 因 PATH 上旧版本而跑错产品面的概率
 - 节点现在会把 bootstrap 地址记成本地环境记忆，而不是只当一次性的 CLI 参数
 - 官方 public bootstrap 现在也已内化为默认基础设施记忆；普通用户不再需要知道或手敲那串 multiaddr
 - `share` 在本机已经记得怎么回到网络时，会先短暂尝试把 peer 路径学出来，再导出更好的连接文件

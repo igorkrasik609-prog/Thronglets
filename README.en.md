@@ -262,8 +262,8 @@ Windows PowerShell:
 
 ```powershell
 iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
-thronglets.exe version --json
-thronglets.exe start
+thronglets version --json
+thronglets start
 ```
 
 If Node.js is already present, the cross-platform path is:
@@ -307,7 +307,7 @@ Architecture principle:
 - `Oasyce` upgrades ownership and settlement; it does not unlock basic participation
 - shared environment comes before direct AI messaging; prefer `space / presence / signal / space snapshot` over agent chat abstractions
 
-If you are working from this repository checkout instead of a released binary, prefer the repo-local binary over whatever old `thronglets` may already be on `PATH`:
+If you are working from this repository checkout instead of a released binary, the front-door `thronglets` launcher now also prefers the repo-local source path first; if you want to verify it explicitly, you can still run:
 
 ```bash
 cargo run --quiet -- version --json

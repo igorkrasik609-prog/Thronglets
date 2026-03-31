@@ -262,8 +262,8 @@ Windows PowerShell：
 
 ```powershell
 iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
-thronglets.exe version --json
-thronglets.exe start
+thronglets version --json
+thronglets start
 ```
 
 如果本机已经有 Node.js，也可以统一用：
@@ -307,7 +307,7 @@ thronglets start
 - `Oasyce` 只升级 ownership / settlement，不解锁基础参与
 - 共享环境优先于 AI 互发消息；优先做 `space / presence / signal / space snapshot`，不把产品做成 agent chat
 
-如果你是在这个仓库源码目录里工作，而不是在用一个正式发布版二进制，优先用 repo-local binary，不要盲信 PATH 上旧版本：
+如果你是在这个仓库源码目录里工作，而不是在用一个正式发布版二进制，前门 `thronglets` 现在也会优先尝试 repo-local 源码路径；如果你想显式确认，仍然可以直接用：
 
 ```bash
 cargo run --quiet -- version --json

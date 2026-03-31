@@ -166,6 +166,11 @@ fn package_installers_read_version_from_a_single_source() {
     assert!(npm_installer.contains("win32-x64"));
     assert!(npm_installer.contains("thronglets-mcp-windows-amd64.exe"));
 
+    let npm_bin = read("npm/bin/thronglets.js");
+    assert!(npm_bin.contains("THRONGLETS_REPO_ROOT"));
+    assert!(npm_bin.contains("cargo, [\"run\", \"--quiet\", \"--manifest-path\""));
+    assert!(npm_bin.contains("findRepoRoot"));
+
     let python_installer = read("python/thronglets/__init__.py");
     assert!(python_installer.contains("THRONGLETS_INSTALL_VERSION"));
     assert!(python_installer.contains("THRONGLETS_INSTALL_REPO"));
@@ -177,13 +182,19 @@ fn shell_installer_and_release_workflow_exist_for_one_line_distribution() {
     let install_script = read("scripts/install.sh");
     assert!(install_script.contains("releases/latest/download"));
     assert!(install_script.contains("THRONGLETS_VERSION"));
-    assert!(install_script.contains("Next: thronglets setup"));
+    assert!(install_script.contains("Next: thronglets start"));
     assert!(install_script.contains("scripts/install.ps1"));
+    assert!(install_script.contains("THRONGLETS_REPO_ROOT"));
+    assert!(install_script.contains("cargo run --quiet --manifest-path"));
+    assert!(install_script.contains("thronglets-bin"));
 
     let powershell_installer = read("scripts/install.ps1");
     assert!(powershell_installer.contains("releases/latest/download"));
     assert!(powershell_installer.contains("thronglets-mcp-windows-amd64.exe"));
-    assert!(powershell_installer.contains("Next: thronglets setup"));
+    assert!(powershell_installer.contains("Next: thronglets start"));
+    assert!(powershell_installer.contains("THRONGLETS_REPO_ROOT"));
+    assert!(powershell_installer.contains("cargo.exe"));
+    assert!(powershell_installer.contains("thronglets-bin.exe"));
 
     let release_workflow = read(".github/workflows/release.yml");
     assert!(release_workflow.contains("softprops/action-gh-release"));
