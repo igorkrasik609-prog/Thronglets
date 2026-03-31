@@ -90,6 +90,15 @@ impl AdapterKind {
     pub fn apply_by_default(self) -> bool {
         !matches!(self, Self::Generic)
     }
+
+    pub fn from_agent_source(source: &str) -> Option<Self> {
+        match source {
+            "claude-code" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "openclaw" => Some(Self::OpenClaw),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,6 +235,20 @@ pub fn clear_restart_pending(data_dir: &Path, agent: AdapterKind) -> io::Result<
     let was_pending = restart_pending(data_dir, agent);
     set_restart_pending(data_dir, agent, false)?;
     Ok(was_pending)
+}
+
+pub fn auto_clear_restart_pending_on_runtime_contact(
+    data_dir: &Path,
+    agent: AdapterKind,
+) -> io::Result<bool> {
+    if !runtime_contact_proves_reload(agent) {
+        return Ok(false);
+    }
+    clear_restart_pending(data_dir, agent)
+}
+
+fn runtime_contact_proves_reload(agent: AdapterKind) -> bool {
+    matches!(agent, AdapterKind::Codex | AdapterKind::OpenClaw)
 }
 
 pub fn install_claude(
@@ -1159,6 +1182,8 @@ fn configure_codex_config(config: &mut toml::Table, launcher_path: &Path, data_d
             TomlValue::String("--data-dir".into()),
             TomlValue::String(data_dir.to_string_lossy().into_owned()),
             TomlValue::String("mcp".into()),
+            TomlValue::String("--agent".into()),
+            TomlValue::String("codex".into()),
         ]),
     );
 
@@ -1385,6 +1410,8 @@ mod tests {
                 TomlValue::String("--data-dir".into()),
                 TomlValue::String(data_dir.to_string_lossy().into_owned()),
                 TomlValue::String("mcp".into()),
+                TomlValue::String("--agent".into()),
+                TomlValue::String("codex".into()),
             ]
         );
         assert!(launcher.exists());

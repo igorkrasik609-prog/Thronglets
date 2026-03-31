@@ -11,8 +11,9 @@ use onboarding_surface::{
 use serde::Serialize;
 use setup_support::{
     AdapterApplyResult, AdapterDetection, AdapterDoctor, AdapterKind, AdapterPlan,
-    clear_restart_pending, detect_adapter, doctor_adapter, install_claude, install_codex,
-    install_openclaw, install_plan, set_restart_pending,
+    auto_clear_restart_pending_on_runtime_contact, clear_restart_pending, detect_adapter,
+    doctor_adapter, install_claude, install_codex, install_openclaw, install_plan,
+    set_restart_pending,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -404,6 +405,16 @@ impl AdapterArg {
             Self::Generic => matches!(adapter, AdapterKind::Generic),
         }
     }
+
+    fn as_kind(self) -> Option<AdapterKind> {
+        match self {
+            Self::All => None,
+            Self::Claude => Some(AdapterKind::Claude),
+            Self::Codex => Some(AdapterKind::Codex),
+            Self::Openclaw => Some(AdapterKind::OpenClaw),
+            Self::Generic => Some(AdapterKind::Generic),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -757,6 +768,10 @@ enum Commands {
         /// Bootstrap peer multiaddrs (only used if --port is set)
         #[arg(long)]
         bootstrap: Vec<String>,
+
+        /// Internal adapter hint used only by managed runtime integrations.
+        #[arg(long, hide = true, value_enum)]
+        agent: Option<AdapterArg>,
     },
 
     /// Anchor unanchored traces to the Oasyce blockchain
@@ -1055,6 +1070,12 @@ fn selected_restart_adapters(target: AdapterArg) -> Vec<AdapterKind> {
         .into_iter()
         .filter(|adapter| matches!(adapter, AdapterKind::Codex | AdapterKind::OpenClaw))
         .collect()
+}
+
+fn auto_clear_restart_from_agent_source(data_dir: &Path, agent_source: &str) {
+    if let Some(agent) = AdapterKind::from_agent_source(agent_source) {
+        let _ = auto_clear_restart_pending_on_runtime_contact(data_dir, agent);
+    }
 }
 
 fn print_json<T: serde::Serialize>(value: &T) {
@@ -3163,8 +3184,16 @@ async fn main() {
                 .await;
         }
 
-        Commands::Mcp { port, bootstrap } => {
+        Commands::Mcp {
+            port,
+            bootstrap,
+            agent,
+        } => {
             let store = Arc::new(open_store(&dir));
+
+            if let Some(adapter) = agent.and_then(AdapterArg::as_kind) {
+                let _ = auto_clear_restart_pending_on_runtime_contact(&dir, adapter);
+            }
 
             let network_tx = if let Some(p) = port {
                 Some(
@@ -3285,6 +3314,7 @@ async fn main() {
                 .as_str()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("claude-code");
+            auto_clear_restart_from_agent_source(&dir, agent_source);
             let current_space = payload_string(&payload, "space");
             let current_mode = payload_string(&payload, "mode");
 
@@ -3436,6 +3466,11 @@ async fn main() {
             let current_space = payload_string(&payload, "space");
             let current_mode = payload_string(&payload, "mode");
             let current_session_id = payload_string(&payload, "session_id");
+            let agent_source = payload["agent_source"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("claude-code");
+            auto_clear_restart_from_agent_source(&dir, agent_source);
 
             // Skip thronglets' own calls and empty names
             if tool_name.starts_with("mcp__thronglets") || tool_name.is_empty() {

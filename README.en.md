@@ -300,7 +300,12 @@ Known adapters also no longer pin themselves directly to whatever binary path ha
 That means you do not need to rerun `setup` after every local iteration just to keep adapters pointed at the latest local build.
 
 `start` now does the same bootstrap health pass as the lower-level `setup` command and returns `restart required / next steps` directly.
-If an adapter still needs a client restart, `doctor` now returns `restart-pending`, and after the runtime is restarted you can clear that state with:
+If an adapter still needs a client restart, `doctor` now returns `restart-pending`. Runtimes that can prove they really reloaded now clear that state automatically the next time they contact Thronglets:
+
+- `Codex`: auto-clears when its MCP server is actually relaunched
+- `OpenClaw`: auto-clears on the first successful `prehook / hook` contact after reload
+
+`runtime-ready` still exists, but it is now only an advanced fallback. Normal users should only need it when the runtime definitely reloaded and the automatic proof path still did not clear the state:
 
 ```bash
 thronglets runtime-ready --agent codex --json
@@ -489,7 +494,7 @@ thronglets connection-join --file ./thronglets.connection.json
 - after an `identity-plus-peer-seeds` file gets a second device onto the network, later same-owner live direct connections are learned automatically as trusted paths; there is no separate manual trust step
 - when remembered peers already exist, `run / mcp` now try those peers first and only fall back to bootstrap after a short grace period; VPS is no longer the unconditional first touch on every startup
 - `owner-bind` and `connection-join` both refuse to silently overwrite an existing different `owner account`
-- the OpenClaw plugin now auto-runs `runtime-ready` after a successful load, so users usually only need `bootstrap -> restart OpenClaw once`
+- after OpenClaw reloads, the first successful `prehook / hook` contact now clears `restart-pending` automatically; Codex clears the same state when its MCP server is genuinely relaunched
 
 ## Deployment Boundary
 

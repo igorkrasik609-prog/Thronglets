@@ -1,6 +1,8 @@
 use serde_json::Value;
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 const SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
 
@@ -11,6 +13,25 @@ fn run_bin(args: &[&str], home: &Path, data_dir: &Path) -> Output {
         .env("HOME", home)
         .output()
         .expect("run thronglets")
+}
+
+fn run_bin_with_input(args: &[&str], input: &str, home: &Path, data_dir: &Path) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args(["--data-dir", data_dir.to_str().unwrap()])
+        .args(args)
+        .env("HOME", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run thronglets with input");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(input.as_bytes())
+        .expect("write stdin");
+    child.wait_with_output().expect("wait for thronglets")
 }
 
 fn parse_command_data(output: &Output, command: &str) -> Value {
@@ -454,6 +475,96 @@ fn runtime_ready_codex_restores_healthy() {
         Value::String("healthy".into())
     );
     assert_eq!(summary["summary"]["healthy"], Value::Bool(true));
+    assert_eq!(summary["summary"]["restart_pending"], Value::Bool(false));
+}
+
+#[test]
+fn codex_mcp_contact_auto_clears_restart_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let apply_output = run_bin(
+        &["apply-plan", "--agent", "codex", "--json"],
+        &home,
+        &data_dir,
+    );
+    assert!(
+        apply_output.status.success(),
+        "apply-plan failed: {}",
+        String::from_utf8_lossy(&apply_output.stderr)
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args(["--data-dir", data_dir.to_str().unwrap(), "mcp", "--agent", "codex"])
+        .env("HOME", &home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp");
+    std::thread::sleep(Duration::from_millis(300));
+    if child.try_wait().unwrap().is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    let doctor_output = run_bin(&["doctor", "--agent", "codex", "--json"], &home, &data_dir);
+    assert!(
+        doctor_output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&doctor_output.stderr)
+    );
+    let summary = parse_doctor_envelope(&doctor_output);
+    assert_eq!(
+        summary["summary"]["status"],
+        Value::String("healthy".into())
+    );
+    assert_eq!(summary["summary"]["restart_pending"], Value::Bool(false));
+}
+
+#[test]
+fn openclaw_prehook_contact_auto_clears_restart_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(home.join(".openclaw")).unwrap();
+
+    let apply_output = run_bin(
+        &["apply-plan", "--agent", "openclaw", "--json"],
+        &home,
+        &data_dir,
+    );
+    assert!(
+        apply_output.status.success(),
+        "apply-plan failed: {}",
+        String::from_utf8_lossy(&apply_output.stderr)
+    );
+
+    let prehook_output = run_bin_with_input(
+        &["prehook"],
+        r#"{"agent_source":"openclaw","tool_name":"Read","tool_input":{"file_path":"README.md"}}"#,
+        &home,
+        &data_dir,
+    );
+    assert!(
+        prehook_output.status.success(),
+        "prehook failed: {}",
+        String::from_utf8_lossy(&prehook_output.stderr)
+    );
+
+    let doctor_output = run_bin(&["doctor", "--agent", "openclaw", "--json"], &home, &data_dir);
+    assert!(
+        doctor_output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&doctor_output.stderr)
+    );
+    let summary = parse_doctor_envelope(&doctor_output);
+    assert_eq!(
+        summary["summary"]["status"],
+        Value::String("healthy".into())
+    );
     assert_eq!(summary["summary"]["restart_pending"], Value::Bool(false));
 }
 

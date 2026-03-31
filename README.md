@@ -300,7 +300,12 @@ cargo run --quiet -- start
 这样你不需要在每次本地迭代后重新跑一遍 `setup`，adapter 会沿着稳定入口继续跟最新本地 build 走。
 
 `start` 和底层 `setup` 一样，都会顺手做一次 bootstrap 健康检查，并直接给出 `restart required / next steps`。
-如果某个 adapter 需要客户端重启，后续 `doctor` 会显式返回 `restart-pending`，重启后再跑一次：
+如果某个 adapter 需要客户端重启，后续 `doctor` 会显式返回 `restart-pending`。支持自动自证重载的 runtime 现在会在真正重新接触到 Thronglets 时自动清掉这个状态：
+
+- `Codex`：MCP server 真正重新拉起时自动清掉
+- `OpenClaw`：第一次成功命中 `prehook / hook` 时自动清掉
+
+`runtime-ready` 仍然保留，但现在只是高级 fallback；默认用户路径不应该再手动理解它。只有在你确认 runtime 已经重载、但自动清除没有发生时，才需要显式运行：
 
 ```bash
 thronglets runtime-ready --agent codex --json
@@ -488,7 +493,7 @@ thronglets connection-join --file ./thronglets.connection.json
 - 当你先用 `identity-plus-peer-seeds` 文件把第二台设备接上网络后，后续同 owner 的 live direct connection 会自动被学习成 trusted path；不需要再手动标记“这条路径可信”
 - 当本地已经记住 peers 时，`run / mcp` 会先尝试这些 remembered peers，只在短暂 grace period 后才回退到 bootstrap；VPS 不再是每次启动的默认第一跳
 - `owner-bind` 和 `connection-join` 默认都不会静默覆盖成另一个 `owner account`
-- OpenClaw 插件现在会在成功加载后自动执行 `runtime-ready`，所以用户通常只需要 `bootstrap -> 重启一次 OpenClaw`
+- OpenClaw 重启后，第一次成功命中 `prehook / hook` 就会自动清掉 `restart-pending`；Codex 则会在 MCP server 真正重新拉起时自动清掉这个状态
 
 ## 部署边界
 

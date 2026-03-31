@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Restart now auto-clears on real runtime proof** — `Codex` now clears persisted `restart-pending` as soon as its managed MCP server is genuinely relaunched, and `OpenClaw` clears the same state on the first successful `prehook / hook` contact after reload; `runtime-ready` remains available as an advanced fallback instead of staying on the default user path
 - **Join now prioritizes the user task result** — when a second device successfully reaches `network-paths-ready` or `network-ready`, `thronglets join` now keeps that readiness result as the top-level summary and demotes any remaining runtime restart into a secondary follow-up reminder instead of letting `restart once` overwrite the main onboarding outcome
 
 ## v0.4.7 — 2026-03-31

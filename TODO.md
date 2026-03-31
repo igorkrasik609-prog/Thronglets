@@ -204,11 +204,12 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.7`）：
 - `apply-plan / doctor / bootstrap` 已经暴露显式 `restart_commands`
 - `doctor` 已区分 `healthy` 和 `restart-pending`
 - `runtime-ready` 已提供统一的运行时就绪路径
+- `Codex`：MCP server 真正重新拉起时会自动清掉 `restart_pending`
+- `OpenClaw`：第一次成功命中 `prehook / hook` 时会自动清掉 `restart_pending`
 
 剩余完成标准：
-- 如果某个 native adapter 能可靠观测“已经真正重启完成”，就自动清除 `restart_pending`
-  - OpenClaw: 已完成，插件成功加载后会自动执行 `runtime-ready`
-- 否则继续保持现在这条显式、可验证的清除路径
+- 如果某个 native adapter 还能提供更可靠的“已重载证明”，继续优先走自动清除，不增加新的用户命令
+- `runtime-ready` 继续保留为高级 fallback，而不是默认用户路径的一部分
 
 ### 6. Extend adapter matrix only when native runtimes diverge
 
