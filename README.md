@@ -129,6 +129,21 @@ Thronglets 不再新增身份对象。session trace 只保留 3 类：
 | `continuity-anchor` | `continuity trace` | 默认不是 | 可先本地 | 可以，最自然的上升对象 |
 | `open-loop-anchor` | `coordination trace` | 可降成 `watch` | 先本地 | 持续且有运营后果时可升 |
 
+当前 runtime 规则已经落地：
+
+- Psyche 继续复用现有 `trace_record` / `POST /v1/traces` 写入口，不新增用户命令
+- 通过 `external_continuity` 对象写入的 raw trace 会：
+  - 严格校验 `provider=thronglets`、`mode=optional`、`version=1`
+  - 固定落到 `coordination / continuity / calibration` 三类 taxonomy
+  - 默认只在 Thronglets 本地缓存并衰减，不直接 gossip，不直接形成 DHT summary
+- 只有满足条件时，raw trace 才会条件性降级成现有 signal：
+  - `relation-milestone -> watch / info`
+  - `open-loop-anchor -> watch`
+  - `continuity-anchor -> info`
+  - repeated `writeback-calibration -> avoid`
+- `recommend` 不会由 Psyche 直接产生
+- `space --json` 现在会给出本地 continuity 摘要和 Net-facing summary candidates，但仍不外发原始事件流
+
 Thronglets 现有 signal 类别保持不扩：
 
 - `recommend`
@@ -168,6 +183,26 @@ Thronglets 现有 signal 类别保持不扩：
 - 长时间未闭合且有运营意义的 `open-loop-anchor`
 - 持续改变协作边界的 `relation-milestone`
 - `writeback-calibration` 的聚合摘要，而不是原始事件流
+
+Psyche 写入示例：
+
+```json
+{
+  "outcome": "succeeded",
+  "model": "psyche",
+  "session_id": "psyche-1",
+  "external_continuity": {
+    "provider": "thronglets",
+    "mode": "optional",
+    "version": 1,
+    "taxonomy": "continuity",
+    "event": "continuity-anchor",
+    "summary": "continuity stayed externally legible across handoff",
+    "space": "psyche",
+    "audit_ref": "anchor-42"
+  }
+}
+```
 
 ## 安装（预编译优先）
 

@@ -16,6 +16,10 @@
 //! - GET  /v1/authorization — local authorization snapshot
 
 use crate::context::{simhash, similarity};
+use crate::continuity::{
+    CONTINUITY_SUMMARY_HORIZON_HOURS, ExternalContinuityInput, continuity_record_data,
+    create_external_continuity_trace, derived_signal_kind, summarize_recent_continuity,
+};
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::{authorization_check_data, identity_summary};
 use crate::posts::{
@@ -126,6 +130,82 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         Ok(v) => v,
         Err(e) => return json!({"error": format!("invalid JSON: {e}")}).to_string(),
     };
+
+    if let Some(external_value) = args.get("external_continuity") {
+        let input: ExternalContinuityInput = match serde_json::from_value(external_value.clone()) {
+            Ok(input) => input,
+            Err(e) => {
+                return json!({"error": format!("invalid external_continuity payload: {e}")})
+                    .to_string();
+            }
+        };
+        if let Err(error) = input.validate() {
+            return json!({"error": error}).to_string();
+        }
+        let outcome = match args["outcome"].as_str().unwrap_or("succeeded") {
+            "succeeded" | "success" => Outcome::Succeeded,
+            "failed" | "fail" => Outcome::Failed,
+            "partial" => Outcome::Partial,
+            "timeout" => Outcome::Timeout,
+            _ => Outcome::Succeeded,
+        };
+        let model_id = args["model"].as_str().unwrap_or("unknown").to_string();
+        let session_id = args["session_id"].as_str().map(String::from);
+        let trace = create_external_continuity_trace(
+            &input,
+            outcome,
+            model_id,
+            session_id,
+            ctx.binding.owner_account.clone(),
+            Some(ctx.binding.device_identity.clone()),
+            ctx.identity.public_key_bytes(),
+            |msg| ctx.identity.sign(msg),
+        );
+        let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
+        if let Err(e) = ctx.store.insert(&trace) {
+            return json!({"error": format!("storage: {e}")}).to_string();
+        }
+        let _ = ctx.store.mark_published(&[trace.id]);
+        let continuity_traces = match ctx
+            .store
+            .query_recent_continuity_traces(CONTINUITY_SUMMARY_HORIZON_HOURS, 200)
+        {
+            Ok(traces) => traces,
+            Err(e) => return json!({"error": format!("storage: {e}")}).to_string(),
+        };
+        let continuity =
+            summarize_recent_continuity(&continuity_traces, input.space.as_deref(), 10);
+        let continuity_data = continuity_record_data(&trace, &continuity);
+        if let Some(data) = &continuity_data
+            && let Some(kind) = derived_signal_kind(data)
+            && let Some(signal) = &data.derived_signal
+        {
+            let signal_trace = create_signal_trace(
+                kind,
+                &signal.message,
+                &signal.message,
+                SignalTraceConfig {
+                    model_id: "thronglets-continuity".into(),
+                    session_id: trace.session_id.clone(),
+                    owner_account: ctx.binding.owner_account.clone(),
+                    device_identity: Some(ctx.binding.device_identity.clone()),
+                    space: signal.space.clone(),
+                    ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+                },
+                ctx.identity.public_key_bytes(),
+                |msg| ctx.identity.sign(msg),
+            );
+            let _ = ctx.store.insert(&signal_trace);
+        }
+
+        return json!({
+            "recorded": true,
+            "trace_id": trace_id_hex,
+            "capability": trace.capability,
+            "external_continuity": continuity_data,
+        })
+        .to_string();
+    }
 
     let capability = match args["capability"].as_str() {
         Some(s) => s.to_string(),
@@ -304,7 +384,9 @@ fn handle_get_query(ctx: &HttpContext, path: &str) -> String {
 
             let mut cap_groups: HashMap<&str, Vec<&Trace>> = HashMap::new();
             for trace in &traces {
-                if is_signal_capability(&trace.capability) || is_presence_capability(&trace.capability) {
+                if is_signal_capability(&trace.capability)
+                    || is_presence_capability(&trace.capability)
+                {
                     continue;
                 }
                 cap_groups.entry(&trace.capability).or_default().push(trace);
@@ -652,6 +734,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::continuity::is_continuity_capability;
 
     fn make_ctx() -> HttpContext {
         HttpContext {
@@ -859,5 +942,51 @@ mod tests {
         assert_eq!(sessions[0]["space"], "psyche");
         assert_eq!(sessions[0]["mode"], "focus");
         assert_eq!(sessions[0]["session_id"], "codex-1");
+    }
+
+    #[test]
+    fn external_continuity_trace_stays_local_and_can_derive_sparse_signal() {
+        let ctx = make_ctx();
+
+        let first = concat!(
+            "POST /v1/traces HTTP/1.1\r\n",
+            "Host: localhost\r\n",
+            "Content-Type: application/json\r\n",
+            "\r\n",
+            "{\"outcome\":\"failed\",\"model\":\"psyche\",\"session_id\":\"s1\",\"external_continuity\":{\"provider\":\"thronglets\",\"mode\":\"optional\",\"version\":1,\"taxonomy\":\"calibration\",\"event\":\"writeback-calibration\",\"summary\":\"writeback drift keeps reopening the same loop\",\"space\":\"psyche\"}}",
+        );
+        let first_response = parse_body(&handle_http_request(&ctx, first));
+        assert_eq!(first_response["recorded"], true);
+        assert_eq!(
+            first_response["external_continuity"]["local_only_raw"],
+            true
+        );
+        assert!(first_response["external_continuity"]["derived_signal"].is_null());
+
+        let second = concat!(
+            "POST /v1/traces HTTP/1.1\r\n",
+            "Host: localhost\r\n",
+            "Content-Type: application/json\r\n",
+            "\r\n",
+            "{\"outcome\":\"failed\",\"model\":\"psyche\",\"session_id\":\"s2\",\"external_continuity\":{\"provider\":\"thronglets\",\"mode\":\"optional\",\"version\":1,\"taxonomy\":\"calibration\",\"event\":\"writeback-calibration\",\"summary\":\"writeback drift keeps reopening the same loop\",\"space\":\"psyche\"}}",
+        );
+        let second_response = parse_body(&handle_http_request(&ctx, second));
+        assert_eq!(
+            second_response["external_continuity"]["derived_signal"]["kind"],
+            "avoid"
+        );
+
+        let signals = parse_body(&handle_http_request(
+            &ctx,
+            "GET /v1/signals?context=writeback%20drift%20keeps%20reopening%20the%20same%20loop&kind=avoid&space=psyche&limit=5 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        ));
+        assert_eq!(signals["signals"].as_array().unwrap().len(), 1);
+
+        let unpublished = ctx.store.unpublished_traces(10).unwrap();
+        assert!(
+            unpublished
+                .iter()
+                .all(|trace| !is_continuity_capability(&trace.capability))
+        );
     }
 }

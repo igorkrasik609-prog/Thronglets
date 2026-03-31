@@ -12,6 +12,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use thronglets::anchor::AnchorClient;
 use thronglets::context::simhash;
+use thronglets::continuity::{
+    ContinuitySnapshotSummary, ContinuitySpaceData, is_continuity_capability,
+    summarize_recent_continuity,
+};
 use thronglets::contracts::{
     GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_COLLECTIVE_QUERIES, PREHOOK_MAX_HINTS,
 };
@@ -52,7 +56,7 @@ const BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.bootstrap.v2";
 const IDENTITY_SCHEMA_VERSION: &str = "thronglets.identity.v2";
 const NETWORK_SCHEMA_VERSION: &str = "thronglets.network.v1";
 const PRESENCE_SCHEMA_VERSION: &str = "thronglets.presence.v1";
-const SPACE_SCHEMA_VERSION: &str = "thronglets.space.v1";
+const SPACE_SCHEMA_VERSION: &str = "thronglets.space.v2";
 const VERSION_SCHEMA_VERSION: &str = "thronglets.version.v1";
 const DEFAULT_CONNECTION_FILE_NAME: &str = "thronglets.connection.json";
 const RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP: i32 = 50;
@@ -404,6 +408,7 @@ struct SpaceSnapshotData {
     space: String,
     sessions: Vec<PresenceFeedResult>,
     signals: Vec<thronglets::posts::SignalFeedResult>,
+    continuity: ContinuitySpaceData,
     local_feedback: workspace::SpaceFeedbackSummary,
 }
 
@@ -1834,6 +1839,7 @@ fn summarize_space_snapshot(
     space: &str,
     sessions: &[PresenceFeedResult],
     signals: &[thronglets::posts::SignalFeedResult],
+    continuity: &ContinuitySnapshotSummary,
     local_feedback: &workspace::SpaceFeedbackSummary,
 ) -> SpaceSnapshotSummary {
     let promoted_signal_count = signals
@@ -1858,12 +1864,13 @@ fn summarize_space_snapshot(
             ),
         }
     } else if promoted_signal_count > 0
+        || continuity.net_summary_candidate_count > 0
         || local_feedback.positive_24h + local_feedback.negative_24h > 0
     {
         SpaceSnapshotSummary {
             status: "converging",
             detail: format!(
-                "This space has active local learning or promoted signals, so shared consensus is starting to form in `{space}`."
+                "This space has active local learning, durable continuity evidence, or promoted signals, so shared consensus is starting to form in `{space}`."
             ),
             active_sessions: sessions.len(),
             signal_count: signals.len(),
@@ -1872,7 +1879,7 @@ fn summarize_space_snapshot(
                 "Look at the top promoted signal before inventing a new path; this space is already teaching something.".into(),
             ),
         }
-    } else if !sessions.is_empty() || !signals.is_empty() {
+    } else if !sessions.is_empty() || !signals.is_empty() || continuity.trace_count > 0 {
         SpaceSnapshotSummary {
             status: "active",
             detail: format!(
@@ -1916,6 +1923,13 @@ fn render_space_snapshot(data: &SpaceSnapshotData) {
         "  Learning: {} positive / {} negative local follow events (24h)",
         data.local_feedback.positive_24h, data.local_feedback.negative_24h
     );
+    if data.continuity.summary.trace_count > 0 {
+        println!(
+            "  Continuity: {} local traces, {} Net-ready summaries",
+            data.continuity.summary.trace_count,
+            data.continuity.summary.net_summary_candidate_count
+        );
+    }
     if !data.sessions.is_empty() {
         println!("  Sessions:");
         for session in &data.sessions {
@@ -3555,11 +3569,22 @@ async fn main() {
                 let _ = store.insert(&trace);
             }
             let local_feedback = workspace.space_feedback_summary(Some(&space));
+            let continuity_traces = store
+                .query_recent_continuity_traces(hours, fetch_limit)
+                .expect("failed to query recent continuity traces");
+            let continuity = summarize_recent_continuity(&continuity_traces, Some(&space), limit);
             let data = SpaceSnapshotData {
-                summary: summarize_space_snapshot(&space, &sessions, &signals, &local_feedback),
+                summary: summarize_space_snapshot(
+                    &space,
+                    &sessions,
+                    &signals,
+                    &continuity.summary,
+                    &local_feedback,
+                ),
                 space,
                 sessions,
                 signals,
+                continuity,
                 local_feedback,
             };
             if json {
@@ -3727,7 +3752,10 @@ async fn main() {
                     _ = dht_publish_interval.tick() => {
                         if let Ok(caps) = store.distinct_capabilities(100) {
                             for cap in caps {
-                                if is_signal_capability(&cap) || is_presence_capability(&cap) {
+                                if is_signal_capability(&cap)
+                                    || is_presence_capability(&cap)
+                                    || is_continuity_capability(&cap)
+                                {
                                     continue;
                                 }
                                 if let Ok(Some(stats)) = store.aggregate(&cap) {
@@ -4638,7 +4666,10 @@ async fn main() {
             } else {
                 println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
                 println!();
-                println!("  Status:           {}", human_readiness_label(&data.summary));
+                println!(
+                    "  Status:           {}",
+                    human_readiness_label(&data.summary)
+                );
                 println!("  Meaning:          {}", data.summary.detail);
                 if let Some(step) = &data.summary.next_step {
                     println!("  Next:             {step}");

@@ -3,6 +3,7 @@
 //! Each node stores traces locally. No global consensus needed.
 //! Traces have TTL — like pheromone evaporation, old signals fade.
 
+use crate::continuity::CONTINUITY_CAPABILITY_PREFIX;
 use crate::posts::{
     SIGNAL_CAPABILITY_PREFIX, SIGNAL_REINFORCEMENT_CAPABILITY_PREFIX, SignalPostKind,
 };
@@ -571,6 +572,27 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let like = format!("{PRESENCE_CAPABILITY_PREFIX}%");
+        let mut stmt = conn.prepare(
+            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
+                    context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature
+             FROM traces
+             WHERE capability LIKE ?1
+               AND timestamp >= ?2
+             ORDER BY timestamp DESC
+             LIMIT ?3",
+        )?;
+        Self::collect_traces(&mut stmt, params![like, cutoff_ms, limit as i64])
+    }
+
+    /// Query recent external continuity traces.
+    pub fn query_recent_continuity_traces(
+        &self,
+        hours: u32,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let like = format!("{CONTINUITY_CAPABILITY_PREFIX}%");
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
                     context_text, session_id, owner_account, device_identity, model_id, timestamp, node_pubkey, signature

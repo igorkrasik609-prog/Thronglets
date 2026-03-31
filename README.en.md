@@ -129,6 +129,21 @@ Frozen mapping:
 | `continuity-anchor` | `continuity trace` | no | local-first | yes, most naturally |
 | `open-loop-anchor` | `coordination trace` | may degrade to `watch` | local-first | yes, if persistent and operationally relevant |
 
+The runtime rules are now implemented:
+
+- Psyche still reuses the existing `trace_record` / `POST /v1/traces` write surface; no new user command was added
+- raw traces written via the `external_continuity` object now:
+  - strictly validate `provider=thronglets`, `mode=optional`, `version=1`
+  - stay inside the fixed `coordination / continuity / calibration` taxonomy
+  - remain local-first inside Thronglets by default, without direct gossip or DHT summaries
+- only qualifying traces degrade into existing signals:
+  - `relation-milestone -> watch / info`
+  - `open-loop-anchor -> watch`
+  - `continuity-anchor -> info`
+  - repeated `writeback-calibration -> avoid`
+- Psyche never emits `recommend` directly
+- `space --json` now exposes local continuity summaries and Net-facing summary candidates without shipping the raw event stream
+
 Signal classes stay fixed:
 
 - `recommend`
@@ -168,6 +183,26 @@ Typical candidates:
 - long-lived `open-loop-anchor` with operational consequences
 - `relation-milestone` that persistently changes coordination boundaries
 - aggregate summaries of `writeback-calibration`, not the raw event stream
+
+Example Psyche write payload:
+
+```json
+{
+  "outcome": "succeeded",
+  "model": "psyche",
+  "session_id": "psyche-1",
+  "external_continuity": {
+    "provider": "thronglets",
+    "mode": "optional",
+    "version": 1,
+    "taxonomy": "continuity",
+    "event": "continuity-anchor",
+    "summary": "continuity stayed externally legible across handoff",
+    "space": "psyche",
+    "audit_ref": "anchor-42"
+  }
+}
+```
 
 ## Install (prebuilt first)
 

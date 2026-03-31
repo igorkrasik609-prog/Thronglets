@@ -148,6 +148,17 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 明确哪些只在本地衰减，哪些允许形成 Net-facing summary
 - 明确 reject list：高频内在状态、全量 session 内容、私密记忆本体、主观流、本体论判断一律不上 Thronglets
 
+当前状态：
+- `trace_record` / `POST /v1/traces` 已接受 `external_continuity` payload
+- raw external continuity traces 现在默认只在本地缓存并衰减，不直接进入 gossip / DHT summary
+- `space --json` 已能返回 continuity 的本地摘要和 Net-facing summary candidates
+- 条件性降级规则已落地：
+  - `relation-milestone -> watch / info`
+  - `open-loop-anchor -> watch`
+  - `continuity-anchor -> info`
+  - repeated `writeback-calibration -> avoid`
+- `recommend` 仍然不会由 Psyche 直接产生
+
 ### 2. Session presence
 
 目标：让纯对话 / 策略讨论场景也能留下轻量痕迹，不再只有工具调用才算“活跃”。

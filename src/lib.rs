@@ -1,5 +1,6 @@
 pub mod anchor;
 pub mod context;
+pub mod continuity;
 pub mod contracts;
 pub mod eval;
 pub mod http;
@@ -8,8 +9,8 @@ pub mod identity_surface;
 pub mod mcp;
 pub mod network;
 pub mod network_state;
-pub mod presence;
 pub mod posts;
+pub mod presence;
 pub mod profile;
 pub mod signals;
 pub mod storage;

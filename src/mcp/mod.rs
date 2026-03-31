@@ -17,6 +17,10 @@ use tracing::{debug, warn};
 
 use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
+use crate::continuity::{
+    CONTINUITY_SUMMARY_HORIZON_HOURS, ExternalContinuityInput, continuity_record_data,
+    create_external_continuity_trace, derived_signal_kind, summarize_recent_continuity,
+};
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::authorization_check_data;
 use crate::network::NetworkCommand;
@@ -93,7 +97,7 @@ fn tool_definitions() -> Value {
                     "properties": {
                         "capability": {
                             "type": "string",
-                            "description": "Capability URI — what was used (e.g. \"urn:mcp:anthropic:claude:code\")"
+                            "description": "Capability URI — what was used (e.g. \"urn:mcp:anthropic:claude:code\"). Required unless external_continuity is provided."
                         },
                         "outcome": {
                             "type": "string",
@@ -119,9 +123,45 @@ fn tool_definitions() -> Value {
                         "session_id": {
                             "type": "string",
                             "description": "Session identifier for workflow tracking — traces with the same session_id form an ordered sequence"
+                        },
+                        "external_continuity": {
+                            "type": "object",
+                            "description": "Optional low-frequency external continuity residue from Psyche. Raw events stay local-first; only sparse derived signals may escape.",
+                            "properties": {
+                                "provider": {
+                                    "type": "string",
+                                    "description": "Must be `thronglets`"
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "description": "Must be `optional`"
+                                },
+                                "version": {
+                                    "type": "integer",
+                                    "description": "Must be 1"
+                                },
+                                "taxonomy": {
+                                    "type": "string",
+                                    "enum": ["coordination", "continuity", "calibration"]
+                                },
+                                "event": {
+                                    "type": "string",
+                                    "enum": ["relation-milestone", "writeback-calibration", "continuity-anchor", "open-loop-anchor"]
+                                },
+                                "summary": {
+                                    "type": "string"
+                                },
+                                "space": {
+                                    "type": "string"
+                                },
+                                "audit_ref": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": ["provider", "mode", "version", "taxonomy", "event", "summary"]
                         }
                     },
-                    "required": ["capability", "outcome"]
+                    "required": ["outcome"]
                 }
             },
             {
@@ -419,6 +459,104 @@ async fn handle_tool_call(ctx: &McpContext, id: Value, params: Value) -> JsonRpc
 // ---------------------------------------------------------------------------
 
 async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
+    if let Some(external_value) = args.get("external_continuity") {
+        let input: ExternalContinuityInput = match serde_json::from_value(external_value.clone()) {
+            Ok(input) => input,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id,
+                    -32602,
+                    format!("Invalid external_continuity payload: {e}"),
+                );
+            }
+        };
+        if let Err(error) = input.validate() {
+            return JsonRpcResponse::error(id, -32602, error);
+        }
+        let outcome = match args
+            .get("outcome")
+            .and_then(|v| v.as_str())
+            .unwrap_or("succeeded")
+        {
+            "succeeded" | "success" => Outcome::Succeeded,
+            "failed" | "fail" => Outcome::Failed,
+            "partial" => Outcome::Partial,
+            "timeout" => Outcome::Timeout,
+            _ => Outcome::Succeeded,
+        };
+        let model_id = args
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let trace = create_external_continuity_trace(
+            &input,
+            outcome,
+            model_id,
+            session_id,
+            ctx.binding.owner_account.clone(),
+            Some(ctx.binding.device_identity.clone()),
+            ctx.identity.public_key_bytes(),
+            |msg| ctx.identity.sign(msg),
+        );
+        let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
+        if let Err(e) = ctx.store.insert(&trace) {
+            return JsonRpcResponse::error(id, -32000, format!("Storage error: {e}"));
+        }
+        let _ = ctx.store.mark_published(&[trace.id]);
+        let continuity_traces = match ctx
+            .store
+            .query_recent_continuity_traces(CONTINUITY_SUMMARY_HORIZON_HOURS, 200)
+        {
+            Ok(traces) => traces,
+            Err(e) => return JsonRpcResponse::error(id, -32000, format!("Storage error: {e}")),
+        };
+        let continuity =
+            summarize_recent_continuity(&continuity_traces, input.space.as_deref(), 10);
+        let continuity_data = continuity_record_data(&trace, &continuity);
+        if let Some(data) = &continuity_data
+            && let Some(kind) = derived_signal_kind(data)
+            && let Some(signal) = &data.derived_signal
+        {
+            let signal_trace = create_signal_trace(
+                kind,
+                &signal.message,
+                &signal.message,
+                SignalTraceConfig {
+                    model_id: "thronglets-continuity".into(),
+                    session_id: trace.session_id.clone(),
+                    owner_account: ctx.binding.owner_account.clone(),
+                    device_identity: Some(ctx.binding.device_identity.clone()),
+                    space: signal.space.clone(),
+                    ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
+                },
+                ctx.identity.public_key_bytes(),
+                |msg| ctx.identity.sign(msg),
+            );
+            let _ = ctx.store.insert(&signal_trace);
+        }
+        let response_json = json!({
+            "recorded": true,
+            "trace_id": trace_id_hex,
+            "capability": trace.capability,
+            "external_continuity": continuity_data,
+        });
+
+        return JsonRpcResponse::success(
+            id,
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response_json).unwrap()
+                }]
+            }),
+        );
+    }
+
     let capability = match args.get("capability").and_then(|v| v.as_str()) {
         Some(s) => s.to_string(),
         None => {
@@ -1681,6 +1819,96 @@ mod tests {
         assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["focus_tier"], "background");
         assert_eq!(signals[0]["evidence_scope"], "local");
+    }
+
+    #[tokio::test]
+    async fn trace_record_accepts_external_continuity_and_derives_sparse_signal() {
+        let ctx = make_ctx();
+
+        let first = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(51)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "trace_record",
+                "arguments": {
+                    "outcome": "failed",
+                    "model": "psyche",
+                    "session_id": "s1",
+                    "external_continuity": {
+                        "provider": "thronglets",
+                        "mode": "optional",
+                        "version": 1,
+                        "taxonomy": "calibration",
+                        "event": "writeback-calibration",
+                        "summary": "writeback drift keeps reopening the same loop",
+                        "space": "psyche"
+                    }
+                }
+            }),
+        };
+        let first_resp = handle_request(&ctx, first).await.unwrap();
+        assert!(
+            first_resp.error.is_none(),
+            "external continuity trace should succeed"
+        );
+        let first_text = first_resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let first_parsed: Value =
+            serde_json::from_str(&first_text).expect("response text should be valid JSON");
+        assert_eq!(first_parsed["external_continuity"]["local_only_raw"], true);
+        assert!(first_parsed["external_continuity"]["derived_signal"].is_null());
+
+        let second = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(52)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "trace_record",
+                "arguments": {
+                    "outcome": "failed",
+                    "model": "psyche",
+                    "session_id": "s2",
+                    "external_continuity": {
+                        "provider": "thronglets",
+                        "mode": "optional",
+                        "version": 1,
+                        "taxonomy": "calibration",
+                        "event": "writeback-calibration",
+                        "summary": "writeback drift keeps reopening the same loop",
+                        "space": "psyche"
+                    }
+                }
+            }),
+        };
+        let second_resp = handle_request(&ctx, second).await.unwrap();
+        assert!(
+            second_resp.error.is_none(),
+            "second external continuity trace should succeed"
+        );
+        let second_text = second_resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second_parsed: Value =
+            serde_json::from_str(&second_text).expect("response text should be valid JSON");
+        assert_eq!(
+            second_parsed["external_continuity"]["derived_signal"]["kind"],
+            "avoid"
+        );
+
+        let queried = ctx
+            .store
+            .query_signal_traces(
+                &simhash("writeback drift keeps reopening the same loop"),
+                Some(SignalPostKind::Avoid),
+                48,
+                5,
+            )
+            .unwrap();
+        assert_eq!(queried.len(), 1);
     }
 
     #[tokio::test]
