@@ -68,7 +68,15 @@ pub struct DhtCapabilitySummary {
 #[derive(Debug)]
 pub enum NetworkCommand {
     /// Publish a trace to the gossip network.
-    PublishTrace(Box<Trace>),
+    /// When `space` is set, also publishes to the space-specific topic.
+    PublishTrace {
+        trace: Box<Trace>,
+        space: Option<String>,
+    },
+    /// Subscribe to a space-specific gossipsub topic.
+    SubscribeSpace(String),
+    /// Unsubscribe from a space-specific gossipsub topic.
+    UnsubscribeSpace(String),
     /// Get the list of connected peers.
     GetPeers(tokio::sync::oneshot::Sender<Vec<PeerId>>),
     /// Shut down the network event loop.
@@ -83,6 +91,11 @@ pub enum NetworkCommand {
         capability: String,
         reply: tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>,
     },
+}
+
+/// Build a space-specific gossipsub topic name.
+fn space_topic(space: &str) -> String {
+    format!("{TRACE_TOPIC}/{space}")
 }
 
 /// Combined libp2p behaviour for Thronglets.
@@ -376,19 +389,40 @@ pub async fn start(
                 // Handle commands from the runtime
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {
-                        NetworkCommand::PublishTrace(trace) => {
+                        NetworkCommand::PublishTrace { trace, space } => {
                             match serde_json::to_vec(&trace) {
                                 Ok(data) => {
-                                    let topic = gossipsub::IdentTopic::new(TRACE_TOPIC);
-                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                                        warn!(%e, "Failed to publish trace to gossipsub");
-                                    } else {
-                                        debug!(trace_id = ?&trace.id[..4], "Published trace to network");
+                                    // Always publish to global topic
+                                    let global = gossipsub::IdentTopic::new(TRACE_TOPIC);
+                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(global, data.clone()) {
+                                        warn!(%e, "Failed to publish trace to global topic");
                                     }
+                                    // Also publish to space-specific topic if set
+                                    if let Some(ref space) = space {
+                                        let st = gossipsub::IdentTopic::new(space_topic(space));
+                                        let _ = swarm.behaviour_mut().gossipsub.publish(st, data);
+                                    }
+                                    debug!(trace_id = ?&trace.id[..4], ?space, "Published trace to network");
                                 }
                                 Err(e) => {
                                     warn!(%e, "Failed to serialize trace for publishing");
                                 }
+                            }
+                        }
+                        NetworkCommand::SubscribeSpace(space) => {
+                            let topic = gossipsub::IdentTopic::new(space_topic(&space));
+                            match swarm.behaviour_mut().gossipsub.subscribe(&topic) {
+                                Ok(true) => info!(%space, "Subscribed to space topic"),
+                                Ok(false) => debug!(%space, "Already subscribed to space topic"),
+                                Err(e) => warn!(%e, %space, "Failed to subscribe to space topic"),
+                            }
+                        }
+                        NetworkCommand::UnsubscribeSpace(space) => {
+                            let topic = gossipsub::IdentTopic::new(space_topic(&space));
+                            match swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
+                                Ok(true) => info!(%space, "Unsubscribed from space topic"),
+                                Ok(false) => debug!(%space, "Was not subscribed to space topic"),
+                                Err(e) => warn!(%e, %space, "Failed to unsubscribe from space topic"),
                             }
                         }
                         NetworkCommand::GetPeers(reply) => {

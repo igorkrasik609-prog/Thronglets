@@ -402,8 +402,16 @@ async fn publish_local_traces(store: &TraceStore, command_tx: &mpsc::Sender<Netw
         let mut ids: Vec<[u8; 32]> = Vec::new();
         for trace in traces {
             ids.push(trace.id);
+            let space = trace
+                .context_text
+                .as_ref()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+                .and_then(|v| v.get("space")?.as_str().map(String::from));
             let _ = command_tx
-                .send(NetworkCommand::PublishTrace(Box::new(trace)))
+                .send(NetworkCommand::PublishTrace {
+                    trace: Box::new(trace),
+                    space,
+                })
                 .await;
         }
         let _ = store.mark_published(&ids);

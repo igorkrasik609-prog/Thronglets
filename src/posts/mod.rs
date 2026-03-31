@@ -1269,7 +1269,7 @@ mod tests {
         let mut core_config = signal_config(&identity, "codex", "session-b");
         core_config.space = Some("core".into());
 
-        let psyche = create_signal_trace(
+        let _psyche = create_signal_trace(
             SignalPostKind::Watch,
             "repair parser regressions",
             "watch the parser panic path",

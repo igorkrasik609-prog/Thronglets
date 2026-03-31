@@ -128,7 +128,10 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
     let trace_id = trace.id;
 
     cmd_tx_a
-        .send(NetworkCommand::PublishTrace(Box::new(trace)))
+        .send(NetworkCommand::PublishTrace {
+            trace: Box::new(trace),
+            space: None,
+        })
         .await
         .expect("send publish command");
 

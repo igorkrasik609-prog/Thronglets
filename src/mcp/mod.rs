@@ -176,7 +176,11 @@ fn tool_definitions() -> Value {
                         },
                         "context": {
                             "type": "string",
-                            "description": "Task context this signal applies to"
+                            "description": "Task context this signal applies to. When tool_name is set, this is the command/path/pattern; when unset, use format: 'bash: <cmd>', 'edit file: <path>', 'read file: <path>'"
+                        },
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Tool name (Bash, Edit, Read, Write, Grep, Glob, Agent) to auto-format context for hook matching"
                         },
                         "message": {
                             "type": "string",
@@ -590,7 +594,12 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
 
     // Publish to network if connected
     if let Some(tx) = &ctx.network_tx {
-        let _ = tx.send(NetworkCommand::PublishTrace(Box::new(trace))).await;
+        let _ = tx
+            .send(NetworkCommand::PublishTrace {
+                trace: Box::new(trace),
+                space: None, // trace_record doesn't carry space
+            })
+            .await;
     }
 
     let response_json = json!({
@@ -633,6 +642,8 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
             return JsonRpcResponse::error(id, -32602, "Missing required field: message".into());
         }
     };
+    let tool_name = args.get("tool_name").and_then(|v| v.as_str());
+    let context = crate::context::format_signal_context(tool_name, context);
     let space = args
         .get("space")
         .and_then(|v| v.as_str())
@@ -654,7 +665,7 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
 
     let trace = create_signal_trace(
         kind,
-        context,
+        &context,
         message,
         SignalTraceConfig {
             model_id,

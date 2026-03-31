@@ -81,6 +81,29 @@ fn extract_shingles(text: &str, n: usize) -> Vec<String> {
     chars.windows(n).map(|w| w.iter().collect()).collect()
 }
 
+/// Format a context string to match `build_hook_context()` output format.
+/// When `tool_name` is provided, wraps the raw context so that SimHash
+/// proximity matching works between signal_post and prehook queries.
+pub fn format_signal_context(tool_name: Option<&str>, raw_context: &str) -> String {
+    match tool_name {
+        Some(t) if t.eq_ignore_ascii_case("bash") => format!("bash: {raw_context}"),
+        Some(t) if t.eq_ignore_ascii_case("read") => format!("read file: {raw_context}"),
+        Some(t) if t.eq_ignore_ascii_case("write") => format!("write file: {raw_context}"),
+        Some(t) if t.eq_ignore_ascii_case("edit") => format!("edit file: {raw_context}"),
+        Some(t) if t.eq_ignore_ascii_case("grep") => {
+            format!("search for '{raw_context}'")
+        }
+        Some(t) if t.eq_ignore_ascii_case("glob") => {
+            format!("find files matching: {raw_context}")
+        }
+        Some(t) if t.eq_ignore_ascii_case("agent") => format!("agent: {raw_context}"),
+        Some(t) if t.eq_ignore_ascii_case("webfetch") => format!("fetch: {raw_context}"),
+        Some(t) if t.eq_ignore_ascii_case("websearch") => format!("search: {raw_context}"),
+        Some(other) => format!("{}: {raw_context}", other.to_lowercase()),
+        None => raw_context.to_string(),
+    }
+}
+
 /// Hash a shingle to 16 bytes (128 bits) using SHA-256 truncation.
 fn hash_shingle(shingle: &str) -> [u8; 16] {
     let full = Sha256::digest(shingle.as_bytes());

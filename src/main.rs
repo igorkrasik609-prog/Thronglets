@@ -635,6 +635,10 @@ enum Commands {
         #[arg(long)]
         message: String,
 
+        /// Tool name (Bash, Edit, Read, etc.) to auto-format context for hook matching.
+        #[arg(long)]
+        tool: Option<String>,
+
         /// Model identifier.
         #[arg(long, default_value = "cli")]
         model: String,
@@ -2878,12 +2882,14 @@ async fn main() {
             kind,
             context,
             message,
+            tool,
             model,
             session_id,
             space,
             ttl_hours,
         } => {
             let store = open_store(&dir);
+            let context = thronglets::context::format_signal_context(tool.as_deref(), &context);
             let trace = create_signal_trace(
                 kind.into(),
                 &context,
@@ -3421,9 +3427,35 @@ async fn main() {
             // Resolve pending feedback (check git status for previous edits)
             ws.resolve_feedback();
 
-            // Track errors
-            if is_error && let Some(err) = workspace::extract_error(&payload["tool_response"]) {
-                ws.record_error(tool_name, context_text, err);
+            // Track errors — auto-post avoid signal on repeated failures
+            if is_error {
+                if let Some(err) = workspace::extract_error(&payload["tool_response"]) {
+                    let repeated = ws
+                        .recent_errors
+                        .iter()
+                        .take(10)
+                        .any(|e| e.context == context_text);
+                    if repeated {
+                        let msg: String = err.chars().take(200).collect();
+                        let auto_signal = create_signal_trace(
+                            SignalPostKind::Avoid,
+                            &context_text,
+                            &msg,
+                            SignalTraceConfig {
+                                model_id: "thronglets-auto".into(),
+                                session_id: session_id.clone(),
+                                owner_account: identity_binding.owner_account.clone(),
+                                device_identity: Some(identity_binding.device_identity.clone()),
+                                space: current_space.clone(),
+                                ttl_hours: 48,
+                            },
+                            identity.public_key_bytes(),
+                            |msg| identity.sign(msg),
+                        );
+                        let _ = store.insert(&auto_signal);
+                    }
+                    ws.record_error(tool_name, context_text, err);
+                }
             }
 
             // Track session
@@ -3450,7 +3482,6 @@ async fn main() {
 
             let tool_name = payload["tool_name"].as_str().unwrap_or("");
             let current_space = payload_string(&payload, "space");
-            let current_mode = payload_string(&payload, "mode");
             let current_session_id = payload_string(&payload, "session_id");
             let agent_source = payload["agent_source"]
                 .as_str()
@@ -3476,20 +3507,14 @@ async fn main() {
             let mut ws = WorkspaceState::load(&dir);
             let current_file = workspace::extract_file_path(tool_name, &payload["tool_input"]);
             let hook_context = build_hook_context(tool_name, &payload["tool_input"]);
-            let inferred_strategy = ws.infer_strategy();
-            let open_ended_guidance =
-                task_prefers_sparse_guidance(current_mode.as_deref(), inferred_strategy.as_deref());
             let supports_file_guidance =
                 matches!(tool_name, "Edit" | "Write") && current_file.is_some();
-            let has_repeated_local_file_actions = supports_file_guidance
-                && ws.has_repeated_recent_file_actions(current_file.as_deref());
             profiler.stage("workspace");
 
             let mut collective_store: Option<TraceStore> = None;
             let mut collective_queries_remaining = PREHOOK_MAX_COLLECTIVE_QUERIES;
 
             let mut has_recent_tool_error = false;
-            let mut has_explicit_avoid = false;
 
             // ── Danger pheromone: low edit retention ──
             // If recent edits are mostly reverted, this is a strong warning.
@@ -3540,7 +3565,6 @@ async fn main() {
                     identity.public_key_bytes(),
                 )
             {
-                has_explicit_avoid = true;
                 explicit_avoid.score += ws
                     .recommendation_score_adjustment(SignalKind::Danger, current_space.as_deref());
                 signals.push(explicit_avoid);
@@ -3574,84 +3598,6 @@ async fn main() {
                 ));
             }
             profiler.stage("repair");
-
-            let has_do_next_signal = signals
-                .iter()
-                .any(|s| matches!(s.kind, SignalKind::Repair | SignalKind::Preparation));
-            if has_repeated_local_file_actions
-                && !open_ended_guidance
-                && !has_explicit_avoid
-                && !has_do_next_signal
-                && let Some(mut preparation_hint) =
-                    ws.preparation_hint(tool_name, current_file.as_deref())
-            {
-                preparation_hint.score += ws.recommendation_score_adjustment(
-                    SignalKind::Preparation,
-                    current_space.as_deref(),
-                );
-                if let (Some(current_file), Some(target)) = (
-                    current_file.as_deref(),
-                    preparation_hint.candidate.primary_target(),
-                ) && claim_collective_query(
-                    &preparation_hint.candidate,
-                    &mut collective_queries_remaining,
-                ) {
-                    let edit_target = file_target(current_file);
-                    if let Some(store) = cached_collective_store(&mut collective_store, &dir)
-                        && let Ok(collective_sources) =
-                            store.count_preparation_sources(edit_target, target, 168)
-                    {
-                        apply_collective_sources(
-                            &mut preparation_hint.candidate,
-                            &mut preparation_hint.score,
-                            collective_sources,
-                        );
-                    }
-                }
-
-                signals.push(Signal::preparation_candidate(
-                    preparation_hint.body,
-                    preparation_hint.score,
-                    preparation_hint.candidate,
-                ));
-            }
-            profiler.stage("preparation");
-
-            // ── Trail pheromone: co-edit patterns ──
-            // "Editing A usually means you also need to edit B."
-            // Only emitted when patterns exist.
-            if has_repeated_local_file_actions
-                && !has_explicit_avoid
-                && let Some(mut adjacency_hint) =
-                    ws.adjacency_hint(tool_name, current_file.as_deref())
-            {
-                if let (Some(current_file), Some(target)) = (
-                    current_file.as_deref(),
-                    adjacency_hint.candidate.primary_target(),
-                ) && claim_collective_query(
-                    &adjacency_hint.candidate,
-                    &mut collective_queries_remaining,
-                ) {
-                    let current_target = file_target(current_file);
-                    if let Some(store) = cached_collective_store(&mut collective_store, &dir)
-                        && let Ok(collective_sources) =
-                            store.count_adjacency_sources(current_target, target, 168)
-                    {
-                        apply_collective_sources(
-                            &mut adjacency_hint.candidate,
-                            &mut adjacency_hint.score,
-                            collective_sources,
-                        );
-                    }
-                }
-
-                signals.push(Signal::adjacency_candidate(
-                    adjacency_hint.body,
-                    adjacency_hint.score,
-                    adjacency_hint.candidate,
-                ));
-            }
-            profiler.stage("adjacency");
 
             let presence_checked =
                 current_space.is_some() && (!supports_file_guidance || !signals.is_empty());
@@ -3725,7 +3671,7 @@ async fn main() {
                 tool_name,
                 &recommendations,
                 stdout_bytes,
-                profile_file_guidance_gate(supports_file_guidance, has_repeated_local_file_actions),
+                profile_file_guidance_gate(supports_file_guidance),
                 PREHOOK_MAX_COLLECTIVE_QUERIES - collective_queries_remaining,
             );
             // Normal state → complete silence. Zero tokens.
@@ -4355,15 +4301,6 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn task_prefers_sparse_guidance(mode: Option<&str>, strategy: Option<&str>) -> bool {
-    let mode_prefers_sparse = matches!(mode, Some("explore" | "review"));
-    let strategy_prefers_sparse = matches!(
-        strategy,
-        Some("code-review" | "codebase-exploration" | "delegated-research")
-    );
-    mode_prefers_sparse || strategy_prefers_sparse
-}
-
 fn apply_collective_sources(
     candidate: &mut StepCandidate,
     score: &mut i32,
@@ -4391,11 +4328,11 @@ fn explicit_avoid_signal(
         3,
     )
     .into_iter()
-    .find(|result| result.promotion_state != "none" && result.context_similarity >= 0.85)?;
+    .find(|result| result.density_score >= 1 && result.context_similarity >= 0.85)?;
 
-    let mut score = 320 + i32::from(result.density_score) * 10;
+    let mut score = 300 + i32::from(result.density_score) * 20;
     if result.promotion_state == "collective" {
-        score += 20;
+        score += 30;
     }
 
     Some(Signal::danger(
@@ -4480,13 +4417,6 @@ fn cached_collective_store<'a>(
     }
 
     cache.as_ref()
-}
-
-fn file_target(path: &str) -> &str {
-    Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(path)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4580,12 +4510,10 @@ impl PrehookProfiler {
 fn profile_output_mode(recommendations: &[Recommendation]) -> &'static str {
     if recommendations.is_empty() {
         "silent"
-    } else if recommendations.iter().any(|r| {
-        matches!(
-            r.source_kind,
-            SignalKind::Repair | SignalKind::Preparation | SignalKind::Adjacency
-        )
-    }) {
+    } else if recommendations
+        .iter()
+        .any(|r| r.source_kind == SignalKind::Repair)
+    {
         "next-step"
     } else if recommendations
         .iter()
@@ -4600,18 +4528,12 @@ fn profile_output_mode(recommendations: &[Recommendation]) -> &'static str {
 fn profile_decision_path(recommendations: &[Recommendation]) -> &'static str {
     recommendations
         .iter()
-        .find(|r| {
-            matches!(
-                r.source_kind,
-                SignalKind::Repair | SignalKind::Preparation | SignalKind::Adjacency
-            )
-        })
+        .find(|r| r.source_kind == SignalKind::Repair)
         .or_else(|| recommendations.first())
         .map(|r| match r.source_kind {
             SignalKind::Danger => "danger",
             SignalKind::Repair => "repair",
-            SignalKind::Preparation => "preparation",
-            SignalKind::Adjacency => "adjacency",
+            SignalKind::Preparation | SignalKind::Adjacency => "legacy",
             SignalKind::History => "history",
         })
         .unwrap_or("none")
@@ -4628,16 +4550,11 @@ fn profile_evidence_scope(recommendations: &[Recommendation]) -> &'static str {
         .unwrap_or("none")
 }
 
-fn profile_file_guidance_gate(
-    supports_file_guidance: bool,
-    has_repeated_local_file_actions: bool,
-) -> &'static str {
-    if !supports_file_guidance {
-        "na"
-    } else if has_repeated_local_file_actions {
+fn profile_file_guidance_gate(supports_file_guidance: bool) -> &'static str {
+    if supports_file_guidance {
         "open"
     } else {
-        "closed"
+        "na"
     }
 }
 
@@ -5001,12 +4918,12 @@ mod tests {
     }
 
     #[test]
-    fn explicit_avoid_signal_requires_promoted_support() {
+    fn explicit_avoid_signal_surfaces_single_source() {
         let local_identity = NodeIdentity::generate();
         let remote_identity = NodeIdentity::generate();
         let store = TraceStore::in_memory().unwrap();
 
-        let weak_avoid = create_signal_trace(
+        let single_avoid = create_signal_trace(
             SignalPostKind::Avoid,
             "edit file: src/main.rs",
             "skip the generated lockfile",
@@ -5021,19 +4938,20 @@ mod tests {
             local_identity.public_key_bytes(),
             |msg| local_identity.sign(msg),
         );
-        store.insert(&weak_avoid).unwrap();
+        store.insert(&single_avoid).unwrap();
 
-        assert!(
-            explicit_avoid_signal(
-                &store,
-                "edit file: src/main.rs",
-                None,
-                &local_identity.device_identity(),
-                local_identity.public_key_bytes(),
-            )
-            .is_none()
-        );
+        // Single-source signals surface at candidate density
+        let signal = explicit_avoid_signal(
+            &store,
+            "edit file: src/main.rs",
+            None,
+            &local_identity.device_identity(),
+            local_identity.public_key_bytes(),
+        )
+        .expect("candidate avoid should surface in prehook");
+        assert_eq!(signal.kind, SignalKind::Danger);
 
+        // Adding a second source from a different node increases score
         let promoted_avoid = create_signal_trace(
             SignalPostKind::Avoid,
             "edit file: src/main.rs",
@@ -5051,15 +4969,16 @@ mod tests {
         );
         store.insert(&promoted_avoid).unwrap();
 
-        let signal = explicit_avoid_signal(
+        let promoted_signal = explicit_avoid_signal(
             &store,
             "edit file: src/main.rs",
             None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
         )
-        .expect("promoted avoid should surface in prehook");
-        assert_eq!(signal.kind, SignalKind::Danger);
+        .expect("promoted avoid should surface with higher score");
+        assert_eq!(promoted_signal.kind, SignalKind::Danger);
+        assert!(promoted_signal.score > signal.score);
         assert!(signal.body.contains("explicit avoid"));
         assert!(signal.body.contains("skip the generated lockfile"));
     }
