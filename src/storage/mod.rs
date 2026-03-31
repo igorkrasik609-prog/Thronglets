@@ -475,6 +475,69 @@ impl TraceStore {
         Ok(sessions.len() as u32)
     }
 
+    /// Count distinct sessions where a failure on `error_context` was followed
+    /// (within 10 min) by a success on `repair_context`. This detects cross-file
+    /// repair associations directly from traces — the high-value signal that
+    /// workspace repair_patterns lose by discarding context.
+    pub fn count_repair_associations(
+        &self,
+        error_context_hash: &[u8; 16],
+        repair_context_hash: &[u8; 16],
+        max_distance: u32,
+        space: Option<&str>,
+    ) -> rusqlite::Result<u32> {
+        let conn = self.conn.lock().unwrap();
+
+        let err_bucket = context_bucket(error_context_hash);
+        let fix_bucket = context_bucket(repair_context_hash);
+        let radius = (max_distance / 8).max(1) as i64;
+        let err_lo = (err_bucket - radius).max(0);
+        let err_hi = (err_bucket + radius).min(65535);
+        let fix_lo = (fix_bucket - radius).max(0);
+        let fix_hi = (fix_bucket + radius).min(65535);
+
+        let sql = "SELECT t_err.session_id, t_err.context_hash, t_fix.context_hash
+                   FROM traces t_err
+                   JOIN traces t_fix ON t_fix.session_id = t_err.session_id
+                                     AND t_fix.node_pubkey = t_err.node_pubkey
+                                     AND t_fix.timestamp > t_err.timestamp
+                                     AND (t_fix.timestamp - t_err.timestamp) <= 600000
+                   WHERE t_err.outcome = 1
+                     AND t_fix.outcome = 0
+                     AND t_err.context_bucket BETWEEN ?1 AND ?2
+                     AND t_fix.context_bucket BETWEEN ?3 AND ?4
+                     AND t_err.session_id IS NOT NULL
+                     AND t_err.capability NOT LIKE 'urn:thronglets:%'
+                     AND t_fix.capability NOT LIKE 'urn:thronglets:%'
+                     AND (?5 IS NULL OR t_err.space = ?5)
+                   LIMIT 200";
+
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<(String, Vec<u8>, Vec<u8>)> = stmt
+            .query_map(params![err_lo, err_hi, fix_lo, fix_hi, space], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut sessions = std::collections::HashSet::new();
+        for (session_id, err_hash, fix_hash) in &rows {
+            if err_hash.len() == 16 && fix_hash.len() == 16 {
+                let mut eh = [0u8; 16];
+                let mut fh = [0u8; 16];
+                eh.copy_from_slice(err_hash);
+                fh.copy_from_slice(fix_hash);
+                if crate::context::hamming_distance(&eh, error_context_hash) <= max_distance
+                    && crate::context::hamming_distance(&fh, repair_context_hash) <= max_distance
+                {
+                    sessions.insert(session_id.clone());
+                }
+            }
+        }
+
+        Ok(sessions.len() as u32)
+    }
+
     /// Query recent explicit signal traces for a feed view.
     /// When `space` is `Some`, only returns traces tagged with that space.
     pub fn query_recent_signal_traces(
@@ -1003,6 +1066,72 @@ mod tests {
         assert!(caps.contains(&"tool-a"));
         assert!(caps.contains(&"tool-c"));
         assert!(!caps.contains(&"tool-b"));
+    }
+
+    #[test]
+    fn count_repair_associations_finds_cross_file_patterns() {
+        use crate::context::simhash;
+
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // Session 1: edit main.rs fails → edit tests.rs succeeds
+        let err_s1 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Failed, 10, 10,
+            simhash("edit file: src/main.rs"),
+            Some("edit file: src/main.rs".into()),
+            Some("s1".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let fix_s1 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded, 10, 10,
+            simhash("edit file: tests/perf.rs"),
+            Some("edit file: tests/perf.rs".into()),
+            Some("s1".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // Session 2: same pattern
+        let err_s2 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Failed, 10, 10,
+            simhash("edit file: src/main.rs"),
+            Some("edit file: src/main.rs".into()),
+            Some("s2".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let fix_s2 = Trace::new(
+            "claude-code/Edit".into(),
+            Outcome::Succeeded, 10, 10,
+            simhash("edit file: tests/perf.rs"),
+            Some("edit file: tests/perf.rs".into()),
+            Some("s2".into()), "model".into(),
+            id.public_key_bytes(), |m| id.sign(m),
+        );
+
+        for t in [&err_s1, &fix_s1, &err_s2, &fix_s2] {
+            store.insert(t).unwrap();
+        }
+
+        let count = store.count_repair_associations(
+            &simhash("edit file: src/main.rs"),
+            &simhash("edit file: tests/perf.rs"),
+            48, None,
+        ).unwrap();
+        assert_eq!(count, 2, "should find 2 sessions with same error→repair pattern");
+
+        // Unrelated context → 0
+        let count_unrelated = store.count_repair_associations(
+            &simhash("bash: cargo build"),
+            &simhash("edit file: tests/perf.rs"),
+            48, None,
+        ).unwrap();
+        assert_eq!(count_unrelated, 0);
     }
 
     #[test]

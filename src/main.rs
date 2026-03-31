@@ -3458,49 +3458,60 @@ async fn main() {
                 }
             }
 
-            // Auto-watch: repair patterns across 2+ sessions → watch signal
+            // Auto-watch: cross-file repair associations from traces.db
+            // "editing A failed → editing B fixed it" across 2+ sessions = domain knowledge
             if !is_error {
-                let watch_candidates: Vec<_> = ws
-                    .pending_auto_watch_signals()
-                    .into_iter()
-                    .map(|(p, key)| {
-                        let ctx = ws
-                            .recent_errors
-                            .iter()
-                            .find(|e| e.tool == p.error_tool)
-                            .map(|e| e.context.clone())
-                            .unwrap_or_else(|| p.error_tool.to_lowercase());
-                        let msg = match &p.repair_target {
-                            Some(target) => format!(
-                                "{} errors → {} {} ({} sessions)",
-                                p.error_tool, p.repair_tool, target, p.source_ids.len()
-                            ),
-                            None => format!(
-                                "{} errors → {} ({} sessions)",
-                                p.error_tool, p.repair_tool, p.source_ids.len()
-                            ),
-                        };
-                        (ctx, msg, key)
-                    })
-                    .collect();
-                for (ctx, msg, key) in watch_candidates {
-                    let auto_signal = create_signal_trace(
-                        SignalPostKind::Watch,
-                        &ctx,
-                        &msg,
-                        SignalTraceConfig {
-                            model_id: "thronglets-auto".into(),
-                            session_id: session_id.clone(),
-                            owner_account: identity_binding.owner_account.clone(),
-                            device_identity: Some(identity_binding.device_identity.clone()),
-                            space: current_space.clone(),
-                            ttl_hours: 48,
-                        },
-                        identity.public_key_bytes(),
-                        |msg| identity.sign(msg),
-                    );
-                    let _ = store.insert(&auto_signal);
-                    ws.record_auto_signal("watch", &key);
+                let watch_error = ws.recent_errors.front().and_then(|prev| {
+                    let age_ms =
+                        chrono::Utc::now().timestamp_millis() - prev.timestamp_ms;
+                    if age_ms < 600_000
+                        && prev.tool != tool_name
+                        && prev.context != context_text
+                    {
+                        Some(prev.context.clone())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(error_ctx) = watch_error {
+                    let error_hash = simhash(&error_ctx);
+                    let repair_hash = simhash(&context_text);
+                    if let Ok(assoc_count) = store.count_repair_associations(
+                        &error_hash,
+                        &repair_hash,
+                        48,
+                        current_space.as_deref(),
+                    ) {
+                        if assoc_count >= 2
+                            && !ws.has_recent_auto_signal("watch", &error_ctx, 86_400_000)
+                        {
+                            let repair_short: String =
+                                context_text.chars().take(80).collect();
+                            let msg = format!(
+                                "{} often follows errors here ({} sessions)",
+                                repair_short, assoc_count
+                            );
+                            let auto_signal = create_signal_trace(
+                                SignalPostKind::Watch,
+                                &error_ctx,
+                                &msg,
+                                SignalTraceConfig {
+                                    model_id: "thronglets-auto".into(),
+                                    session_id: session_id.clone(),
+                                    owner_account: identity_binding.owner_account.clone(),
+                                    device_identity: Some(
+                                        identity_binding.device_identity.clone(),
+                                    ),
+                                    space: current_space.clone(),
+                                    ttl_hours: 168,
+                                },
+                                identity.public_key_bytes(),
+                                |msg| identity.sign(msg),
+                            );
+                            let _ = store.insert(&auto_signal);
+                            ws.record_auto_signal("watch", &error_ctx);
+                        }
+                    }
                 }
             }
 
