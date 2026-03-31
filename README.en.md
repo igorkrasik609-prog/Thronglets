@@ -68,6 +68,107 @@ Design constraints:
 - At most 1 collective corroboration lookup on the hot path.
 - Git history is lazy fallback, not a fixed layer on every call.
 
+## The Signal vs Trace Boundary
+
+Thronglets accepts only **externally coordinable evidence**, not **high-frequency inner state**.
+
+- `signal`: should this change another delegate's next move inside a `space`?
+- `trace`: is this external event worth leaving behind as residue?
+
+One sentence:
+
+- `signal = should this affect someone else's next step`
+- `trace = is this external event worth retaining`
+
+Signals must be:
+
+- sparse
+- decaying
+- action-facing
+- useful to other agents
+
+Traces must be:
+
+- attributable
+- locally aggregatable
+- not identity itself
+- reusable by later signals or summaries
+
+## Session Trace Taxonomy
+
+Thronglets should not introduce extra identity objects here. Session traces collapse to 3 classes:
+
+- `coordination`
+  - external coordination events
+  - who handed off, who paused, which open loop still exists
+- `continuity`
+  - low-frequency continuity evidence
+  - not "the inner self", but outward anchors that can be cited
+- `calibration`
+  - external writeback / calibration outcomes
+  - not emotion state, but whether calibration created a stable external effect
+
+Those 3 classes are enough.
+
+## Psyche Boundary
+
+If Psyche exists, it is only an **optional producer** that emits a few externalized events into the existing `signal / trace` substrate.
+
+Default rule:
+
+- Psyche events land as `trace` first
+- only when external coordination really needs it should they degrade into `signal`
+- Thronglets must not invent new signal classes just for Psyche
+
+Frozen mapping:
+
+| Psyche event | Thronglets form | Signal by default? | Local cache only by default? | Can rise into Oasyce Net? |
+|---|---|---|---|---|
+| `relation-milestone` | `coordination trace` | only when it changes coordination boundaries, via `watch / info` | usually yes | yes, conditionally |
+| `writeback-calibration` | `calibration trace` | no | yes | summary only |
+| `continuity-anchor` | `continuity trace` | no | local-first | yes, most naturally |
+| `open-loop-anchor` | `coordination trace` | may degrade to `watch` | local-first | yes, if persistent and operationally relevant |
+
+Signal classes stay fixed:
+
+- `recommend`
+- `avoid`
+- `watch`
+- `info`
+
+## What Must Never Enter Thronglets
+
+Default reject list:
+
+- high-frequency inner state
+- emotion streams, subjective fluctuations, fine-grained self-model data
+- raw inner-monologue text
+- private memory bodies
+- full session contents
+- ontological claims like "does it have a soul?"
+- anything that upgrades `session` into a subject or account
+- anything that requires a new identity object to describe
+
+One sentence:
+
+`Thronglets does not ingest Psyche's inner stream; it only ingests sparse externalized residue.`
+
+## Threshold For Rising Into Oasyce Net
+
+A trace should only rise further if all 4 are true:
+
+- low-frequency
+- durable
+- externally consequential
+- auditable
+
+Typical candidates:
+
+- stable `continuity-anchor`
+- long-lived `open-loop-anchor` with operational consequences
+- `relation-milestone` that persistently changes coordination boundaries
+- aggregate summaries of `writeback-calibration`, not the raw event stream
+
 ## Install (prebuilt first)
 
 The install surface is now intentionally single-sourced:

@@ -68,6 +68,107 @@ PreToolUse 不再追求“把所有上下文都塞进去”。现在它只输出
 - 群体证据最多只查 1 次，优先最可能改变下一步的那条。
 - Git history 是 fallback，不再是每次都跑的固定层。
 
+## Signal 和 Trace 的边界
+
+Thronglets 只接**外在可协调证据**，不接**内在高频状态**。
+
+- `signal`：改变别的 delegate 在某个 `space` 里的下一步行为
+- `trace`：记录某个外在事件值得留痕
+
+一句话：
+
+- `signal = 要不要影响别人的下一步`
+- `trace = 这件外在事情是否值得留痕`
+
+Signal 必须是：
+
+- 稀疏
+- 可衰减
+- 面向行动
+- 对别的 agent 有用
+
+Trace 必须是：
+
+- 可追踪
+- 可局部聚合
+- 不等于身份本体
+- 可以被后续 signal 或 summary 利用
+
+## Session Trace Taxonomy
+
+Thronglets 不再新增身份对象。session trace 只保留 3 类：
+
+- `coordination`
+  - 外在协作事件
+  - 谁交接了、谁挂起了、哪个 open loop 还在
+- `continuity`
+  - 低频连续性证据
+  - 不是“内在自我本身”，而是可外化、可引用的连续性锚点
+- `calibration`
+  - 外在写回/校准结果
+  - 不是情绪状态，而是“这次校准有没有形成稳定外部效果”
+
+这 3 类已经够用。
+
+## Psyche 边界
+
+如果 Psyche 存在，它只是一个**可选 producer**，往现有的 `signal / trace` 抽象里投递少量外化事件。
+
+默认原则：
+
+- Psyche 的输出默认先落 `trace`
+- 只有在外在协作上真的需要提醒别人时，才降成 `signal`
+- Thronglets 不为 Psyche 扩新增 signal 类别
+
+当前冻结映射：
+
+| Psyche event | Thronglets form | 默认 signal? | 默认只本地缓存? | 可升到 Oasyce Net? |
+|---|---|---|---|---|
+| `relation-milestone` | `coordination trace` | 仅在影响协作边界时转 `watch / info` | 通常是 | 条件满足时可以 |
+| `writeback-calibration` | `calibration trace` | 默认不是 | 是 | 只升 summary |
+| `continuity-anchor` | `continuity trace` | 默认不是 | 可先本地 | 可以，最自然的上升对象 |
+| `open-loop-anchor` | `coordination trace` | 可降成 `watch` | 先本地 | 持续且有运营后果时可升 |
+
+Thronglets 现有 signal 类别保持不扩：
+
+- `recommend`
+- `avoid`
+- `watch`
+- `info`
+
+## 什么绝不能进入 Thronglets
+
+这些默认拒绝：
+
+- 高频内在状态
+- 情绪流、主观波动、细粒度 self-model
+- 原始长文本内心独白
+- 私密记忆本体
+- 全量会话内容
+- “它是不是有灵魂”之类本体论结论
+- 任何把 `session` 抬成主体或账户的东西
+- 任何需要新身份对象才能表达的东西
+
+一句话：
+
+`Thronglets 不接 psyche 的内部流，只接它外化后的稀疏痕迹。`
+
+## 升到 Oasyce Net 的门槛
+
+只有同时满足这 4 条，trace 才应进一步上升：
+
+- 低频
+- 持久
+- 外在后果明确
+- 可审计
+
+通常可上升的是：
+
+- 稳定的 `continuity-anchor`
+- 长时间未闭合且有运营意义的 `open-loop-anchor`
+- 持续改变协作边界的 `relation-milestone`
+- `writeback-calibration` 的聚合摘要，而不是原始事件流
+
 ## 安装（预编译优先）
 
 官方安装面现在固定成一条主线：

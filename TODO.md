@@ -128,6 +128,26 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 行为闭环从当前的 session-local 反馈，推进到更稳定的 space-local 结构强化
 - 继续保持“共享环境感知”路线，不把这个能力滑成 agent 互发消息系统
 
+### 1.5. Freeze session trace taxonomy
+
+目标：把 `trace` 的含义收紧，避免它膨胀成“什么都能留”的杂项容器。
+
+冻结结果：
+- `coordination`
+- `continuity`
+- `calibration`
+
+约束：
+- Psyche 事件默认先落 `trace`
+- 只有真的需要影响别的 delegate 下一步时才降成 signal
+- 不为 Psyche 发明新 signal 类别
+- 只有低频、持久、外在、可审计的结果才继续上升给 `Oasyce Net`
+
+剩余完成标准：
+- 把这 3 类 taxonomy 固化进 trace schema / docs / tests
+- 明确哪些只在本地衰减，哪些允许形成 Net-facing summary
+- 明确 reject list：高频内在状态、全量 session 内容、私密记忆本体、主观流、本体论判断一律不上 Thronglets
+
 ### 2. Session presence
 
 目标：让纯对话 / 策略讨论场景也能留下轻量痕迹，不再只有工具调用才算“活跃”。
