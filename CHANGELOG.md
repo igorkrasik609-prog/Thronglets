@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.5.2 — 2026-04-01
+
+- **Auto-signal extraction** — signals now emerge from behavior, not manual posting; auto-avoid fires on repeated errors, auto-recommend on convergent patterns across 3+ sessions, auto-watch on cross-file repair associations from traces.db
+- **Hebbian co-edit learning** — files edited together across 2+ sessions produce recommend signals ("mod.rs usually co-edited"), implementing Hebb's Rule ("neurons that fire together wire together") on success data rather than error data
+- **Feedback events become traces** — when an agent acts on a signal and succeeds or fails, the feedback event is now written as a first-class trace (`urn:thronglets:signal:feedback`) that propagates through gossip; the substrate can now carry meta-knowledge about whether its own signals are useful
+- **Informational vs prescriptive signal split** — recent errors and watch signals are now `History` kind (informational context), not `Danger` kind (prescriptive avoid); this fixes a false-negative feedback loop where agents were penalized for not failing after receiving danger warnings about informational content
+- **Generalized prehook** — `explicit_signals()` replaces `explicit_avoid_signal()`, querying all signal kinds in a single pass; signals are ranked by kind priority (Danger > Repair > Preparation > Adjacency > History) and truncated to the token budget
+
 ## v0.5.0 — 2026-03-31
 
 - **SQL-level space isolation** — signal queries now filter by `space` at the SQL layer instead of fetching globally and filtering in Rust; the `traces` table gains a `space` column auto-extracted from JSON payloads on insert, with indexes for `space` and `(space, capability)`; `summarize_signal_traces` and `summarize_recent_signal_feed` no longer accept a `space` parameter since the responsibility has moved to the query layer; the now-redundant `matches_signal_space` post-hoc filter and all `fetch_limit` over-fetch workarounds have been removed — net code reduction
