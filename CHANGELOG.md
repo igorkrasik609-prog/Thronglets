@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.4.7 — 2026-03-31
+
+- **Remembered peer path stability** — runtime peer observation now normalizes reusable dial addresses by appending `/p2p/<peer_id>` when needed, so first-connection attempts that succeed through persisted bootstrap memory reliably learn a reusable remembered peer path instead of depending on timing-sensitive raw address strings in CI and future reconnects
+
 ## v0.4.6 — 2026-03-31
 
 - **Status as the single readiness page** — `thronglets status` now includes a compact runtime summary alongside identity and network readiness, and the human-readable status output now prioritizes local runtime problems like `restart once` or `needs attention` before it falls back to network/path wording
