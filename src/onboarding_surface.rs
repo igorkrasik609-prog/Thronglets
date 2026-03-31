@@ -8,6 +8,9 @@ use thronglets::presence::is_presence_capability;
 use thronglets::storage::TraceStore;
 use thronglets::workspace::{self, WorkspaceState};
 
+use crate::setup_support::{
+    AdapterDetection, AdapterDoctor, AdapterKind, detect_adapter, doctor_adapter,
+};
 use crate::{BootstrapSummary, DEFAULT_CONNECTION_FILE_NAME};
 
 #[derive(Serialize)]
@@ -76,6 +79,7 @@ pub(crate) struct ConnectionExportData {
 pub(crate) struct StatusData {
     pub(crate) summary: ReadinessSummary,
     pub(crate) identity: IdentitySummary,
+    pub(crate) runtime: RuntimeSummary,
     pub(crate) node_id: String,
     pub(crate) oasyce_address: String,
     pub(crate) data_dir: String,
@@ -84,6 +88,15 @@ pub(crate) struct StatusData {
     pub(crate) database_size_bytes: u64,
     pub(crate) substrate: workspace::SubstrateActivity,
     pub(crate) network: thronglets::network_state::NetworkStatus,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct RuntimeSummary {
+    pub(crate) status: &'static str,
+    pub(crate) detail: String,
+    pub(crate) next_step: Option<String>,
+    pub(crate) detected_agents: Vec<String>,
+    pub(crate) ready_agents: Vec<String>,
 }
 
 pub(crate) fn connection_readiness_summary(
@@ -143,6 +156,7 @@ pub(crate) fn connection_readiness_summary(
 }
 
 pub(crate) fn collect_status_data(
+    home_dir: &Path,
     dir: &Path,
     identity: &NodeIdentity,
     binding: &IdentityBinding,
@@ -165,10 +179,12 @@ pub(crate) fn collect_status_data(
     let db_path = dir.join("traces.db");
     let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
     let readiness = status_readiness_summary(binding, &network);
+    let runtime = collect_runtime_summary(home_dir, dir);
 
     StatusData {
         summary: readiness,
         identity: identity_summary("healthy", binding),
+        runtime,
         node_id: identity.short_id(),
         oasyce_address: identity.oasyce_address(),
         data_dir: dir.display().to_string(),
@@ -177,6 +193,124 @@ pub(crate) fn collect_status_data(
         database_size_bytes: db_size,
         substrate: workspace.substrate_activity(),
         network,
+    }
+}
+
+fn collect_runtime_summary(home_dir: &Path, data_dir: &Path) -> RuntimeSummary {
+    let adapters = [
+        AdapterKind::Claude,
+        AdapterKind::Codex,
+        AdapterKind::OpenClaw,
+    ];
+    let detections: Vec<_> = adapters
+        .into_iter()
+        .map(|agent| detect_adapter(home_dir, data_dir, agent))
+        .collect();
+    let reports: Vec<_> = adapters
+        .into_iter()
+        .map(|agent| doctor_adapter(home_dir, data_dir, agent))
+        .collect();
+    summarize_runtime_summary(&detections, &reports)
+}
+
+fn summarize_runtime_summary(
+    detections: &[AdapterDetection],
+    reports: &[AdapterDoctor],
+) -> RuntimeSummary {
+    let detected_agents: Vec<String> = detections
+        .iter()
+        .filter(|detection| detection.present)
+        .map(|detection| detection.agent.clone())
+        .collect();
+    let ready_agents: Vec<String> = reports
+        .iter()
+        .filter(|report| report.present && report.healthy && !report.restart_pending)
+        .map(|report| report.agent.clone())
+        .collect();
+    let broken_reports: Vec<_> = reports
+        .iter()
+        .filter(|report| report.present && !report.healthy)
+        .collect();
+    let restarting_reports: Vec<_> = reports
+        .iter()
+        .filter(|report| report.present && report.healthy && report.restart_pending)
+        .collect();
+
+    if !broken_reports.is_empty() {
+        let broken_agents: Vec<_> = broken_reports
+            .iter()
+            .map(|report| report.agent.clone())
+            .collect();
+        RuntimeSummary {
+            status: "needs-fix",
+            detail: if broken_agents.len() == 1 {
+                format!(
+                    "Thronglets still needs attention in {} on this device.",
+                    join_human_agents(&broken_agents)
+                )
+            } else {
+                format!(
+                    "Thronglets still needs attention in {} AI runtimes on this device.",
+                    broken_agents.len()
+                )
+            },
+            next_step: broken_reports
+                .iter()
+                .flat_map(|report| report.remediation.iter().cloned())
+                .next()
+                .or_else(|| {
+                    Some("Run `thronglets doctor --json` for full adapter diagnostics.".into())
+                }),
+            detected_agents,
+            ready_agents,
+        }
+    } else if !restarting_reports.is_empty() {
+        let restarting_agents: Vec<_> = restarting_reports
+            .iter()
+            .map(|report| report.agent.clone())
+            .collect();
+        RuntimeSummary {
+            status: "restart-required",
+            detail: if restarting_agents.len() == 1 {
+                format!(
+                    "Thronglets is wired into {}, but it still needs one restart before the integration is live.",
+                    join_human_agents(&restarting_agents)
+                )
+            } else {
+                format!(
+                    "Thronglets is wired into {} AI runtimes on this device, but some of them still need one restart before the integration is live.",
+                    restarting_agents.len()
+                )
+            },
+            next_step: restarting_reports
+                .iter()
+                .filter_map(|report| report.restart_command.clone())
+                .next()
+                .map(|command| format!("{command} once, then run `thronglets status` again.")),
+            detected_agents,
+            ready_agents,
+        }
+    } else if !detected_agents.is_empty() {
+        RuntimeSummary {
+            status: "ready",
+            detail: format!(
+                "Thronglets is loaded into {} on this device.",
+                join_human_agents(&ready_agents)
+            ),
+            next_step: None,
+            detected_agents,
+            ready_agents,
+        }
+    } else {
+        RuntimeSummary {
+            status: "not-detected",
+            detail: "No supported AI runtime was detected on this device yet.".into(),
+            next_step: Some(
+                "Open Codex, Claude Code, or OpenClaw on this device, then run `thronglets start` once.".into(),
+            ),
+            detected_agents,
+            ready_agents,
+        }
     }
 }
 
@@ -304,20 +438,32 @@ pub(crate) fn render_share_flow_report(data: &ShareFlowData) {
 }
 
 pub(crate) fn render_status_report(data: &StatusData, owner_account: &str) {
+    let (status_label, meaning, next_step) =
+        if matches!(data.runtime.status, "needs-fix" | "restart-required") {
+            (
+                human_runtime_label(&data.runtime),
+                data.runtime.detail.as_str(),
+                data.runtime.next_step.as_ref(),
+            )
+        } else {
+            (
+                human_readiness_label(&data.summary),
+                data.summary.detail.as_str(),
+                data.summary.next_step.as_ref(),
+            )
+        };
     println!("Thronglets v{}", env!("CARGO_PKG_VERSION"));
     println!();
-    println!(
-        "  Status:           {}",
-        human_readiness_label(&data.summary)
-    );
-    println!("  Meaning:          {}", data.summary.detail);
-    if let Some(step) = &data.summary.next_step {
+    println!("  Status:           {status_label}");
+    println!("  Meaning:          {meaning}");
+    if let Some(step) = next_step {
         println!("  Next:             {step}");
     }
     println!();
     println!("  Device identity:  {}", data.identity.device_identity);
     println!("  Owner account:    {owner_account}");
     println!();
+    println!("  Runtime:          {}", human_runtime_label(&data.runtime));
     println!(
         "  Network:          {}",
         if data.summary.connected {
@@ -488,6 +634,16 @@ pub(crate) fn human_readiness_label(summary: &ReadinessSummary) -> &'static str 
     }
 }
 
+pub(crate) fn human_runtime_label(summary: &RuntimeSummary) -> &'static str {
+    match summary.status {
+        "ready" => "ready in your AI app",
+        "restart-required" => "restart once",
+        "needs-fix" => "needs attention",
+        "not-detected" => "not connected to an AI app yet",
+        _ => summary.status,
+    }
+}
+
 fn human_onboarding_label(summary: &OnboardingSummary) -> &'static str {
     match summary.status {
         "needs-fix" => "needs attention",
@@ -499,6 +655,29 @@ fn human_onboarding_label(summary: &OnboardingSummary) -> &'static str {
         "network-paths-ready" => "waiting for the first live connection",
         "network-ready" => "ready now",
         _ => summary.status,
+    }
+}
+
+fn join_human_agents(agents: &[String]) -> String {
+    let labels: Vec<_> = agents
+        .iter()
+        .map(|agent| match agent.as_str() {
+            "claude-code" => "Claude Code".to_string(),
+            "codex" => "Codex".to_string(),
+            "openclaw" => "OpenClaw".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+    match labels.as_slice() {
+        [] => "no AI runtime".into(),
+        [only] => only.clone(),
+        [left, right] => format!("{left} and {right}"),
+        _ => {
+            let mut rendered = labels[..labels.len() - 1].join(", ");
+            rendered.push_str(", and ");
+            rendered.push_str(labels.last().unwrap());
+            rendered
+        }
     }
 }
 

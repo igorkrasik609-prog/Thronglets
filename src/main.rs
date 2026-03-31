@@ -2411,7 +2411,7 @@ async fn main() {
             let home_dir = home_dir();
             let report = bootstrap_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
                 .expect("failed to bootstrap adapter plan");
-            let status = collect_status_data(&dir, &identity, &identity_binding);
+            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
             let data = StartData {
                 summary: summarize_start_flow(&report.summary, &status.summary),
                 setup: report.summary.clone(),
@@ -2433,7 +2433,8 @@ async fn main() {
             ttl_hours,
             json,
         } => {
-            let status = collect_status_data(&dir, &identity, &identity_binding);
+            let home_dir = home_dir();
+            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
             let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
             if !status.summary.network_path_ready
                 && !network_snapshot.bootstrap_seed_addresses(8).is_empty()
@@ -2499,7 +2500,7 @@ async fn main() {
                 }
             }
             network_snapshot.save(&dir);
-            let mut status = collect_status_data(&dir, &identity, &binding);
+            let mut status = collect_status_data(&home_dir, &dir, &identity, &binding);
             if report.summary.healthy
                 && !report.summary.restart_required
                 && !report.summary.restart_pending
@@ -2515,7 +2516,7 @@ async fn main() {
                     std::time::Duration::from_secs(12),
                 )
                 .await;
-                status = collect_status_data(&dir, &identity, &binding);
+                status = collect_status_data(&home_dir, &dir, &identity, &binding);
             }
             let data = JoinFlowData {
                 summary: summarize_join_flow(&report.summary, &status.summary),
@@ -3900,7 +3901,8 @@ async fn main() {
         }
 
         Commands::Status { json } => {
-            let data = collect_status_data(&dir, &identity, &identity_binding);
+            let home_dir = home_dir();
+            let data = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "status", &data);
             } else {

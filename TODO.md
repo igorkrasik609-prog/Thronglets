@@ -10,6 +10,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.5`）：
 - 输出原则：`summary first, details second`
 - 身份边界：`device-first, owner-optional`；没有 Oasyce 也必须能先加入和使用，之后再平滑升级到 `owner -> device`
 - 默认用户入口：`start / share / join / status`；低层 `setup / connection-* / owner-bind / runtime-ready` 留给高级和调试场景
+- `thronglets status` 必须继续收敛成唯一总状态页；runtime、identity、network 的默认判断都应先汇聚到这里，再考虑任何新入口
 - 首要产品约束：人的认知负担和热路径 token 一样，都是性能预算
 - 协作主线：共享环境优先于 AI 互发消息；`space / presence / signal / space snapshot` 是主原语，不做 chat/inbox 作为默认模型
 

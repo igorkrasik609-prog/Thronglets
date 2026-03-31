@@ -145,18 +145,42 @@ fn authorization_check_json_surfaces_local_binding_and_final_truth() {
 #[test]
 fn status_json_surfaces_quiet_substrate_activity() {
     let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
     let data_dir = temp.path().join("data");
 
-    let status = run_bin(&["status", "--json"], &data_dir);
+    let status = run_bin_in_home(&["status", "--json"], &home, &data_dir);
 
     assert_eq!(status["command"], "status");
     assert_eq!(status["data"]["summary"]["status"], "local-only");
     assert_eq!(status["data"]["summary"]["network_path_ready"], false);
+    assert_eq!(status["data"]["runtime"]["status"], "not-detected");
+    assert_eq!(
+        status["data"]["runtime"]["detected_agents"],
+        serde_json::json!([])
+    );
     assert_eq!(status["data"]["substrate"]["activity"], "quiet");
     assert_eq!(status["data"]["substrate"]["recent_interventions_15m"], 0);
     assert_eq!(status["data"]["network"]["activity"], "offline");
     assert_eq!(status["data"]["network"]["transport_mode"], "offline");
     assert_eq!(status["data"]["network"]["vps_dependency_level"], "offline");
+}
+
+#[test]
+fn status_text_prioritizes_runtime_restart_when_runtime_is_pending() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let data_dir = temp.path().join("data");
+
+    run_bin_in_home(&["start", "--json"], &home, &data_dir);
+
+    let status_json = run_bin_in_home(&["status", "--json"], &home, &data_dir);
+    assert_eq!(status_json["data"]["runtime"]["status"], "restart-required");
+
+    let output = run_bin_text_in_home(&["status"], &home, &data_dir);
+    assert!(output.contains("Status:           restart once"));
+    assert!(output.contains("Runtime:          restart once"));
+    assert!(output.contains("Restart Codex once"));
 }
 
 #[test]
@@ -444,8 +468,12 @@ fn join_json_defaults_to_desktop_connection_file() {
     run_bin_in_home(&["share", "--json"], &primary_home, &primary_dir);
 
     std::fs::copy(
-        primary_home.join("Desktop").join("thronglets.connection.json"),
-        secondary_home.join("Desktop").join("thronglets.connection.json"),
+        primary_home
+            .join("Desktop")
+            .join("thronglets.connection.json"),
+        secondary_home
+            .join("Desktop")
+            .join("thronglets.connection.json"),
     )
     .unwrap();
 
@@ -484,8 +512,12 @@ fn join_text_hides_inspect_stage_details() {
     run_bin_in_home(&["share", "--json"], &primary_home, &primary_dir);
 
     std::fs::copy(
-        primary_home.join("Desktop").join("thronglets.connection.json"),
-        secondary_home.join("Desktop").join("thronglets.connection.json"),
+        primary_home
+            .join("Desktop")
+            .join("thronglets.connection.json"),
+        secondary_home
+            .join("Desktop")
+            .join("thronglets.connection.json"),
     )
     .unwrap();
 

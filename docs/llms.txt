@@ -14,6 +14,7 @@ It is optimized for:
 ## Product Guardrails
 
 - Default user path: `thronglets start`, `thronglets share`, `thronglets join`, `thronglets status`
+- Treat `thronglets status` as the canonical readiness command. It folds runtime health, identity readiness, network readiness, and the single next step into one place.
 - Do not start normal users with `setup / owner-bind / connection-inspect / net-check / runtime-ready`
 - `Oasyce` is optional for participation and only upgrades ownership / settlement
 - Prefer shared environment primitives over direct AI messaging

@@ -35,6 +35,8 @@ Day to day, only check:
 thronglets status
 ```
 
+`thronglets status` is now the default single status page: it answers whether the local runtime is wired in, whether identity is ready, whether the network is actually live, and what the single next step is.
+
 If you are wiring AI automation rather than showing results to a normal user, there is now one additional thin machine interface:
 
 ```bash

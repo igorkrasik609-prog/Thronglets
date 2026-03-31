@@ -35,6 +35,8 @@ AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出
 thronglets status
 ```
 
+`thronglets status` 现在就是默认总状态页：它会一起回答本地 runtime 是否接好、身份是否就绪、网络是否真正在线，以及下一步只该做什么。
+
 如果你是在写 AI 自动化，而不是给普通人看结果，现在还有一条更薄的机器接口：
 
 ```bash

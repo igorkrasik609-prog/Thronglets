@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Status as the single readiness page** — `thronglets status` now includes a compact runtime summary alongside identity and network readiness, and the human-readable status output now prioritizes local runtime problems like `restart once` or `needs attention` before it falls back to network/path wording
 - **Shared network runtime** — extracted the duplicated `Run` / `Mcp` network orchestration into `src/network_runtime.rs`, so peer-first dialing, bootstrap fallback, same-owner trust promotion, trace receipt handling, evaporation, and optional publish loops now run through one runtime path instead of two slightly divergent copies
 - **Join now attempts the first live connection** — `thronglets join` now briefly reuses the embedded network runtime when it already inherited peer paths, so second-device onboarding can try to prove a same-owner live path immediately and upgrade it into `trusted-same-owner-ready` instead of always stopping at “waiting for the first live connection”
 - **Bootstrap memory and smarter share** — nodes now persist bootstrap addresses as local network memory, shared runtime paths reuse that memory when no explicit bootstrap flags are supplied, and `thronglets share` now briefly tries to learn reusable peer paths before exporting so the primary-device flow is less likely to produce an `identity-only` file unnecessarily
