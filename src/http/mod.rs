@@ -13,9 +13,11 @@
 //! - GET  /v1/query        — query the substrate
 //! - GET  /v1/capabilities — list known capabilities
 //! - GET  /v1/status       — node status
+//! - GET  /v1/authorization — local authorization snapshot
 
 use crate::context::{simhash, similarity};
 use crate::identity::{IdentityBinding, NodeIdentity};
+use crate::identity_surface::{authorization_check_data, identity_summary};
 use crate::posts::{
     DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind,
     SignalScopeFilter, SignalTraceConfig, create_feed_reinforcement_traces,
@@ -102,6 +104,7 @@ fn handle_http_request(ctx: &HttpContext, raw: &str) -> String {
         ("GET", "/v1/query") => handle_get_query(ctx, path),
         ("GET", "/v1/capabilities") => handle_get_capabilities(ctx),
         ("GET", "/v1/status") => handle_get_status(ctx),
+        ("GET", "/v1/authorization") => handle_get_authorization(ctx),
         _ => json!({"error": "not found", "endpoints": [
             "POST /v1/traces",
             "POST /v1/signals",
@@ -111,7 +114,8 @@ fn handle_http_request(ctx: &HttpContext, raw: &str) -> String {
             "GET /v1/presence/feed?hours=1&space=...&limit=10",
             "GET /v1/query?context=...&intent=resolve|evaluate|explore|signals",
             "GET /v1/capabilities",
-            "GET /v1/status"
+            "GET /v1/status",
+            "GET /v1/authorization"
         ]})
         .to_string(),
     }
@@ -570,6 +574,7 @@ fn handle_get_status(ctx: &HttpContext) -> String {
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "node_id": hex_encode(&ctx.identity.public_key_bytes()[..4]),
+        "identity": identity_summary("healthy", ctx.binding.as_ref()),
         "device_identity": ctx.binding.device_identity.clone(),
         "owner_account": ctx.binding.owner_account.clone(),
         "binding_source": ctx.binding.binding_source_or_local(),
@@ -580,6 +585,10 @@ fn handle_get_status(ctx: &HttpContext) -> String {
         "capabilities": cap_count,
     })
     .to_string()
+}
+
+fn handle_get_authorization(ctx: &HttpContext) -> String {
+    json!(authorization_check_data(ctx.binding.as_ref())).to_string()
 }
 
 fn parse_query_params(path: &str) -> HashMap<String, String> {
@@ -740,6 +749,27 @@ mod tests {
         assert_eq!(status_response["capabilities"], 1);
         assert_eq!(status_response["substrate"]["activity"], "quiet");
         assert_eq!(status_response["substrate"]["recent_interventions_15m"], 0);
+        assert_eq!(
+            status_response["identity"]["authorization"]["final_truth_source"],
+            "oasyce_chain"
+        );
+        assert_eq!(
+            status_response["identity"]["authorization"]["authoritative_status"],
+            "not-checked"
+        );
+
+        let authorization_response = parse_body(&handle_http_request(
+            &ctx,
+            "GET /v1/authorization HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        ));
+        assert_eq!(
+            authorization_response["summary"]["final_truth_source"],
+            "oasyce_chain"
+        );
+        assert_eq!(
+            authorization_response["summary"]["execution_boundary"],
+            "device_identity"
+        );
     }
 
     #[test]

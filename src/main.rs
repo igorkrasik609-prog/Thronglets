@@ -23,6 +23,10 @@ use thronglets::identity::{
     ConnectionFile, ConnectionSeedScope, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding,
     NodeIdentity, identity_binding_path,
 };
+use thronglets::identity_surface::{
+    AuthorizationCheckData, IdentitySummary, authorization_check_data, authorization_summary,
+    identity_blueprint, identity_summary,
+};
 use thronglets::mcp::McpContext;
 use thronglets::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use thronglets::posts::{
@@ -219,44 +223,6 @@ struct RuntimeReadyResult {
 struct RuntimeReadyData {
     summary: RuntimeReadySummary,
     results: Vec<RuntimeReadyResult>,
-}
-
-#[derive(Clone, Serialize)]
-struct IdentityRoleBlueprint {
-    definition: &'static str,
-    current_v1_binding: &'static str,
-    current_id: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-struct IdentityBlueprint {
-    version: &'static str,
-    authorization_truth_source: &'static str,
-    public_finality_layer: &'static str,
-    principal: IdentityRoleBlueprint,
-    account: IdentityRoleBlueprint,
-    delegate: IdentityRoleBlueprint,
-    session: IdentityRoleBlueprint,
-}
-
-#[derive(Clone, Serialize)]
-struct AuthorizationSummary {
-    final_truth_source: &'static str,
-    local_binding_status: &'static str,
-    local_binding_source: String,
-    authoritative_status: &'static str,
-    execution_boundary: &'static str,
-}
-
-#[derive(Clone, Serialize)]
-struct IdentitySummary {
-    status: &'static str,
-    owner_account: Option<String>,
-    device_identity: String,
-    binding_source: String,
-    joined_from_device: Option<String>,
-    identity_model: IdentityBlueprint,
-    authorization: AuthorizationSummary,
 }
 
 #[derive(Clone, Serialize)]
@@ -615,6 +581,13 @@ enum Commands {
 
     /// Show node identity
     Id {
+        /// Emit machine-readable JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    /// Show the local authorization snapshot and final truth source.
+    AuthorizationCheck {
         /// Emit machine-readable JSON instead of text.
         #[arg(long, default_value_t = false)]
         json: bool,
@@ -1165,63 +1138,6 @@ fn print_machine_json_with_schema<T: serde::Serialize>(
         command,
         data: value,
     });
-}
-
-fn identity_blueprint(owner_account: Option<String>, device_identity: String) -> IdentityBlueprint {
-    IdentityBlueprint {
-        version: "principal-account-delegate-session.v1",
-        authorization_truth_source: "oasyce_chain",
-        public_finality_layer: "oasyce_chain",
-        principal: IdentityRoleBlueprint {
-            definition: "continuous subject",
-            current_v1_binding: "not-modeled-in-v1",
-            current_id: None,
-        },
-        account: IdentityRoleBlueprint {
-            definition: "asset / settlement container",
-            current_v1_binding: "owner_account",
-            current_id: owner_account,
-        },
-        delegate: IdentityRoleBlueprint {
-            definition: "authorized executor",
-            current_v1_binding: "device_identity",
-            current_id: Some(device_identity),
-        },
-        session: IdentityRoleBlueprint {
-            definition: "one concrete run; never an economic subject",
-            current_v1_binding: "session_id_audit_label",
-            current_id: None,
-        },
-    }
-}
-
-fn authorization_summary(binding: &IdentityBinding) -> AuthorizationSummary {
-    AuthorizationSummary {
-        final_truth_source: "oasyce_chain",
-        local_binding_status: if binding.owner_account.is_some() {
-            "owner-bound"
-        } else {
-            "unbound"
-        },
-        local_binding_source: binding.binding_source_or_local().to_string(),
-        authoritative_status: "not-checked",
-        execution_boundary: "device_identity",
-    }
-}
-
-fn identity_summary(status: &'static str, binding: &IdentityBinding) -> IdentitySummary {
-    IdentitySummary {
-        status,
-        owner_account: binding.owner_account.clone(),
-        device_identity: binding.device_identity.clone(),
-        binding_source: binding.binding_source_or_local().to_string(),
-        joined_from_device: binding.joined_from_device.clone(),
-        identity_model: identity_blueprint(
-            binding.owner_account.clone(),
-            binding.device_identity.clone(),
-        ),
-        authorization: authorization_summary(binding),
-    }
 }
 
 fn connection_readiness_summary(
@@ -3091,6 +3007,45 @@ async fn main() {
                     identity_binding.joined_from_device_or_none()
                 );
                 println!("Data directory:  {}", data.data_dir);
+            }
+        }
+
+        Commands::AuthorizationCheck { json } => {
+            let data: AuthorizationCheckData = authorization_check_data(&identity_binding);
+            if json {
+                print_machine_json_with_schema(
+                    IDENTITY_SCHEMA_VERSION,
+                    "authorization-check",
+                    &data,
+                );
+            } else {
+                println!("Authorization:");
+                println!(
+                    "  Meaning:             local execution state is cached here; Oasyce Chain remains the final authorization truth source."
+                );
+                println!(
+                    "  Local binding:       {}",
+                    data.summary.local_binding_status
+                );
+                println!(
+                    "  Local source:        {}",
+                    data.summary.local_binding_source
+                );
+                println!(
+                    "  Owner account:       {}",
+                    data.owner_account.as_deref().unwrap_or("unbound")
+                );
+                println!("  Device identity:     {}", data.device_identity);
+                println!(
+                    "  Joined from device:  {}",
+                    data.joined_from_device.as_deref().unwrap_or("none")
+                );
+                println!("  Final truth source:  {}", data.summary.final_truth_source);
+                println!(
+                    "  Authoritative check: {}",
+                    data.summary.authoritative_status
+                );
+                println!("  Execution boundary:  {}", data.summary.execution_boundary);
             }
         }
 

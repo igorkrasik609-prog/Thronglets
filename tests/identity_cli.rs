@@ -115,6 +115,34 @@ fn id_json_surfaces_identity_summary() {
 }
 
 #[test]
+fn authorization_check_json_surfaces_local_binding_and_final_truth() {
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("data");
+
+    let data = run_bin(&["authorization-check", "--json"], &data_dir);
+
+    assert_eq!(data["schema_version"], "thronglets.identity.v2");
+    assert_eq!(data["command"], "authorization-check");
+    assert_eq!(
+        data["data"]["summary"]["final_truth_source"],
+        "oasyce_chain"
+    );
+    assert_eq!(data["data"]["summary"]["local_binding_status"], "unbound");
+    assert_eq!(
+        data["data"]["summary"]["authoritative_status"],
+        "not-checked"
+    );
+    assert_eq!(
+        data["data"]["summary"]["execution_boundary"],
+        "device_identity"
+    );
+    assert_eq!(
+        data["data"]["identity_model"]["delegate"]["current_v1_binding"],
+        "device_identity"
+    );
+}
+
+#[test]
 fn status_json_surfaces_quiet_substrate_activity() {
     let temp = TempDir::new().unwrap();
     let data_dir = temp.path().join("data");

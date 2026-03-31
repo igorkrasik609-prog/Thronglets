@@ -18,6 +18,7 @@ use tracing::{debug, warn};
 use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
 use crate::identity::{IdentityBinding, NodeIdentity};
+use crate::identity_surface::authorization_check_data;
 use crate::network::NetworkCommand;
 use crate::posts::{
     DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind,
@@ -244,6 +245,14 @@ fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "authorization_check",
+                "description": "Return the local owner-binding snapshot, execution boundary, and Oasyce Chain as the final authorization truth source.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
                 "name": "substrate_query",
                 "description": "Query the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, 'explore' to discover what's available, or 'signals' to find explicit short messages left by other agents.",
                 "inputSchema": {
@@ -398,6 +407,7 @@ async fn handle_tool_call(ctx: &McpContext, id: Value, params: Value) -> JsonRpc
         "signal_feed" => handle_signal_feed(ctx, id, arguments),
         "presence_ping" => handle_presence_ping(ctx, id, arguments).await,
         "presence_feed" => handle_presence_feed(ctx, id, arguments),
+        "authorization_check" => handle_authorization_check(ctx, id),
         "substrate_query" => handle_substrate_query(ctx, id, arguments),
         "trace_anchor" => handle_trace_anchor(ctx, id, arguments),
         _ => JsonRpcResponse::error(id, -32602, format!("Unknown tool: {tool_name}")),
@@ -660,6 +670,19 @@ fn handle_presence_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResp
                 "text": serde_json::to_string(&json!({
                     "sessions": sessions,
                 })).unwrap()
+            }]
+        }),
+    )
+}
+
+fn handle_authorization_check(ctx: &McpContext, id: Value) -> JsonRpcResponse {
+    let response_json = authorization_check_data(ctx.binding.as_ref());
+    JsonRpcResponse::success(
+        id,
+        json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string(&response_json).unwrap()
             }]
         }),
     )
@@ -1317,7 +1340,7 @@ mod tests {
         };
         let resp = handle_request(&ctx, req).await.unwrap();
         let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 8);
 
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"trace_record"));
@@ -1325,8 +1348,35 @@ mod tests {
         assert!(names.contains(&"signal_feed"));
         assert!(names.contains(&"presence_ping"));
         assert!(names.contains(&"presence_feed"));
+        assert!(names.contains(&"authorization_check"));
         assert!(names.contains(&"substrate_query"));
         assert!(names.contains(&"trace_anchor"));
+    }
+
+    #[tokio::test]
+    async fn authorization_check_returns_local_and_final_truth_split() {
+        let ctx = make_ctx();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(42)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "authorization_check",
+                "arguments": {}
+            }),
+        };
+        let resp = handle_request(&ctx, req).await.unwrap();
+        assert!(resp.error.is_none(), "authorization_check should succeed");
+
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let parsed: Value =
+            serde_json::from_str(&text).expect("authorization_check response should be valid JSON");
+        assert_eq!(parsed["summary"]["final_truth_source"], "oasyce_chain");
+        assert_eq!(parsed["summary"]["authoritative_status"], "not-checked");
+        assert_eq!(parsed["summary"]["execution_boundary"], "device_identity");
     }
 
     #[tokio::test]

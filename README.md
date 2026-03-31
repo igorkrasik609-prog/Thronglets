@@ -33,6 +33,18 @@ AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出
 thronglets status
 ```
 
+如果你是在写 AI 自动化，而不是给普通人看结果，现在还有一条更薄的机器接口：
+
+```bash
+thronglets authorization-check --json
+```
+
+它只回答：
+- 本地缓存了什么 owner 绑定
+- 当前执行边界是什么
+- `Oasyce Chain` 是最终授权真相源
+- 当前 authoritative status 仍然是 `not-checked`，直到真正链上校验接入
+
 如果文档、AI 助手、或者产品流程要求你先理解 `setup / owner-bind / connection-inspect / net-check / runtime-ready`，那是产品还没有收干净，不是用户的问题。
 
 ## 4 类信号，不是 8 层报告

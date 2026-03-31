@@ -33,6 +33,18 @@ Day to day, only check:
 thronglets status
 ```
 
+If you are wiring AI automation rather than showing results to a normal user, there is now one additional thin machine interface:
+
+```bash
+thronglets authorization-check --json
+```
+
+It answers only this:
+- what owner-binding state is cached locally
+- what the current execution boundary is
+- that `Oasyce Chain` is the final authorization truth source
+- and that authoritative status remains `not-checked` until real chain verification is wired in
+
 If the docs, an AI assistant, or the product flow asks a normal user to first understand `setup / owner-bind / connection-inspect / net-check / runtime-ready`, that is a product failure, not a user failure.
 
 ## 4 Signal Classes, Not 8 Reports
