@@ -7,13 +7,13 @@
     "url": "https://github.com/Shangri-la-0428/Thronglets",
     "source": "github"
   },
-  "version": "0.5.0",
+  "version": "0.5.1",
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Shangri-la-0428/Thronglets/releases/download/v0.5.0/thronglets-mcp-darwin-arm64",
-      "version": "0.5.0",
-      "fileSha256": "e0947a20665b366810fc70d01ab70a0b6f399d4514b5e0491793fe0a35fd0416",
+      "identifier": "https://github.com/Shangri-la-0428/Thronglets/releases/download/v0.5.1/thronglets-mcp-darwin-arm64",
+      "version": "0.5.1",
+      "fileSha256": "a64cde384d6c5318060f7ab1a5b6a787384a6fb23d9a14862dea9cbb58277a29",
       "transport": {
         "type": "stdio"
       },
@@ -26,9 +26,9 @@
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Shangri-la-0428/Thronglets/releases/download/v0.5.0/thronglets-mcp-linux-amd64",
-      "version": "0.5.0",
-      "fileSha256": "aa80ef2ee8bbc53fb197c06ff6b4d16d081f27d5620ec786898c8a2680b16c1b",
+      "identifier": "https://github.com/Shangri-la-0428/Thronglets/releases/download/v0.5.1/thronglets-mcp-linux-amd64",
+      "version": "0.5.1",
+      "fileSha256": "dabcfe33630e4e14b77025d9d164eb2b2c9b02e8269db56b203eed6224e6113e",
       "transport": {
         "type": "stdio"
       },
@@ -41,9 +41,9 @@
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Shangri-la-0428/Thronglets/releases/download/v0.5.0/thronglets-mcp-windows-amd64.exe",
-      "version": "0.5.0",
-      "fileSha256": "998a5ba0e4a586d640057fb7db960823ea4706df905fc1057a5d7f2620bf25ac",
+      "identifier": "https://github.com/Shangri-la-0428/Thronglets/releases/download/v0.5.1/thronglets-mcp-windows-amd64.exe",
+      "version": "0.5.1",
+      "fileSha256": "47b63e28dcca72abc75be1a72c92639a357235f839ef50e2091fa27f839e8a98",
       "transport": {
         "type": "stdio"
       },
