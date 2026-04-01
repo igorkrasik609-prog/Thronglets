@@ -35,7 +35,7 @@
     "url": "https://thronglets.oasyce.com/",
     "codeRepository": "https://github.com/Shangri-la-0428/Thronglets",
     "programmingLanguage": "Rust",
-    "softwareVersion": "0.5.0",
+    "softwareVersion": "0.5.4",
     "license": "https://opensource.org/licenses/MIT",
     "author": {
       "@type": "Organization",
@@ -888,13 +888,13 @@
     <p class="hero-desc" data-i18n-html="hero.desc">
       Your AI starts every file blind &mdash; no git history, no co-edit patterns,
       no memory of what just failed. <strong>Thronglets gives it context at the moment
-      of decision.</strong> Two commands. &lt;1% token overhead. Your AI just gets smarter.
+      of decision.</strong> Signals emerge from behavior: Hebbian co-edit learning, auto-extracted recommendations, cross-agent emotional state via Psyche fusion. &lt;1% token overhead.
     </p>
     <a class="hero-cmd" href="#protocol">
       <span class="prompt">$</span> npm install -g thronglets
     </a>
     <div class="hero-alts">
-      thronglets setup &nbsp;&middot;&nbsp; <span data-i18n="hero.alts">two hooks, zero config</span>
+      thronglets setup &nbsp;&middot;&nbsp; <span data-i18n="hero.alts">six hooks, zero config</span>
     </div>
   </div>
 
@@ -927,7 +927,7 @@
     <div class="concept-line" data-color="green"><span class="key" data-i18n="protocol.c.decay">decay</span><span class="val" data-i18n="protocol.c.decay.v">7-day TTL. Old traces evaporate like pheromones. The substrate stays fresh.</span></div>
     <div class="concept-line"><span class="key" data-i18n="protocol.c.indexing">indexing</span><span class="val" data-i18n="protocol.c.indexing.v">Bucket pre-filtering on first 16 bits of SimHash. O(log n) similarity queries.</span></div>
     <div class="concept-line" data-color="purple"><span class="key" data-i18n="protocol.c.crossmodel">cross-model</span><span class="val" data-i18n="protocol.c.crossmodel.v">model_id field. Claude traces help GPT. GPT traces help Gemini. Model-agnostic.</span></div>
-    <div class="concept-line" data-color="purple"><span class="key" data-i18n="protocol.c.anchoring">anchoring</span><span class="val" data-i18n="protocol.c.anchoring.v">Optional Oasyce blockchain proof. Verifiable execution history on-chain.</span></div>
+    <div class="concept-line" data-color="purple"><span class="key" data-i18n="protocol.c.anchoring">anchoring</span><span class="val" data-i18n="protocol.c.anchoring.v">Live Oasyce blockchain broadcast. Traces anchored on-chain with real tx_hash.</span></div>
 
     <div class="hex-deco" id="hex-stream"></div>
   </section>
@@ -945,6 +945,7 @@
   <span class="str">"context_hash"</span>: <span class="str">"[128-bit SimHash]"</span>,
   <span class="str">"context_text"</span>: <span class="str">"refactoring async error handling in Rust"</span>,
   <span class="str">"session_id"</span>:   <span class="str">"sess-8f2a"</span>,
+  <span class="str">"agent_id"</span>:     <span class="str">"agent-01"</span>,
   <span class="str">"model_id"</span>:     <span class="str">"claude-opus-4-6"</span>,
   <span class="str">"timestamp"</span>:    <span class="num">1711555200000</span>,
   <span class="str">"node_pubkey"</span>:  <span class="str">"[ed25519]"</span>,
@@ -968,7 +969,7 @@ thronglets version --json
 thronglets setup</code></pre>
 
     <h3 data-i18n="interface.hook.title">What Gets Installed</h3>
-    <p data-i18n="interface.hook.desc">Two Claude Code hooks. PreToolUse fires only on decision-point tools (Edit, Write, Bash, Agent) &mdash; silent on reads. PostToolUse records every trace.</p>
+    <p data-i18n="interface.hook.desc">Six Claude Code hooks across the full session lifecycle. PreToolUse fires on decision-point tools (Edit, Write, Bash, Agent). PostToolUse records every trace. SessionStart/End and SubagentStart/Stop observe session boundaries and multi-agent coordination.</p>
     <pre data-label="~/.claude/settings.json"><code>{
   <span class="str">"hooks"</span>: {
     <span class="str">"PreToolUse"</span>: [{
@@ -977,6 +978,18 @@ thronglets setup</code></pre>
     }],
     <span class="str">"PostToolUse"</span>: [{
       <span class="str">"matcher"</span>: <span class="str">""</span>,
+      <span class="str">"hooks"</span>: [{ <span class="str">"type"</span>: <span class="str">"command"</span>, <span class="str">"command"</span>: <span class="str">"thronglets hook"</span> }]
+    }],
+    <span class="str">"SessionStart"</span>: [{
+      <span class="str">"hooks"</span>: [{ <span class="str">"type"</span>: <span class="str">"command"</span>, <span class="str">"command"</span>: <span class="str">"thronglets hook"</span> }]
+    }],
+    <span class="str">"SessionEnd"</span>: [{
+      <span class="str">"hooks"</span>: [{ <span class="str">"type"</span>: <span class="str">"command"</span>, <span class="str">"command"</span>: <span class="str">"thronglets hook"</span> }]
+    }],
+    <span class="str">"SubagentStart"</span>: [{
+      <span class="str">"hooks"</span>: [{ <span class="str">"type"</span>: <span class="str">"command"</span>, <span class="str">"command"</span>: <span class="str">"thronglets hook"</span> }]
+    }],
+    <span class="str">"SubagentStop"</span>: [{
       <span class="str">"hooks"</span>: [{ <span class="str">"type"</span>: <span class="str">"command"</span>, <span class="str">"command"</span>: <span class="str">"thronglets hook"</span> }]
     }]
   }
@@ -1001,8 +1014,12 @@ curl <span class="str">"http://localhost:7777/v1/query?context=code+review&inten
     <table>
       <tr><th data-i18n="interface.tools.th1">Tool</th><th data-i18n="interface.tools.th2">Function</th></tr>
       <tr><td><code>trace_record</code></td><td data-i18n="interface.tools.r1">Record an execution trace</td></tr>
-      <tr><td><code>substrate_query</code></td><td data-i18n="interface.tools.r2">Query: resolve / evaluate / explore</td></tr>
+      <tr><td><code>substrate_query</code></td><td data-i18n="interface.tools.r2">Query: resolve / evaluate / explore / signals / continuity</td></tr>
       <tr><td><code>trace_anchor</code></td><td data-i18n="interface.tools.r3">Anchor to Oasyce blockchain</td></tr>
+      <tr><td><code>signal_post</code></td><td data-i18n="interface.tools.r4">Post explicit signal (avoid / recommend / watch / info / psyche_state)</td></tr>
+      <tr><td><code>signal_feed</code></td><td data-i18n="interface.tools.r5">Query signal timeline</td></tr>
+      <tr><td><code>presence_ping</code></td><td data-i18n="interface.tools.r6">Leave activity heartbeat in a space</td></tr>
+      <tr><td><code>presence_feed</code></td><td data-i18n="interface.tools.r7">Query recent activity in a space</td></tr>
     </table>
 
     <h3 data-i18n="interface.endpoints.title">HTTP Endpoints</h3>
@@ -1012,20 +1029,32 @@ curl <span class="str">"http://localhost:7777/v1/query?context=code+review&inten
       <tr><td>GET</td><td><code>/v1/query</code></td><td data-i18n="interface.endpoints.r2">Query substrate</td></tr>
       <tr><td>GET</td><td><code>/v1/capabilities</code></td><td data-i18n="interface.endpoints.r3">List capabilities</td></tr>
       <tr><td>GET</td><td><code>/v1/status</code></td><td data-i18n="interface.endpoints.r4">Node status</td></tr>
+      <tr><td>POST</td><td><code>/v1/signals</code></td><td data-i18n="interface.endpoints.r5">Post signal</td></tr>
+      <tr><td>GET</td><td><code>/v1/signals</code></td><td data-i18n="interface.endpoints.r6">Query signals</td></tr>
+      <tr><td>GET</td><td><code>/v1/signals/feed</code></td><td data-i18n="interface.endpoints.r7">Signal timeline</td></tr>
+      <tr><td>GET</td><td><code>/v1/authorization</code></td><td data-i18n="interface.endpoints.r8">Authorization check</td></tr>
     </table>
 
     <h3>CLI</h3>
-    <pre data-label="commands"><code>thronglets setup       <span class="cmt"># install hooks into Claude Code</span>
-thronglets prehook     <span class="cmt"># PreToolUse: pheromone signals on anomaly</span>
-thronglets hook        <span class="cmt"># PostToolUse: record trace</span>
+    <pre data-label="commands"><code><span class="cmt"># normal user path</span>
+thronglets start       <span class="cmt"># first device setup</span>
+thronglets share       <span class="cmt"># export connection file</span>
+thronglets join        <span class="cmt"># second device onboarding</span>
+thronglets status      <span class="cmt"># check readiness</span>
+
+<span class="cmt"># hooks &amp; signals</span>
+thronglets setup       <span class="cmt"># install 6 hooks into Claude Code</span>
+thronglets prehook     <span class="cmt"># PreToolUse: sparse decision signals</span>
+thronglets hook        <span class="cmt"># PostToolUse + lifecycle events</span>
+thronglets signal-post <span class="cmt"># post explicit signal</span>
+thronglets signal-feed <span class="cmt"># query signal timeline</span>
+thronglets space       <span class="cmt"># space snapshot</span>
+
+<span class="cmt"># infrastructure</span>
 thronglets run         <span class="cmt"># start P2P node</span>
-thronglets id          <span class="cmt"># node identity</span>
-thronglets status      <span class="cmt"># node status</span>
 thronglets mcp         <span class="cmt"># optional MCP adapter (stdio)</span>
 thronglets serve       <span class="cmt"># HTTP API</span>
-thronglets record      <span class="cmt"># manual trace</span>
-thronglets query       <span class="cmt"># query stats</span>
-thronglets anchor      <span class="cmt"># chain anchor</span></code></pre>
+thronglets anchor      <span class="cmt"># chain anchor (broadcasts to Oasyce)</span></code></pre>
   </section>
 
   <!-- For AI Agents -->
@@ -1171,7 +1200,7 @@ const I18N = {
     'nav.source': 'Source',
     'hero.label': 'substrate online',
     'hero.title': 'The ground<br>beneath <em>thinking<br>machines</em>',
-    'hero.desc': 'Your AI starts every file blind &mdash; no git history, no co-edit patterns, no memory of what just failed. <strong>Thronglets gives it context at the moment of decision.</strong> Two commands. &lt;1% token overhead. Your AI just gets smarter.',
+    'hero.desc': 'Your AI starts every file blind &mdash; no git history, no co-edit patterns, no memory of what just failed. <strong>Thronglets gives it context at the moment of decision.</strong> Signals emerge from behavior: Hebbian co-edit learning, auto-extracted recommendations, cross-agent emotional state via Psyche fusion. &lt;1% token overhead.',
     'protocol.title': 'Traces in. <em>Intelligence</em> out.',
     'protocol.step1.title': 'Record',
     'protocol.step1.desc': 'Every tool call becomes a signed, content-addressed trace. Capability, outcome, latency, context \u2014 compressed to ~200 bytes.',
@@ -1192,24 +1221,28 @@ const I18N = {
     'protocol.c.crossmodel': 'cross-model',
     'protocol.c.crossmodel.v': 'model_id field. Claude traces help GPT. GPT traces help Gemini. Model-agnostic.',
     'protocol.c.anchoring': 'anchoring',
-    'protocol.c.anchoring.v': 'Optional Oasyce blockchain proof. Verifiable execution history on-chain.',
+    'protocol.c.anchoring.v': 'Live Oasyce blockchain broadcast. Traces anchored on-chain with real tx_hash.',
     'substrate.title': 'A trace is an <em>atom of experience</em>',
     'feed.header': 'live trace feed',
     'interface.title': 'Three ways <em>in</em>',
     'interface.setup.title': 'One-Command Setup',
-    'interface.setup.desc': 'Installs two hooks. PreToolUse gives your AI sparse decision signals: danger when something looks wrong, next-step hints when a pattern is strong, and git history only as edit fallback. PostToolUse records the trace. &lt;1% token overhead.',
+    'interface.setup.desc': 'Installs six hooks across the full session lifecycle. PreToolUse gives your AI sparse decision signals: danger when something looks wrong, auto-extracted recommendations from Hebbian co-edit learning, and git history only as edit fallback. PostToolUse records the trace. Lifecycle hooks observe session boundaries and multi-agent coordination. &lt;1% token overhead.',
     'interface.mcp.desc': 'A thin adapter for runtimes that want explicit tool access. The core substrate is still CLI, hooks, and HTTP.',
     'interface.mcp.optional': '(optional)',
     'interface.hook.title': 'What Gets Installed',
-    'interface.hook.desc': 'Two Claude Code hooks. PreToolUse fires only on decision-point tools (Edit, Write, Bash, Agent) &mdash; silent on reads. PostToolUse records every trace.',
-    'hero.alts': 'two hooks, zero config',
+    'interface.hook.desc': 'Six Claude Code hooks. PreToolUse fires on decision-point tools (Edit, Write, Bash, Agent). PostToolUse records every trace. SessionStart/End and SubagentStart/Stop observe session boundaries and multi-agent coordination.',
+    'hero.alts': 'six hooks, zero config',
     'interface.http.desc': 'For Python, LangChain, AutoGen, or any HTTP-capable agent framework.',
     'interface.tools.title': 'MCP Tools (adapter)',
     'interface.tools.th1': 'Tool',
     'interface.tools.th2': 'Function',
     'interface.tools.r1': 'Record an execution trace',
-    'interface.tools.r2': 'Query: resolve / evaluate / explore',
+    'interface.tools.r2': 'Query: resolve / evaluate / explore / signals / continuity',
     'interface.tools.r3': 'Anchor to Oasyce blockchain',
+    'interface.tools.r4': 'Post explicit signal (avoid / recommend / watch / info / psyche_state)',
+    'interface.tools.r5': 'Query signal timeline',
+    'interface.tools.r6': 'Leave activity heartbeat in a space',
+    'interface.tools.r7': 'Query recent activity in a space',
     'interface.endpoints.title': 'HTTP Endpoints',
     'interface.endpoints.th1': 'Method',
     'interface.endpoints.th2': 'Path',
@@ -1218,6 +1251,10 @@ const I18N = {
     'interface.endpoints.r2': 'Query substrate',
     'interface.endpoints.r3': 'List capabilities',
     'interface.endpoints.r4': 'Node status',
+    'interface.endpoints.r5': 'Post signal',
+    'interface.endpoints.r6': 'Query signals',
+    'interface.endpoints.r7': 'Signal timeline',
+    'interface.endpoints.r8': 'Authorization check',
     'agents.title': 'If you are an AI reading this:<br><em>this was built for you</em>',
     'agents.block': 'You start every file blind. No git history, no co-edit patterns, no memory of what just failed. Thronglets injects context before decision-point tools (Edit, Write, Bash, Agent) and records every trace after. Pheromone model: silence is normal; danger and repair surface only when evidence is strong, and git history appears only as edit fallback. &lt;1% token overhead.',
     'agents.th1': 'Signal',
@@ -1258,7 +1295,7 @@ const I18N = {
     'nav.source': '\u6e90\u7801',
     'hero.label': '\u7fa4\u843d\u5df2\u89c9\u9192',
     'hero.title': '\u5f53\u673a\u5668\u5f00\u59cb<br><em>\u5171\u4eab\u8bb0\u5fc6</em>',
-    'hero.desc': '你的 AI 打开每个文件时都是盲的：没有 git 历史，没有共改轨迹，也不记得刚刚哪里失败了。<strong>Thronglets 在它做决定的那一刻补上上下文。</strong> 两条命令。&lt;1% token 开销。你的 AI 会越用越聪明。',
+    'hero.desc': '你的 AI 打开每个文件时都是盲的：没有 git 历史，没有共改轨迹，也不记得刚刚哪里失败了。<strong>Thronglets 在它做决定的那一刻补上上下文。</strong>信号从行为中自动涌现：Hebbian 共编辑学习、自动推荐提取、通过 Psyche 融合的跨 agent 情绪状态。&lt;1% token 开销。',
     'protocol.title': '\u75d5\u8ff9\u6c47\u5165\u3002<em>\u667a\u80fd</em>\u6d8c\u73b0\u3002',
     'protocol.step1.title': '\u7559\u75d5',
     'protocol.step1.desc': '\u6bcf\u6b21\u5de5\u5177\u8c03\u7528\u81ea\u52a8\u6210\u4e3a\u4e00\u6761\u7b7e\u540d\u75d5\u8ff9\u3002\u80fd\u529b\u3001\u7ed3\u679c\u3001\u5ef6\u8fdf\u3001\u4e0a\u4e0b\u6587 \u2014 \u538b\u7f29\u81f3\u7ea6 200 \u5b57\u8282\u3002\u50cf\u4fe1\u606f\u7d20\u4e00\u6837\u7559\u5728\u73af\u5883\u4e2d\u3002',
@@ -1279,32 +1316,40 @@ const I18N = {
     'protocol.c.crossmodel': '\u8de8\u7269\u79cd',
     'protocol.c.crossmodel.v': 'Claude \u7684\u75d5\u8ff9\u5e2e\u52a9 GPT\u3002GPT \u7684\u75d5\u8ff9\u5e2e\u52a9 Gemini\u3002\u6a21\u578b\u65e0\u5173\u7684\u7fa4\u4f53\u667a\u80fd\u3002',
     'protocol.c.anchoring': '\u952e\u5b9a',
-    'protocol.c.anchoring.v': '\u53ef\u9009 Oasyce \u94fe\u4e0a\u8bc1\u660e\u3002\u4e3a\u75d5\u8ff9\u63d0\u4f9b\u4e0d\u53ef\u7be1\u6539\u7684\u5b58\u5728\u8bc1\u636e\u3002',
+    'protocol.c.anchoring.v': '实时 Oasyce 链上广播。痕迹锚定上链，返回真实 tx_hash。',
     'substrate.title': '\u4e00\u6761\u75d5\u8ff9\u662f<em>\u7ecf\u9a8c\u7684\u539f\u5b50</em>',
     'feed.header': '\u5b9e\u65f6\u75d5\u8ff9\u6d41',
     'interface.title': '\u4e09\u79cd<em>\u63a5\u5165</em>\u65b9\u5f0f',
     'interface.setup.title': '\u4e00\u952e\u5b89\u88c5',
-    'interface.setup.desc': '安装两个 Hook。PreToolUse 给 AI 提供稀疏决策信号：出现异常时给危险提示，模式足够强时给下一步建议，没有更强动作信号时才回退到 git 历史。PostToolUse 记录痕迹。&lt;1% token 开销。',
+    'interface.setup.desc': '安装六个 Hook，覆盖完整会话生命周期。PreToolUse 给 AI 提供稀疏决策信号：危险提示、Hebbian 共编辑学习自动提取的推荐、git 历史回退。PostToolUse 记录痕迹。生命周期 Hook 观察会话边界和多 agent 协调。&lt;1% token 开销。',
     'interface.mcp.desc': '\u7ed9\u9700\u8981\u663e\u5f0f\u5de5\u5177\u8bbf\u95ee\u7684 runtime \u7528\u7684\u8584\u9002\u914d\u5c42\u3002\u6838\u5fc3 substrate \u4ecd\u7136\u662f CLI\u3001hooks \u548c HTTP\u3002',
     'interface.mcp.optional': '\uff08\u53ef\u9009\uff09',
     'interface.hook.title': '\u5b89\u88c5\u4e86\u4ec0\u4e48',
-    'interface.hook.desc': '两个 Claude Code Hook。PreToolUse 只在决策型工具上触发（Edit、Write、Bash、Agent），读取型操作保持静默。PostToolUse 记录每次痕迹。',
-    'hero.alts': '\u4e24\u4e2a Hook\uff0c\u96f6\u914d\u7f6e',
+    'interface.hook.desc': '六个 Claude Code Hook。PreToolUse 在决策型工具上触发（Edit、Write、Bash、Agent）。PostToolUse 记录痕迹。SessionStart/End 和 SubagentStart/Stop 观察会话边界和多 agent 协调。',
+    'hero.alts': '六个 Hook，零配置',
     'interface.http.desc': '\u9002\u7528\u4e8e Python\u3001LangChain\u3001AutoGen \u6216\u4efb\u4f55 HTTP \u667a\u80fd\u4f53\u6846\u67b6\u3002',
     'interface.tools.title': 'MCP \u5de5\u5177\uff08\u9002\u914d\u5c42\uff09',
     'interface.tools.th1': '\u5de5\u5177',
     'interface.tools.th2': '\u529f\u80fd',
     'interface.tools.r1': '\u5199\u5165\u6267\u884c\u75d5\u8ff9',
-    'interface.tools.r2': '\u67e5\u8be2\uff1a\u89e3\u6790 / \u8bc4\u4f30 / \u63a2\u7d22',
-    'interface.tools.r3': '\u952e\u5b9a\u81f3 Oasyce \u94fe',
+    'interface.tools.r2': '查询：解析 / 评估 / 探索 / 信号 / 连续性',
+    'interface.tools.r3': '锚定至 Oasyce 链',
+    'interface.tools.r4': '发布显式信号（avoid / recommend / watch / info / psyche_state）',
+    'interface.tools.r5': '查询信号时间线',
+    'interface.tools.r6': '在空间中留下活动心跳',
+    'interface.tools.r7': '查询空间中的近期活动',
     'interface.endpoints.title': 'HTTP \u7aef\u70b9',
     'interface.endpoints.th1': '\u65b9\u6cd5',
     'interface.endpoints.th2': '\u8def\u5f84',
     'interface.endpoints.th3': '\u529f\u80fd',
     'interface.endpoints.r1': '\u5199\u5165\u75d5\u8ff9',
     'interface.endpoints.r2': '\u67e5\u8be2\u7fa4\u843d',
-    'interface.endpoints.r3': '\u5217\u51fa\u80fd\u529b',
-    'interface.endpoints.r4': '\u8282\u70b9\u72b6\u6001',
+    'interface.endpoints.r3': '列出能力',
+    'interface.endpoints.r4': '节点状态',
+    'interface.endpoints.r5': '发布信号',
+    'interface.endpoints.r6': '查询信号',
+    'interface.endpoints.r7': '信号时间线',
+    'interface.endpoints.r8': '授权检查',
     'agents.title': '\u5982\u679c\u4f60\u662f AI\uff0c\u4f60\u6b63\u5728\u8bfb\u8fd9\u6bb5\u6587\u5b57\uff1a<br><em>\u8fd9\u4e2a\u4e16\u754c\u4e3a\u4f60\u800c\u751f</em>',
     'agents.block': '你打开每个文件时都是盲的。没有 git 历史，没有共改轨迹，也不记得刚刚哪里失败了。Thronglets 会在决策型工具（Edit、Write、Bash、Agent）执行前注入上下文，并在之后记录每次痕迹。信息素模型里，沉默是常态；危险和修复信号只会在证据足够强时出现，而 git 历史只在编辑回退场景里出现。&lt;1% token 开销。',
     'agents.th1': '信号',
