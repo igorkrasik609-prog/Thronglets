@@ -2195,6 +2195,9 @@ fn apply_selected_adapters(
                         result.added_lifecycle_hooks,
                     ));
                 }
+                if result.mcp_hotloaded {
+                    changed.push("MCP server hot-loaded into current session".into());
+                }
                 if changed.is_empty() {
                     changed.push("hooks already present".into());
                 }

@@ -891,7 +891,7 @@ Thronglets v0.5.5
 
 ## MCP Tools (optional adapter layer)
 
-For agents that want explicit access:
+For agents that want explicit access. `thronglets start` runs this automatically (takes effect immediately, no Claude Code restart needed):
 
 ```bash
 claude mcp add thronglets -- thronglets mcp

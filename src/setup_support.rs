@@ -46,6 +46,7 @@ pub struct ClaudeSetupResult {
     pub added_post_hook: bool,
     pub added_pre_hook: bool,
     pub added_lifecycle_hooks: u8,
+    pub mcp_hotloaded: bool,
 }
 
 pub struct OpenClawSetupResult {
@@ -320,12 +321,29 @@ pub fn install_claude(
     let formatted = serde_json::to_string_pretty(&settings)?;
     fs::write(&settings_path, formatted)?;
 
+    let mcp_hotloaded = hotload_claude_mcp(&launcher);
+
     Ok(ClaudeSetupResult {
         settings_path,
         added_post_hook,
         added_pre_hook,
         added_lifecycle_hooks,
+        mcp_hotloaded,
     })
+}
+
+/// Hot-load MCP server into a running Claude Code session via `claude mcp add`.
+/// Returns true if the command succeeded (Claude Code is running and accepted it).
+/// Silently returns false if `claude` is not on PATH or the command fails —
+/// hooks still work, MCP just won't be available until next session.
+fn hotload_claude_mcp(launcher: &Path) -> bool {
+    let launcher_str = launcher.to_string_lossy();
+    Command::new("claude")
+        .args(["mcp", "add", "thronglets", "--", &launcher_str, "mcp"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 pub fn install_openclaw(

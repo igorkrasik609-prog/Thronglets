@@ -5,6 +5,7 @@
 ## v0.5.5 — 2026-04-01
 
 - **Ambient presence** — MCP agents no longer need to call `presence_ping`; `initialize` auto-emits arrival, every `tools/call` refreshes presence at TTL/6 intervals (derived, not hardcoded), and model identity is learned passively from tool call arguments; signal injection remains the hook layer's responsibility — MCP does exactly one ambient thing: presence
+- **Claude Code MCP hot-load** — `thronglets start` now runs `claude mcp add thronglets` during Claude adapter setup, so the MCP server is available in the current session immediately without restart
 
 ## v0.5.4 — 2026-04-01
 

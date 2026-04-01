@@ -890,7 +890,7 @@ Thronglets v0.5.5
 
 ## MCP 工具（可选适配层）
 
-让 agent 显式访问基底：
+让 agent 显式访问基底。`thronglets start` 会自动执行此步骤（即时生效，无需重启 Claude Code）：
 
 ```bash
 claude mcp add thronglets -- thronglets mcp
