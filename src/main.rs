@@ -12,7 +12,7 @@ use serde::Serialize;
 use setup_support::{
     AdapterApplyResult, AdapterDetection, AdapterDoctor, AdapterKind, AdapterPlan,
     auto_clear_restart_pending_on_runtime_contact, clear_restart_pending, detect_adapter,
-    doctor_adapter, install_claude, install_codex, install_openclaw, install_plan,
+    doctor_adapter, install_claude, install_codex, install_cursor, install_openclaw, install_plan,
     set_restart_pending,
 };
 use std::path::{Path, PathBuf};
@@ -380,6 +380,7 @@ enum AdapterArg {
     All,
     Claude,
     Codex,
+    Cursor,
     Openclaw,
     Generic,
 }
@@ -401,6 +402,7 @@ impl AdapterArg {
             Self::All => true,
             Self::Claude => matches!(adapter, AdapterKind::Claude),
             Self::Codex => matches!(adapter, AdapterKind::Codex),
+            Self::Cursor => matches!(adapter, AdapterKind::Cursor),
             Self::Openclaw => matches!(adapter, AdapterKind::OpenClaw),
             Self::Generic => matches!(adapter, AdapterKind::Generic),
         }
@@ -411,6 +413,7 @@ impl AdapterArg {
             Self::All => None,
             Self::Claude => Some(AdapterKind::Claude),
             Self::Codex => Some(AdapterKind::Codex),
+            Self::Cursor => Some(AdapterKind::Cursor),
             Self::Openclaw => Some(AdapterKind::OpenClaw),
             Self::Generic => Some(AdapterKind::Generic),
         }
@@ -1065,6 +1068,7 @@ fn selected_adapters(target: AdapterArg) -> Vec<AdapterKind> {
     [
         AdapterKind::Claude,
         AdapterKind::Codex,
+        AdapterKind::Cursor,
         AdapterKind::OpenClaw,
         AdapterKind::Generic,
     ]
@@ -1083,7 +1087,7 @@ fn selected_known_adapters(target: AdapterArg) -> Vec<AdapterKind> {
 fn selected_restart_adapters(target: AdapterArg) -> Vec<AdapterKind> {
     selected_known_adapters(target)
         .into_iter()
-        .filter(|adapter| matches!(adapter, AdapterKind::Codex | AdapterKind::OpenClaw))
+        .filter(|adapter| matches!(adapter, AdapterKind::Codex | AdapterKind::Cursor | AdapterKind::OpenClaw))
         .collect()
 }
 
@@ -2249,6 +2253,41 @@ fn apply_selected_adapters(
                         restart_command: None,
                         paths: vec![],
                         note: Some("Codex not detected; skipped in all-adapters mode.".into()),
+                    });
+                }
+            }
+            AdapterKind::Cursor => {
+                let force = !matches!(target, AdapterArg::All);
+                if let Some(result) = install_cursor(home_dir, data_dir, bin_path, force)? {
+                    set_restart_pending(data_dir, agent, true)?;
+                    let mut changed = Vec::new();
+                    if result.created_config {
+                        changed.push("created Cursor MCP config".into());
+                    }
+                    if result.updated_server {
+                        changed.push("installed Thronglets MCP server".into());
+                    }
+                    if changed.is_empty() {
+                        changed.push("config already present".into());
+                    }
+                    results.push(AdapterApplyResult {
+                        agent: agent.key().into(),
+                        applied: true,
+                        changed,
+                        requires_restart: true,
+                        restart_command: Some("Restart Cursor".into()),
+                        paths: vec![result.config_path.display().to_string()],
+                        note: Some("Restart Cursor to load the MCP server.".into()),
+                    });
+                } else {
+                    results.push(AdapterApplyResult {
+                        agent: agent.key().into(),
+                        applied: false,
+                        changed: vec![],
+                        requires_restart: false,
+                        restart_command: None,
+                        paths: vec![],
+                        note: Some("Cursor not detected; skipped in all-adapters mode.".into()),
                     });
                 }
             }

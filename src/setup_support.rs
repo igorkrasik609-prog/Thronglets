@@ -64,10 +64,17 @@ pub struct CodexSetupResult {
     pub updated_agents_memory: bool,
 }
 
+pub struct CursorSetupResult {
+    pub config_path: PathBuf,
+    pub created_config: bool,
+    pub updated_server: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterKind {
     Claude,
     Codex,
+    Cursor,
     OpenClaw,
     Generic,
 }
@@ -77,6 +84,7 @@ impl AdapterKind {
         match self {
             Self::Claude => "claude-code",
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
             Self::OpenClaw => "openclaw",
             Self::Generic => "generic",
         }
@@ -97,6 +105,7 @@ impl AdapterKind {
         match source {
             "claude-code" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "cursor" => Some(Self::Cursor),
             "openclaw" => Some(Self::OpenClaw),
             _ => None,
         }
@@ -250,7 +259,7 @@ pub fn auto_clear_restart_pending_on_runtime_contact(
 }
 
 fn runtime_contact_proves_reload(agent: AdapterKind) -> bool {
-    matches!(agent, AdapterKind::Codex | AdapterKind::OpenClaw)
+    matches!(agent, AdapterKind::Codex | AdapterKind::OpenClaw | AdapterKind::Cursor)
 }
 
 pub fn install_claude(
@@ -437,6 +446,62 @@ pub fn install_codex(
     }))
 }
 
+pub fn install_cursor(
+    home_dir: &Path,
+    data_dir: &Path,
+    bin_path: &Path,
+    force_install: bool,
+) -> io::Result<Option<CursorSetupResult>> {
+    if !force_install && !should_configure_cursor(home_dir) {
+        return Ok(None);
+    }
+
+    let cursor_dir = home_dir.join(".cursor");
+    let config_path = cursor_dir.join("mcp.json");
+    let created_config = !config_path.exists();
+    let launcher = ensure_managed_launcher(data_dir, bin_path)?;
+
+    fs::create_dir_all(&cursor_dir)?;
+
+    let mut config: Value = if config_path.exists() {
+        let content = fs::read_to_string(&config_path).unwrap_or_else(|_| "{}".into());
+        serde_json::from_str(&content).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+
+    let updated_server = configure_cursor_config(&mut config, &launcher, data_dir);
+    let formatted = serde_json::to_string_pretty(&config)?;
+    fs::write(&config_path, formatted)?;
+
+    Ok(Some(CursorSetupResult {
+        config_path,
+        created_config,
+        updated_server,
+    }))
+}
+
+fn configure_cursor_config(config: &mut Value, launcher: &Path, data_dir: &Path) -> bool {
+    if config["mcpServers"].is_null() {
+        config["mcpServers"] = json!({});
+    }
+    let servers = config["mcpServers"].as_object_mut().unwrap();
+
+    let desired = json!({
+        "command": shell_quote_path(launcher),
+        "args": [
+            "--data-dir", data_dir.to_string_lossy(),
+            "mcp", "--agent", "cursor"
+        ]
+    });
+
+    let needs_update = servers.get("thronglets") != Some(&desired);
+    if needs_update {
+        servers.insert("thronglets".into(), desired);
+    }
+    needs_update
+}
+
 pub fn detect_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> AdapterDetection {
     match agent {
         AdapterKind::Claude => {
@@ -471,6 +536,22 @@ pub fn detect_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> A
                 ],
                 note: (!present).then_some(
                     "Codex was not detected; apply-plan can still bootstrap ~/.codex if explicitly requested."
+                        .into(),
+                ),
+            }
+        }
+        AdapterKind::Cursor => {
+            let config_path = cursor_config_path(home_dir);
+            let present = should_configure_cursor(home_dir);
+            AdapterDetection {
+                agent: agent.key().into(),
+                present,
+                configurable: true,
+                integration: agent.integration().into(),
+                apply_by_default: agent.apply_by_default(),
+                paths: vec![config_path.display().to_string()],
+                note: (!present).then_some(
+                    "Cursor was not detected; apply-plan can still bootstrap ~/.cursor if explicitly requested."
                         .into(),
                 ),
             }
@@ -563,6 +644,27 @@ pub fn install_plan(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> Ada
             doctor_command: "thronglets doctor --agent codex".into(),
             contract: None,
         },
+        AdapterKind::Cursor => AdapterPlan {
+            agent: detection.agent,
+            present: detection.present,
+            configurable: detection.configurable,
+            integration: detection.integration,
+            apply_by_default: detection.apply_by_default,
+            requires_restart: true,
+            restart_command: restart_command(agent),
+            paths: detection.paths,
+            actions: vec![
+                format!(
+                    "Write mcpServers.thronglets in {} pointing to managed launcher `{}` with `--data-dir {}` and `mcp`",
+                    cursor_config_path(home_dir).display(),
+                    launcher_path.display(),
+                    data_dir.display()
+                ),
+            ],
+            apply_command: Some("thronglets apply-plan --agent cursor".into()),
+            doctor_command: "thronglets doctor --agent cursor".into(),
+            contract: None,
+        },
         AdapterKind::OpenClaw => AdapterPlan {
             agent: detection.agent,
             present: detection.present,
@@ -612,6 +714,7 @@ pub fn doctor_adapter(home_dir: &Path, data_dir: &Path, agent: AdapterKind) -> A
     match agent {
         AdapterKind::Claude => doctor_claude(home_dir, data_dir),
         AdapterKind::Codex => doctor_codex(home_dir, data_dir),
+        AdapterKind::Cursor => doctor_cursor(home_dir, data_dir),
         AdapterKind::OpenClaw => doctor_openclaw(home_dir, data_dir),
         AdapterKind::Generic => AdapterDoctor {
             agent: agent.key().into(),
@@ -656,6 +759,7 @@ fn codex_agents_path(home_dir: &Path) -> PathBuf {
 fn restart_command(agent: AdapterKind) -> Option<String> {
     match agent {
         AdapterKind::Codex => Some("Restart Codex".into()),
+        AdapterKind::Cursor => Some("Restart Cursor".into()),
         AdapterKind::OpenClaw => Some("openclaw gateway restart".into()),
         AdapterKind::Claude | AdapterKind::Generic => None,
     }
@@ -664,6 +768,7 @@ fn restart_command(agent: AdapterKind) -> Option<String> {
 fn runtime_ready_command(agent: AdapterKind) -> Option<String> {
     match agent {
         AdapterKind::Codex => Some("thronglets runtime-ready --agent codex".into()),
+        AdapterKind::Cursor => Some("thronglets runtime-ready --agent cursor".into()),
         AdapterKind::OpenClaw => Some("thronglets runtime-ready --agent openclaw".into()),
         AdapterKind::Claude | AdapterKind::Generic => None,
     }
@@ -982,6 +1087,68 @@ fn doctor_codex(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
     }
 }
 
+fn doctor_cursor(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
+    let config_path = cursor_config_path(home_dir);
+    let present = should_configure_cursor(home_dir);
+    let mut checks = Vec::new();
+
+    let mcp_ok = if config_path.exists() {
+        let content = fs::read_to_string(&config_path).unwrap_or_default();
+        let config: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+        config["mcpServers"]["thronglets"].is_object()
+    } else {
+        false
+    };
+    checks.push(AdapterCheck {
+        name: "mcp-server".into(),
+        ok: mcp_ok,
+        detail: if mcp_ok {
+            "Thronglets MCP server entry present in mcp.json".into()
+        } else {
+            "Thronglets MCP server entry missing from mcp.json".into()
+        },
+    });
+
+    let healthy = mcp_ok;
+    let restart_pending = healthy && restart_pending(data_dir, AdapterKind::Cursor);
+    let fix_command = (!healthy).then_some("thronglets apply-plan --agent cursor".into());
+    let mut remediation: Vec<_> = fix_command.clone().into_iter().collect();
+    if restart_pending {
+        if let Some(command) = restart_command(AdapterKind::Cursor) {
+            remediation.push(command);
+        }
+        if let Some(command) = runtime_ready_command(AdapterKind::Cursor) {
+            remediation.push(command);
+        }
+    }
+
+    AdapterDoctor {
+        agent: AdapterKind::Cursor.key().into(),
+        present,
+        status: if !healthy {
+            "needs-fix"
+        } else if restart_pending {
+            "restart-pending"
+        } else {
+            "healthy"
+        }
+        .into(),
+        healthy,
+        restart_pending,
+        fix_command,
+        restart_command: restart_command(AdapterKind::Cursor),
+        checks,
+        remediation,
+        note: if restart_pending {
+            Some("Restart Cursor to load the MCP server.".into())
+        } else if healthy {
+            Some("Restart Cursor after future config changes so the MCP server is loaded.".into())
+        } else {
+            None
+        },
+    }
+}
+
 fn openclaw_plugin_config_present(config: &Value, plugin_dir: &Path, launcher_path: &Path) -> bool {
     let allow_ok = config["plugins"]["allow"].as_array().is_some_and(|values| {
         values
@@ -1104,6 +1271,14 @@ fn should_configure_openclaw(home_dir: &Path) -> bool {
 
 fn should_configure_codex(home_dir: &Path) -> bool {
     home_dir.join(".codex").exists() || executable_on_path("codex")
+}
+
+fn should_configure_cursor(home_dir: &Path) -> bool {
+    home_dir.join(".cursor").exists()
+}
+
+fn cursor_config_path(home_dir: &Path) -> PathBuf {
+    home_dir.join(".cursor").join("mcp.json")
 }
 
 fn write_openclaw_plugin_assets(plugin_dir: &Path) -> io::Result<()> {
