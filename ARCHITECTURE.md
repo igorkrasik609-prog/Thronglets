@@ -70,7 +70,7 @@ Thronglets must remain usable:
 
 High-frequency traces, signals, and local coordination stay off-chain.
 
-Only low-frequency, durable, external, auditable results may rise into `Oasyce Net` or `Oasyce Chain`.
+Only low-frequency, durable, external, auditable results may rise into `Oasyce SDK` or `Oasyce Chain`.
 
 ### 5. Do not add new ontology lightly
 
@@ -151,7 +151,7 @@ Hard rules:
 
 - `Psyche = subjective continuity substrate`
 - `Thronglets = delegate continuity + session coordination + emergent collective intelligence`
-- `Oasyce Net = policy, operations, and resource orchestration`
+- `Oasyce SDK = policy, operations, and resource orchestration`
 - `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
 
 ### Psyche
@@ -179,9 +179,9 @@ It does not define:
 - legal identity
 - final authorization truth
 
-### Oasyce Net
+### Oasyce SDK
 
-`Oasyce Net` is responsible for:
+`Oasyce SDK` is responsible for:
 
 - policy
 - operations
@@ -285,7 +285,7 @@ Allowed event families:
    - `continuity-anchor -> info`
    - repeated `writeback-calibration -> avoid`
 5. `recommend` must never be emitted directly from Psyche residue.
-6. Only low-frequency, durable, external, auditable summaries may rise into `Oasyce Net`.
+6. Only low-frequency, durable, external, auditable summaries may rise into `Oasyce SDK`.
 
 ### What must never enter Thronglets
 

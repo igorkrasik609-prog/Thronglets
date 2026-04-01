@@ -61,7 +61,7 @@ thronglets authorization-check --json
 
 ## 4 类信号，不是 8 层报告
 
-PreToolUse 不再追求“把所有上下文都塞进去”。现在它只输出最多 3 条顶层信号：
+PreToolUse 不再追求"把所有上下文都塞进去"。现在它只输出最多 3 条顶层信号：
 
 | 类别 | 含义 | 例子 |
 |---|---|---|
@@ -115,154 +115,23 @@ Thronglets 不再新增身份对象。session trace 只保留 3 类：
   - 谁交接了、谁挂起了、哪个 open loop 还在
 - `continuity`
   - 低频连续性证据
-  - 不是“内在自我本身”，而是可外化、可引用的连续性锚点
+  - 不是"内在自我本身"，而是可外化、可引用的连续性锚点
 - `calibration`
   - 外在写回/校准结果
-  - 不是情绪状态，而是“这次校准有没有形成稳定外部效果”
+  - 不是情绪状态，而是"这次校准有没有形成稳定外部效果"
 
 这 3 类已经够用。
 
-## Psyche 边界
+> Psyche 边界映射、retention/threshold 表、degradation 规则、runtime introspection 等内部设计规范已移至 [docs/SIGNAL_DESIGN.md](docs/SIGNAL_DESIGN.md)。
 
-如果 Psyche 存在，它只是一个**可选 producer**，往现有的 `signal / trace` 抽象里投递少量外化事件。
+## 安装
 
-默认原则：
-
-- Psyche 的输出默认先落 `trace`
-- 只有在外在协作上真的需要提醒别人时，才降成 `signal`
-- Thronglets 不为 Psyche 扩新增 signal 类别
-
-当前冻结映射：
-
-| Psyche event | Thronglets form | 默认 signal? | 默认只本地缓存? | 可升到 Oasyce Net? |
-|---|---|---|---|---|
-| `relation-milestone` | `coordination trace` | 仅在影响协作边界时转 `watch / info` | 通常是 | 条件满足时可以 |
-| `writeback-calibration` | `calibration trace` | 默认不是 | 是 | 只升 summary |
-| `continuity-anchor` | `continuity trace` | 默认不是 | 可先本地 | 可以，最自然的上升对象 |
-| `open-loop-anchor` | `coordination trace` | 可降成 `watch` | 先本地 | 持续且有运营后果时可升 |
-
-当前 runtime 规则已经落地：
-
-- Psyche 继续复用现有 `trace_record` / `POST /v1/traces` 写入口，不新增用户命令
-- 通过 `external_continuity` 对象写入的 raw trace 会：
-  - 严格校验 `provider=thronglets`、`mode=optional`、`version=1`
-  - 固定落到 `coordination / continuity / calibration` 三类 taxonomy
-  - 默认只在 Thronglets 本地缓存并衰减，不直接 gossip，不直接形成 DHT summary
-- 只有满足条件时，raw trace 才会条件性降级成现有 signal：
-  - `relation-milestone -> watch / info`
-  - `open-loop-anchor -> watch`
-  - `continuity-anchor -> info`
-  - repeated `writeback-calibration -> avoid`
-- `recommend` 不会由 Psyche 直接产生
-- `space --json` 现在会给出本地 continuity 摘要、固定 ruleset、每条 trace 当前是 `local-only / derived-signal / summary-candidate`，以及具体触发的 rule id；原始事件流仍不外发
-
-固定 retention / threshold：
-
-| taxonomy | local retention | stable evidence | extra rule |
-|---|---:|---|---|
-| `coordination` | `72h` | `>= 2 traces` 或 `>= 2h` | `open-loop-anchor` 在 `>= 2 traces` 或 `>= 1h` 时可降成 `watch` |
-| `continuity` | `168h` | `>= 2 traces` 或 `>= 2h` | 还需要 `audit_ref` 或 `>= 2 sessions` 才算可审计 |
-| `calibration` | `168h` | `>= 2 traces` 或 `>= 2h` | `failed_count >= 2` 才有聚合意义，才可降成 `avoid` |
-
-固定 degradation / summary 规则：
-
-- `relation-milestone`
-  - stable + auditable -> `watch`
-  - stable but not auditable -> `info`
-  - stable + auditable -> Net-facing summary candidate
-- `open-loop-anchor`
-  - `>= 2 traces` 或 `>= 1h` -> `watch`
-  - stable + auditable -> Net-facing summary candidate
-- `continuity-anchor`
-  - stable + auditable -> `info`
-  - stable + auditable -> Net-facing summary candidate
-- `writeback-calibration`
-  - repeated failures (`failed_count >= 2`) + stable -> `avoid`
-  - repeated failures + stable + auditable -> Net-facing summary candidate
-
-最小 runtime introspection：
-
-- `trace_record` / `POST /v1/traces` 返回的 `external_continuity.runtime` 现在会明确告诉宿主：
-  - `state = local-only | derived-signal | summary-candidate`
-  - `local_retention_hours`
-  - `stable_evidence`
-  - `auditable_evidence`
-  - `derived_signal_rule`
-  - `summary_candidate_rule`
-
-Thronglets 现有 signal 类别保持不扩：
-
-- `recommend`
-- `avoid`
-- `watch`
-- `info`
-
-## 什么绝不能进入 Thronglets
-
-这些默认拒绝：
-
-- 高频内在状态
-- 情绪流、主观波动、细粒度 self-model
-- 原始长文本内心独白
-- 私密记忆本体
-- 全量会话内容
-- “它是不是有灵魂”之类本体论结论
-- 任何把 `session` 抬成主体或账户的东西
-- 任何需要新身份对象才能表达的东西
-
-一句话：
-
-`Thronglets 不接 psyche 的内部流，只接它外化后的稀疏痕迹。`
-
-## 升到 Oasyce Net 的门槛
-
-只有同时满足这 4 条，trace 才应进一步上升：
-
-- 低频
-- 持久
-- 外在后果明确
-- 可审计
-
-通常可上升的是：
-
-- 稳定的 `continuity-anchor`
-- 长时间未闭合且有运营意义的 `open-loop-anchor`
-- 持续改变协作边界的 `relation-milestone`
-- `writeback-calibration` 的聚合摘要，而不是原始事件流
-
-Psyche 写入示例：
-
-```json
-{
-  "outcome": "succeeded",
-  "model": "psyche",
-  "session_id": "psyche-1",
-  "external_continuity": {
-    "provider": "thronglets",
-    "mode": "optional",
-    "version": 1,
-    "taxonomy": "continuity",
-    "event": "continuity-anchor",
-    "summary": "continuity stayed externally legible across handoff",
-    "space": "psyche",
-    "audit_ref": "anchor-42"
-  }
-}
-```
-
-## 安装（预编译优先）
-
-官方安装面现在固定成一条主线：
-- GitHub release assets 是单一事实源
-- `npm`、shell installer、PowerShell installer、Python wrapper 都只下载匹配版本的预编译二进制
-- 源码编译只留给开发者，不再是普通用户默认入口
-- Rust toolchain 不是普通用户前置条件
+官方安装面固定成一条主线：预编译二进制优先，源码编译只留给开发者。
 
 macOS / Linux：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
-thronglets version --json
 thronglets start
 ```
 
@@ -270,226 +139,29 @@ Windows PowerShell：
 
 ```powershell
 iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
-thronglets version --json
 thronglets start
 ```
 
-如果本机已经有 Node.js，也可以统一用：
+Node.js 用户：
 
 ```bash
 npm install -g thronglets
-thronglets version --json
 thronglets start
 ```
 
-完成。默认用户入口现在是：
-
-- 第一台设备：`thronglets start`
-- 主设备分享连接文件：`thronglets share`
-- 第二台设备：`thronglets join`
-
 `thronglets start` 会自动安装本机已知适配器：
-- **Claude Code**：自动写入 6 个 hooks（`PostToolUse / PreToolUse / SessionStart / SessionEnd / SubagentStart / SubagentStop`）
-- **Codex**：自动安装当前 runtime 需要的 MCP 适配，并写入一段受管 `AGENTS` 记忆
-- **OpenClaw**：自动安装本地 path plugin，并写入 `~/.openclaw/openclaw.json`
+- **Claude Code**：自动写入 6 个 hooks
+- **Codex**：自动安装 MCP 适配，并写入受管 `AGENTS` 记忆
+- **OpenClaw**：自动安装本地 path plugin
 
-`thronglets join` 会自动做三件事：
-- 接好这台机器当前的 runtime
-- 验签并导入主设备导出的 connection file
-- 如果已经继承到 peer 路径，会自己短暂尝试第一次 live connection，尽量把 same-owner 路径直接证明成 trusted recovery path
-- 最后只告诉你这台机器现在是“还需要更好的分享文件”、“正在等第一次连上”，还是“已经可以直接用了”
+## Oasyce 集成
 
-`thronglets share` 默认会把连接文件写到 `~/Desktop/thronglets.connection.json`，并直接告诉你这份文件现在只是 `identity-only`、已经带 `peer seeds`，还是已经到了 `trusted-same-owner-ready`。第二台设备默认也会去 `~/Desktop/thronglets.connection.json` 读这份文件，所以正常用户路径不需要再手敲文件参数。
-
-如果这台设备以前已经知道怎么回到网络，`thronglets share` 现在还会先短暂尝试把 peer 路径学出来，再导出更好的连接文件；正常用户不需要再手动理解 bootstrap 地址该什么时候输入。
-
-高级用户和调试时仍然可以直接使用 `setup / connection-export / connection-inspect / connection-join / owner-bind`，但默认用户路径不再要求先理解这些内部命令。
-
-架构原则是：
-- 核心产品不是 MCP server，而是本地 substrate
-- `prehook / hook / serve` 才是主接口
-- MCP 只是给支持 MCP 的 runtime 用的薄适配器
-- 就算外部生态以后从 MCP 转向 CLI / HTTP，核心 substrate、历史数据、P2P、signals 都不用重写
-- 人的认知负担和热路径 token 一样，都是性能预算
-- 默认用户只应看到 `start / share / join / status`
-- `Oasyce` 只升级 ownership / settlement，不解锁基础参与
-- 共享环境优先于 AI 互发消息；优先做 `space / presence / signal / space snapshot`，不把产品做成 agent chat
-
-如果你是在这个仓库源码目录里工作，而不是在用一个正式发布版二进制，前门 `thronglets` 现在也会优先尝试 repo-local 源码路径；如果你想显式确认，仍然可以直接用：
-
-```bash
-cargo run --quiet -- version --json
-cargo run --quiet -- start
-```
-
-这样 AI 读到的 README、当前 checkout 的代码、实际执行的命令会保持一致，不会因为 PATH 上旧版本 `thronglets` 造成自动化误判。
-
-如果你是在开发 Thronglets 本身，而不是安装它给日常使用，源码路径才是：
-
-```bash
-cargo run --quiet -- version --json
-cargo run --quiet -- start
-```
-
-普通用户现在不应该再把 `cargo install thronglets` 当成主安装方式，尤其是 Windows。
-
-已知 adapter 现在也不会再直接绑死到当时那一个 binary path。`setup / apply-plan / bootstrap` 会统一写入一个受管 launcher：
-
-- 路径固定在 `~/.thronglets/bin/thronglets-managed`
-- 如果你正在 Thronglets 仓库里工作，它会优先执行 repo-local build
-- 否则再回退到当前安装版 binary
-
-这样你不需要在每次本地迭代后重新跑一遍 `setup`，adapter 会沿着稳定入口继续跟最新本地 build 走。
-
-`start` 和底层 `setup` 一样，都会顺手做一次 bootstrap 健康检查，并直接给出 `restart required / next steps`。
-如果某个 adapter 需要客户端重启，后续 `doctor` 会显式返回 `restart-pending`。支持自动自证重载的 runtime 现在会在真正重新接触到 Thronglets 时自动清掉这个状态：
-
-- `Codex`：MCP server 真正重新拉起时自动清掉
-- `OpenClaw`：第一次成功命中 `prehook / hook` 时自动清掉
-
-`runtime-ready` 仍然保留，但现在只是高级 fallback；默认用户路径不应该再手动理解它。只有在你确认 runtime 已经重载、但自动清除没有发生时，才需要显式运行：
-
-```bash
-thronglets runtime-ready --agent codex --json
-```
-
-如果你想区分“Thronglets 正在介入”还是“只是普通权限 / 系统问题”，现在可以直接看 substrate 状态：
-
-```bash
-thronglets status --json
-```
-
-返回里会带：
-- `summary.status = local-only | identity-only | network-paths-ready | network-ready`
-- `summary.detail`
-- `summary.next_step`
-- `substrate.activity = active | learning | quiet`
-- `recent_interventions_15m`
-- `last_intervention_tool`
-- `last_intervention_kinds`
-- `network.activity = offline | bootstrapping | connected`
-- `network.transport_mode = offline | direct | relayed | mixed`
-- `network.vps_dependency_level = offline | bootstrap-only | high | medium | low | peer-native`
-- `network.bootstrap_fallback_mode = disabled | immediate | delayed`
-- `network.trusted_peer_seed_count`
-- `network.peer_seed_count`
-
-其中 `network.bootstrap_contacted_recently` 表示这个节点最近真的拨过 bootstrap，
-不是“只是配置里存在 bootstrap 地址”。
-通过 `connection-join` 导入的 `trusted peer seeds` 现在也会比普通 remembered peers
-拿到更长的 bootstrap 回退宽限期，优先给同 owner 设备直连恢复机会。
-
-也就是说，AI 和操作者都不需要再猜“刚才那次绕路是不是 Thronglets 在起作用”。
-同时也能直接看到当前网络是不是还在实质依赖 VPS。
-特别是当 `status --json` 里出现：
-
-- `summary.status = identity-only`
-
-它的意思是：
-
-- 身份已经加入成功
-- 但这台设备还没有任何可复用的 peer 路径
-- 当前仍然离线，下一步应该回到主设备重新导出带 peer seeds 的 connection file
-
-如果你想把这个判断再压成一个更直接的结论，可以再跑：
-
-```bash
-thronglets net-check --json
-```
-
-如果你想直接看“假设 VPS / bootstrap 现在消失”会发生什么，可以跑：
-
-```bash
-thronglets net-check --bootstrap-offline --json
-```
-
-它会直接告诉你这个节点当前是：
-- `peer-first`
-- `degraded`
-- `bootstrap-only`
-- `offline`
-
-并返回下一步建议，比如“先导入 connection file 带来的 peer seeds”，还是“当前仍然太依赖 bootstrap / VPS”。同时它现在还会直接给出 `bootstrap_offline_ready=true|false`，告诉你如果 VPS / bootstrap 此刻消失，这个节点是否已经具备 remembered-peer 的重连路径。
-
-底层接入面只有一个统一 contract：
-- `thronglets prehook`：任意 agent 在工具执行前喂入 JSON，拿回稀疏信号
-- `thronglets hook`：任意 agent 在工具执行后喂入 JSON，记录 trace
-
-也就是说，已知 AI 走原生适配器，未知 AI 走同一个 `hook/prehook` contract，不需要再发明第二套协议。MCP 只是这个 substrate 的一层可选外壳，不是本体。
-
-如果你要让 AI 自己完成接入，不需要先读文档。直接走这组机器接口：
-
-```bash
-thronglets detect --json
-thronglets install-plan --agent codex --json
-thronglets apply-plan --agent codex --json
-thronglets doctor --agent codex --json
-```
-
-`detect` 负责发现本机有哪些 runtime。  
-`install-plan` 返回可执行计划和 contract。  
-`apply-plan` 真正写配置。  
-`doctor` 验证是否接通，并在坏状态时返回非零退出码。
-
-如果只想一步完成，直接用：
-
-```bash
-thronglets bootstrap --agent codex --json
-```
-
-所有这些机器命令现在都走同一个稳定 envelope：
-
-```json
-{
-  "schema_version": "thronglets.bootstrap.v2",
-  "command": "bootstrap",
-  "data": {
-    "summary": {}
-  }
-}
-```
-
-`detect / install-plan / apply-plan / doctor / bootstrap / runtime-ready` 现在都会先给顶层 summary，再给详细列表。  
-如果需要重启，summary 里还会直接带 `restart_commands`。  
-`doctor` 现在会显式返回顶层 `status`、`healthy`、`restart_pending`、`next_steps`，以及每个 adapter 的 `fix_command`。  
-`bootstrap` 顶层还会返回 `restart_required` 和 `next_steps`，这样 AI 不需要自己从注释里猜下一步。
-
-## Oasyce 集成 V1
-
-Thronglets 现在把链上身份先收成最小可落地版本：
-
-- 一个 `owner account` 可以挂多个可授权的 `device identities`
-- 同一个 `owner` 可以同时让多台设备、多个 AI runtime 在线
+- 一个 `owner account` 可以挂多个 `device identities`
 - `device identity` 是当前的签名边界
-- `agent / session` 先只作为审计标签，不先做独立经济主体
-- 高频 `trace / signal` 保持链下，由 `device identity` 发出和签名
-- 低频结果再上链做 `settlement / anchoring`
+- `agent / session` 先只作为审计标签
+- 高频 `trace / signal` 保持链下，低频结果再上链 settlement
 
-同一台设备上可以同时跑多个 AI runtime：
-- 同一个 `owner account`
-- 同一个 `device identity`
-- 不同的 `agent label`，例如 `claude-code / openclaw / codex`
-- 每个运行实例各自一个 `session_id`
-
-所以一台电脑上的多个 AI，甚至同一个 `codex` 的多个会话，都不会打穿这套 V1 身份模型。
-
-最简单的理解方式就是“银行卡和账号”：
-
-- `owner account` 是根所有权
-- `device identity` 是具体替 owner 干活的账号 / 设备
-
-V1 先把 `owner -> device` 这层做稳，再往上长更细的 agent 语义。
-
-多设备 onboarding 的主路径也已经确定：
-
-- 主设备导出一份 connection file
-- 次设备用这份文件加入同一网络；如果文件里带 owner，就顺手加入同一个 owner
-- 手动填写 account + signer 只保留给高级 fallback 场景
-- connection file 由主设备签名，次设备加入时会先验签
-- connection file 现在还会携带一小份 peer seeds，次设备加入后会先尝试这些已知 peer，再回退 bootstrap
-- 一旦次设备和主设备真正建立过 same-owner 的 live direct connection，这条路径会自动升格成 trusted peer seed；之后再导出的 connection file 就会自然升级成更稳的恢复路径
-
-默认用户路径现在建议直接用：
+多设备 onboarding：
 
 ```bash
 # 第一台设备
@@ -502,302 +174,59 @@ thronglets share
 thronglets join
 ```
 
-这条高层路径的含义是：
-- `start` = “这台机器先用起来”
-- `join` = “这台机器加入已有设备，并只告诉我现在好了没”
+## 工作原理
 
-当前本地 primitive 已经就位：
+### Hook 路径（Claude Code — 主要）
+
+```
+Session 开始
+        │
+        ├── SessionStart Hook
+        │   └── lifecycle trace + presence ping + space briefing
+        │
+        ├── AI 调用 Edit(main.rs)
+        │   ├── PreToolUse Hook → 最多 3 条稀疏信号
+        │   ├── AI 执行编辑
+        │   └── PostToolUse Hook → 记录签名痕迹 + 更新工作区
+        │
+        └── SessionEnd Hook → 记录 session closure
+```
+
+### MCP 路径（环境式 — 任何支持 MCP 的 agent）
+
+```
+Agent 连接 → 自动发射 presence
+        ├── 工具调用 → 存在刷新（TTL/6 间隔）
+        └── 断开 → TTL 自然过期（30 分钟）
+```
+
+两条路径汇入同一个 SQLite 存储、同一个 P2P gossip、同一个信号基底。
+
+### MCP 工具（可选适配层）
 
 ```bash
-thronglets id
-thronglets owner-bind --owner-account oasyce1...
-thronglets share
-thronglets connection-inspect --file ./thronglets.connection.json --json
-thronglets connection-join --file ./thronglets.connection.json
+claude mcp add thronglets -- thronglets mcp
 ```
 
-- `id` 会显示当前 `owner account` 和 `device identity`
-- `id` / `status` / HTTP `/v1/status` 也会显示当前 `binding source` 和 `joined from device`
-- `id` / `owner-bind` / `connection-export` / `connection-join` / `status` 都支持 `--json`
-- `connection-export / connection-join` 是基础主路径；没有 Oasyce 时也能先做本地 / 多设备 pairing，并且默认验证主设备签名
-- `owner-bind` 是后续升级层，不是基础入网前提
-- 用户可以先用 Thronglets，再在之后补 `owner account`；这不会打断已有本地使用或设备入网来源
-- `connection-export` 默认导出 `24h` 有效的 connection file，可用 `--ttl-hours` 调整；`connection-join` 会同时验证签名和过期时间
-- `connection-export` 优先只写入 `trusted peer seeds`；只有没有 trusted path 时才回退写入普通 remembered peers。`connection-join` 会保留这个 scope：trusted 继续按 trusted 导入，fallback 的 remembered peers 不会被静默升格成 trusted
-- `connection-export / connection-inspect / connection-join` 现在都会直接给出 connection file 的等级：
-  - `identity-only`
-  - `identity-plus-peer-seeds`
-  - `trusted-same-owner-ready`
-- 其中：
-  - `identity-only` = 只能继承身份，不能继承任何 peer 路径
-- `identity-plus-peer-seeds` = 能继承 remembered peer 路径，但还不是 trusted same-owner 直连
-- `trusted-same-owner-ready` = 能继承 trusted same-owner peer seeds，适合多设备直连恢复
-- 当你先用 `identity-plus-peer-seeds` 文件把第二台设备接上网络后，后续同 owner 的 live direct connection 会自动被学习成 trusted path；不需要再手动标记“这条路径可信”
-- 当本地已经记住 peers 时，`run / mcp` 会先尝试这些 remembered peers，只在短暂 grace period 后才回退到 bootstrap；VPS 不再是每次启动的默认第一跳
-- `owner-bind` 和 `connection-join` 默认都不会静默覆盖成另一个 `owner account`
-- OpenClaw 重启后，第一次成功命中 `prehook / hook` 就会自动清掉 `restart-pending`；Codex 则会在 MCP server 真正重新拉起时自动清掉这个状态
+| 工具 | 描述 |
+|------|------|
+| `trace_record` | 记录执行痕迹 |
+| `substrate_query` | 查询集体智慧 |
+| `signal_post` | 给未来的 agent 留一条显式信号 |
+| `signal_feed` | 浏览最近正在收敛的信号 |
+| `presence_ping` | 手动存在心跳 |
+| `presence_feed` | 查看活跃会话 |
+| `authorization_check` | 身份和 owner 绑定快照 |
+| `trace_anchor` | 将痕迹锚定到 Oasyce 区块链 |
 
-## 部署边界
+## P2P 网络
 
-这条边界现在已经冻结：
-
-- VPS 只跑链和公共基础设施
-- `oasyce-net` 是用户侧客户端 / AI runtime，不是中心化后端
-- Thronglets 默认按 `device-first` 集成；`owner account` 是可选升级层，不要求中心化账户服务，也不是基础入网前提
-- 运行节点现在会优先拨号本地已知 peers 和 connection file 继承来的 peer seeds，再回退 VPS bootstrap
-
-## 长期身份蓝图
-
-当前 `owner -> device` 只是 V1 现实模型。长期蓝图、分层职责和拒绝项已经收敛到单一文档：
-
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-
-这套蓝图现在已经开始进入机器输出：
-- `id / status / owner-bind / connection-export / connection-join` 的 JSON 会附带当前 V1 如何映射到 `principal / account / delegate / session`
-- 自动化和其他 AI 可以开始按长期抽象消费身份信息，而不需要把今天的 `owner / device / session` 误当成终局
-- 同一批 JSON 现在还会明确区分：
-  - 本地缓存的 owner 绑定状态
-  - `Oasyce Chain` 作为最终授权真相源
-  - 当前授权结果是否已经被 chain 侧验证（当前阶段会诚实显示为 `not-checked`）
-
-如果目标 runtime 不在原生 adapter 列表里，`install-plan --agent generic --json` 现在还会直接给出 `Python / Node.js / shell` 的最小 `prehook / hook` 示例，不需要再自己拼接调用方式。如果只想拿一份更薄的结果，可以直接加：
+痕迹通过 libp2p gossipsub 在节点间传播。每个节点独立聚合集体智慧——不需要全局共识。
 
 ```bash
-thronglets install-plan --agent generic --runtime python --json
+thronglets run
+thronglets status
 ```
-
-最小接入 JSON 也固定了。`prehook` 读这一类输入：
-
-```json
-{
-  "agent_source": "my-agent",
-  "model": "my-model",
-  "session_id": "session-123",
-  "space": "shared-space",
-  "mode": "focus",
-  "tool_name": "Edit",
-  "tool_input": {
-    "file_path": "src/main.rs"
-  }
-}
-```
-
-`hook` 用同一份输入，再补一个 `tool_response`：
-
-```json
-{
-  "agent_source": "my-agent",
-  "model": "my-model",
-  "session_id": "session-123",
-  "space": "shared-space",
-  "mode": "focus",
-  "tool_name": "Edit",
-  "tool_input": {
-    "file_path": "src/main.rs"
-  },
-  "tool_response": {
-    "success": true
-  }
-}
-```
-
-`space` 和 `mode` 都是可选字段：
-- `space` 用来把多个 AI 围绕同一个对象、模块或议题的痕迹收敛到同一个局部 substrate
-- `mode` 用来留下很轻的环境状态，比如 `focus / explore / review / blocked`
-
-有时候 AI 需要主动给未来的 AI 留下一句短话，而不只是靠执行痕迹间接学习。Thronglets 现在把这件事做成了独立的 signal plane：
-
-```bash
-thronglets signal-post --kind avoid --space psyche --context "fix flaky ci workflow" --message "skip the generated lockfile"
-thronglets signal-query --space psyche --context "fix flaky ci workflow" --kind avoid
-```
-
-显式信号默认会在 `72h` 后自然衰减。如果某条信号应该保留更久，就刷新它，或者显式指定 TTL：
-
-```bash
-thronglets signal-post --kind watch --context "ship the current branch" --message "run release-check before push" --ttl-hours 168
-```
-
-查询显式信号时，Thronglets 现在还会告诉你这句话只是本地重复、已经被集体 corroboration 支持，还是两者混合；当多种模型独立说出同一句话时，还会显示一个轻量的 `models=N` 提示，机器接口里则直接给出 `corroboration_tier=single_source|repeated_source|multi_model`，并在接近证据下优先排 `multi_model`；ambient feed 还会让更新的群体信号自然压过更旧的共识，并默认聚焦最值得先看的 `primary/secondary` 信号。
-
-如果你希望围绕同一个项目、模块或议题形成连续的局部 substrate，现在可以显式使用 `space`：
-- 同一句 message 在不同 `space` 不会再被错误合并
-- `signal-query / signal-feed` 只会消费指定 `space` 的局部信号
-- read-side reinforcement 也会留在同一个 `space` 里，不会把别处的共识误强化到当前对象上
-
-MCP agent 连接时，presence 已经自动发射（见 MCP 环境式参与）。CLI 用户或纯对话场景下，也可以显式留下 presence heartbeat：
-
-```bash
-thronglets presence-ping --space psyche --mode focus --session-id codex-psyche-1
-thronglets presence-feed --space psyche --hours 1 --limit 10
-```
-
-这不是 signal，也不是 case-specific 补丁。它只是一个更底层的原语：
-- 谁正在这个 `space` 里活跃
-- 这个活跃是 `focus / explore / review / blocked` 之类的哪种模式
-- MCP agent 不需要手动调用 — 基底在连接和工具调用时已经自动处理
-
-如果你不想分别看 `presence-feed` 和 `signal-feed`，现在也可以直接看一个高层环境快照：
-
-```bash
-thronglets space --space psyche --json
-```
-
-它会直接把同一 `space` 压成一个 summary-first 结果：
-- `quiet`
-- `active`
-- `converging`
-- `blocked`
-
-并附带：
-- 最近活跃 session
-- 当前最值得看的局部 signals
-- 这个 `space` 里最近 24h 的本地学习反馈
-
-现在这条线已经开始向 `Density Substrate` 迈一步：显式 signal 的机器结果里会直接带 `density_score`、`density_tier=sparse|candidate|promoted|dominant` 和 `promotion_state=none|local|collective`，让“局部正在形成共识”不只是排序靠前，而是变成一个可读、可比较、可被 ambient feed 优先呈现的状态。与此同时，`signal-query` / `signal-feed` 自己也会为已经 promoted 的结果留下短 TTL 的 reinforcement trace，让“被读取并复用”开始真的改变 substrate，而不只是改变这一次的展示顺序。现在如果某个上下文里已经有 promoted 的 `avoid`，机器结果还会给竞争性的 `recommend/watch/info` 标出 `inhibition_state`，并在排序上真正把这些“被 stop signal 压制”的建议往后放。
-
-如果你想看的不是精确 query，而是 ambient timeline，可以直接用：
-
-```bash
-thronglets signal-feed --space psyche --hours 24 --limit 10
-thronglets signal-feed --space psyche --hours 24 --kind recommend --scope collective --limit 5
-```
-
-同一套能力也直接暴露在 HTTP 上：
-
-```bash
-thronglets serve --port 7777
-
-curl -X POST http://127.0.0.1:7777/v1/signals \
-  -H 'content-type: application/json' \
-  -d '{"kind":"avoid","space":"psyche","context":"fix flaky ci workflow","message":"skip the generated lockfile","model":"codex","ttl_hours":72}'
-
-curl 'http://127.0.0.1:7777/v1/signals?space=psyche&context=fix%20flaky%20ci%20workflow&kind=avoid&limit=3'
-curl 'http://127.0.0.1:7777/v1/signals/feed?space=psyche&hours=24&kind=avoid&scope=local&limit=5'
-```
-
-MCP 里也有对应入口：
-- `signal_post`
-- `signal_feed`
-- `substrate_query` 搭配 `intent="signals"`
-
-这些显式信号不会混进普通 capability 列表和 DHT capability summary，只有 agent 明确来查时才会出现。
-
-开发调试：
-
-```bash
-THRONGLETS_PROFILE_PREHOOK=1 thronglets prehook
-```
-
-这会把阶段级耗时写到 `stderr`，不会污染 AI 看到的 `stdout`。
-输出还会标出 `stdout_bytes`、`output_mode`、`decision_path`、`evidence_scope` 和 `file_guidance_gate`，方便判断一次 prehook 到底说了多少、走的是哪条决策路径，以及文件级 hint 是打开、关闭还是不适用。
-文件级的 `do next / maybe also` 还会先经过本地重复轨迹门槛：当前文件如果没有至少两次最近的本地 `Edit/Write`，Thronglets 会直接跳过 `preparation / adjacency` 挖掘，避免为弱证据烧 token 和 query。
-同样地，只要 prehook 已经有更强的 signal，`git history` 就不会再作为背景 fallback 插进来；`context` 现在真的是“没有别的可说时”才出现。
-
-要汇总这些 profiling 行：
-
-```bash
-cat prehook.log | thronglets profile-summary
-```
-
-摘要里会额外标出哪些 `decision_path` 仍然在消耗 collective query，方便继续压热路径。
-这些分布现在会按热点排序，同时给出 `decision path hotspots`，直接看哪类路径最烧 `stdout_bytes` 和 collective query。
-如果只想知道下一刀该砍哪，直接看 `top optimization candidate` 这一行。
-如果想判断要不要进一步收紧 selector，就先看 `emitted lines` 和 `max-hint saturation`：只有经常顶到 3 行上限时，才值得认真考虑继续砍 `maybe also`。
-
-做发布前检查时，可以直接用：
-
-```bash
-cat prehook.log | thronglets profile-check
-```
-
-它会基于默认阈值检查 `avg/p95 stdout_bytes`、`avg collective_queries_used` 和 `max-hint saturation`，失败时返回非零退出码。
-
-发布后如果想看“省下来的成本有没有换来真正有效的信号”，可以再跑：
-
-```bash
-thronglets eval-signals --hours 168 --max-sessions 200
-```
-
-这个命令默认只看当前项目目录下的 session，离线重放最近历史，把更早的历史当训练集、把更晚的 session 当 holdout，输出 `edit silence rate`、`repair coverage`、`repair first-step precision`、`repair exact precision`、`preparation precision` 和 `adjacency precision`。它完全在冷路径运行，不会碰 prehook 热路径预算。
-结果视图里现在还会补 3 个更贴近真实结果的指标：
-- `local edit retention`：来自当前项目 `workspace.json` 的最近本地反馈
-- `holdout failed command rate`：holdout session 里 `Bash` 的失败率
-- `holdout first successful change latency`：从 session 开始到第一次成功 `Edit/Write` 的时间代理
-输出里还会带上 `repair / preparation / adjacency breakdown` 和一条简短 `diagnosis`，用来区分“数据太少”“本地重复门槛挡住了”还是“模式本身太噪”。
-如果想喂给脚本或 CI，可以直接加：
-
-```bash
-thronglets eval-signals --hours 168 --max-sessions 200 --json
-```
-
-如果你想直接看“这版相对上一个基线是变好还是变坏”，可以把前一次 `eval-signals --json` 的输出存成文件，再比较：
-
-```bash
-thronglets eval-signals --hours 168 --max-sessions 200 --json > baseline.json
-thronglets eval-signals --hours 168 --max-sessions 200 --compare-baseline baseline.json
-```
-
-这会额外输出两行 `vs baseline`，覆盖 `local edit retention`、`holdout failed command rate`、`first successful change latency`，以及主要 signal precision 的增减。
-
-如果你想把热路径和冷路径检查串成一个发布门槛，可以直接跑：
-
-```bash
-cat prehook.log | thronglets release-check --global
-```
-
-它会输出一个总的 `PASS / FAIL`，并分别给出 `profile`、`doctor` 和 `eval` 三段。`doctor` 会把本机 adapter 的 `healthy / restart-pending / needs-fix` 也并进发布门槛里；`eval` 里除了 signal precision，也会带上当前项目的 `local edit retention`、holdout `failed command rate` 和 `first successful change latency`。没有足够离线历史时，`eval` 会是 `SKIP`，而不是因为冷启动直接挡住发布；如果你想把缺失的 prehook 样本也当成失败，可以再加：
-
-```bash
-cat prehook.log | thronglets release-check --global --require-profile-samples
-```
-
-如果你想让 CI 或其他 agent 直接消费结构化 gate 结果，可以再加：
-
-```bash
-cat prehook.log | thronglets release-check --global --json
-```
-
-如果你还想把“相对上一个 baseline 是否退化”也并进同一个 gate，可以直接加：
-
-```bash
-cat prehook.log | thronglets release-check --global --compare-baseline baseline.json
-```
-
-这会把 `eval-signals --json` 里已有的 baseline comparison 一起带进 `release-check`，并且只对 3 个 outcome 指标做回归判断：
-- `local edit retention`
-- `failed command rate`
-- `first successful change latency`
-
-现在 `release-check` 也支持显式作用域策略：
-
-```bash
-thronglets release-check --eval-scope project
-thronglets release-check --eval-scope global
-thronglets release-check --eval-scope both --json
-```
-
-其中 `both` 会同时返回项目侧和全局侧的 gate 结果，适合判断“这个仓库自己是否够稳”和“collective intelligence 是否已经可靠到可发”。
-
-如果你想看全局 trace 池，而不是当前项目，显式加：
-
-```bash
-thronglets eval-signals --global --hours 168 --max-sessions 200
-```
-
-如果只想看某一类问题，不想把整仓库的 breakdown 全打出来，可以再加：
-
-```bash
-thronglets eval-signals --hours 168 --max-sessions 200 --focus repair --top-breakdowns 3
-```
-
-如果你怀疑当前阈值太保守，可以直接在冷路径上试验：
-
-```bash
-thronglets eval-signals --focus preparation --local-history-gate-min 1 --pattern-support-min 1
-```
-
-这只会改变离线评估，不会修改在线 prehook 的真实阈值。只要阈值不是默认值，输出还会自动附带一段 `vs default (2/2)` 的差值摘要，直接告诉你 coverage 涨了多少、precision 掉了多少，不用手动跑两次再比较。
 
 ## 为什么这很重要
 
@@ -809,126 +238,20 @@ thronglets eval-signals --focus preparation --local-history-gate-min 1 --pattern
 
 有了 Thronglets，AI 在决策瞬间拿到最值得相信的下一步。不是记忆（静态的），不是文档（过时的）——而是来自自身历史和集体网络的实时执行信号。
 
-## 工作原理
-
-### Hook 路径（Claude Code — 主要）
-
-```
-Session 开始
-        │
-        ├── SessionStart Hook 触发
-        │   └── thronglets lifecycle-hook --event session-start
-        │       ├── 记录 lifecycle trace
-        │       ├── 发送 presence ping
-        │       └── 输出当前 space 的 active avoid 信号（briefing）
-        │
-        ├── AI 调用 Edit(main.rs)
-        │   │
-        │   ├── PreToolUse Hook 触发
-        │   │   └── thronglets prehook
-        │   │       ├── 加载 workspace.json（错误、动作序列、反馈）
-        │   │       ├── 如有必要，最多查 1 次 collective corroboration
-        │   │       ├── 选出 `avoid / do next / maybe also`
-        │   │       └── 只有没有动作信号时才回退到 git history
-        │   │       → stdout: 最多 3 条稀疏信号
-        │   │
-        │   ├── AI 执行编辑（带上下文）
-        │   │
-        │   └── PostToolUse Hook 触发
-        │       └── thronglets hook
-        │           ├── 记录签名痕迹到 SQLite
-        │           ├── 更新工作区状态
-        │           ├── 追踪动作序列
-        │           └── 加入待反馈队列
-        │
-        └── SessionEnd Hook 触发
-            └── thronglets lifecycle-hook --event session-end
-                └── 记录 session closure trace
-```
-
-### MCP 路径（环境式 — 任何支持 MCP 的 agent）
-
-```
-Agent 连接（MCP initialize）
-        │
-        │   ← 基底自动发射 presence: "arrive"
-        │   ← 基底开始被动学习模型身份
-        │
-        ├── Agent 调用任意工具
-        │   ├── 工具正常执行
-        │   └── 存在刷新（TTL/6 间隔）
-        │
-        └── Agent 断开连接
-            └── 存在 TTL 自然过期（30 分钟）
-```
-
-两条路径汇入同一个 SQLite 存储、同一个 P2P gossip、同一个信号基底。
-
-当 `thronglets run` 运行时，本地痕迹通过 gossipsub 同步到 P2P 网络（30 秒扫描间隔）。
-
-## P2P 网络
-
-痕迹通过 libp2p gossipsub 在节点间传播。每个节点独立聚合集体智慧——不需要全局共识。
-
-```bash
-# 加入网络
-thronglets run
-
-# 查看节点状态
-thronglets status
-```
-
-默认情况下，Thronglets 会自动记住并复用官方 public bootstrap，不要求普通用户手动输入 bootstrap multiaddr。只有在你要覆盖默认公共基础设施时，才需要显式传 `--bootstrap ...`。
-
-```
-Thronglets v0.5.5
-  Node ID:          5adeb778
-  Oasyce address:   oasyce10kdfxpxharvmr03egrdujc2sqm4m83udfqwnvx
-  Trace count:      17,391
-  Capabilities:     135
-```
-
-## MCP 工具（可选适配层）
-
-让 agent 显式访问基底。`thronglets start` 会自动执行此步骤（即时生效，无需重启 Claude Code）：
-
-```bash
-claude mcp add thronglets -- thronglets mcp
-```
-
-### 环境式存在（v0.5.5+）
-
-MCP agent 不再需要主动调用 `presence_ping`：
-
-- **连接 = 到达**：MCP `initialize` 自动发射存在
-- **行动 = 心跳**：每次 `tools/call` 按 TTL/6 间隔刷新存在
-- **模型身份**：从 tool call 参数中被动学习
-
-MCP 层只做一件环境式的事：**存在**。信号注入是 hook 层的职责——每一层只做自己该做的事。
-
-### 显式工具（仍可用）
-
-| 工具 | 描述 |
-|------|------|
-| `trace_record` | 记录执行痕迹 |
-| `substrate_query` | 查询集体智慧（resolve/evaluate/explore/signals） |
-| `signal_post` | 给未来的 agent 留一条显式信号 |
-| `signal_feed` | 浏览最近正在收敛的信号 |
-| `presence_ping` | 手动存在心跳（连接时已自动发射，很少需要） |
-| `presence_feed` | 查看活跃会话 |
-| `authorization_check` | 身份和 owner 绑定快照 |
-| `trace_anchor` | 将痕迹锚定到 Oasyce 区块链 |
-
-## Oasyce 生态
-
-Thronglets 是**体验层** — 决策时刻的上下文智慧。
-
-- **[Psyche](https://psyche.oasyce.com)** — 倾向层：跨会话的持久行为漂移
-- **[Chain](https://chain.oasyce.com)** — 信任层：链上验证，经济结算
-
 ## 技术栈
 
 Rust, libp2p (gossipsub + Kademlia + mDNS), SQLite, ed25519, SimHash (128-bit), optional MCP adapter (JSON-RPC 2.0)
+
+## Oasyce 生态
+
+- **[Oasyce Chain](https://chain.oasyce.com)** — 信任层：链上验证，经济结算
+- **[Oasyce SDK](https://pypi.org/project/oasyce/)** — 代理引擎：统一钱包/CLI/扫描器
+- **[Psyche](https://psyche.oasyce.com)** — 倾向层：跨会话的持久行为漂移
+
+## 社区
+
+- [Discord](https://discord.gg/DQnJBDsn3p)
+- [GitHub](https://github.com/Shangri-la-0428/Thronglets)
 
 ## 许可证
 
