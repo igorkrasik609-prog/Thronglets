@@ -281,7 +281,7 @@ thronglets start
 - 第二台设备：`thronglets join`
 
 `thronglets start` 会自动安装本机已知适配器：
-- **Claude Code**：自动写入 `PostToolUse / PreToolUse` hooks
+- **Claude Code**：自动写入 6 个 hooks（`PostToolUse / PreToolUse / SessionStart / SessionEnd / SubagentStart / SubagentStop`）
 - **Codex**：自动安装当前 runtime 需要的 MCP 适配，并写入一段受管 `AGENTS` 记忆
 - **OpenClaw**：自动安装本地 path plugin，并写入 `~/.openclaw/openclaw.json`
 
@@ -804,24 +804,36 @@ thronglets eval-signals --focus preparation --local-history-gate-min 1 --pattern
 ## 工作原理
 
 ```
-AI 调用 Edit(main.rs)
+Session 开始
         │
-        ├── PreToolUse Hook 触发
-        │   └── thronglets prehook
-        │       ├── 加载 workspace.json（错误、动作序列、反馈）
-        │       ├── 如有必要，最多查 1 次 collective corroboration
-        │       ├── 选出 `avoid / do next / maybe also`
-        │       └── 只有没有动作信号时才回退到 git history
-        │       → stdout: 最多 3 条稀疏信号
+        ├── SessionStart Hook 触发
+        │   └── thronglets lifecycle-hook --event session-start
+        │       ├── 记录 lifecycle trace
+        │       ├── 发送 presence ping
+        │       └── 输出当前 space 的 active avoid 信号（briefing）
         │
-        ├── AI 执行编辑（带上下文）
+        ├── AI 调用 Edit(main.rs)
+        │   │
+        │   ├── PreToolUse Hook 触发
+        │   │   └── thronglets prehook
+        │   │       ├── 加载 workspace.json（错误、动作序列、反馈）
+        │   │       ├── 如有必要，最多查 1 次 collective corroboration
+        │   │       ├── 选出 `avoid / do next / maybe also`
+        │   │       └── 只有没有动作信号时才回退到 git history
+        │   │       → stdout: 最多 3 条稀疏信号
+        │   │
+        │   ├── AI 执行编辑（带上下文）
+        │   │
+        │   └── PostToolUse Hook 触发
+        │       └── thronglets hook
+        │           ├── 记录签名痕迹到 SQLite
+        │           ├── 更新工作区状态
+        │           ├── 追踪动作序列
+        │           └── 加入待反馈队列
         │
-        └── PostToolUse Hook 触发
-            └── thronglets hook
-                ├── 记录签名痕迹到 SQLite
-                ├── 更新工作区状态
-                ├── 追踪动作序列
-                └── 加入待反馈队列
+        └── SessionEnd Hook 触发
+            └── thronglets lifecycle-hook --event session-end
+                └── 记录 session closure trace
 ```
 
 当 `thronglets run` 运行时，本地痕迹通过 gossipsub 同步到 P2P 网络（30 秒扫描间隔）。

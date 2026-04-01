@@ -281,7 +281,7 @@ The default user entry points are now:
 - secondary device: `thronglets join`
 
 `thronglets start` auto-installs known local adapters:
-- **Claude Code**: writes `PostToolUse / PreToolUse` hooks automatically
+- **Claude Code**: writes 6 hooks (`PostToolUse / PreToolUse / SessionStart / SessionEnd / SubagentStart / SubagentStop`) automatically
 - **Codex**: installs the MCP adapter this runtime currently needs and writes a managed `AGENTS` memory block
 - **OpenClaw**: installs a local path plugin and updates `~/.openclaw/openclaw.json`
 
@@ -805,24 +805,36 @@ With Thronglets, the AI gets the most trustworthy next step at the moment of dec
 ## How It Works
 
 ```
-AI calls Edit(main.rs)
+Session starts
         │
-        ├── PreToolUse hook fires
-        │   └── thronglets prehook
-        │       ├── Load workspace.json (errors, action sequence, feedback)
-        │       ├── If needed, do at most 1 collective corroboration lookup
-        │       ├── Select `avoid / do next / maybe also`
-        │       └── Fall back to git history only when no action signal exists
-        │       → stdout: at most 3 sparse signals
+        ├── SessionStart hook fires
+        │   └── thronglets lifecycle-hook --event session-start
+        │       ├── Record lifecycle trace
+        │       ├── Emit presence ping
+        │       └── Surface active avoid signals for current space (briefing)
         │
-        ├── AI makes the edit (with context)
+        ├── AI calls Edit(main.rs)
+        │   │
+        │   ├── PreToolUse hook fires
+        │   │   └── thronglets prehook
+        │   │       ├── Load workspace.json (errors, action sequence, feedback)
+        │   │       ├── If needed, do at most 1 collective corroboration lookup
+        │   │       ├── Select `avoid / do next / maybe also`
+        │   │       └── Fall back to git history only when no action signal exists
+        │   │       → stdout: at most 3 sparse signals
+        │   │
+        │   ├── AI makes the edit (with context)
+        │   │
+        │   └── PostToolUse hook fires
+        │       └── thronglets hook
+        │           ├── Record signed trace in SQLite
+        │           ├── Update workspace state
+        │           ├── Track action sequence
+        │           └── Add to pending feedback queue
         │
-        └── PostToolUse hook fires
-            └── thronglets hook
-                ├── Record signed trace in SQLite
-                ├── Update workspace state
-                ├── Track action sequence
-                └── Add to pending feedback queue
+        └── SessionEnd hook fires
+            └── thronglets lifecycle-hook --event session-end
+                └── Record session closure trace
 ```
 
 When `thronglets run` is active, local traces sync to the P2P network via gossipsub (30s scan interval).

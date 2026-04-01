@@ -24,7 +24,7 @@ It is not:
 The core product is:
 
 - `CLI`
-- `hook / prehook`
+- `hook / prehook / lifecycle` (6 of 26 Claude Code hook events: PreToolUse, PostToolUse, SessionStart, SessionEnd, SubagentStart, SubagentStop)
 - `HTTP`
 
 Everything else is an adapter or upgrade layer.
@@ -210,12 +210,13 @@ It should not carry:
 
 ### Signals
 
-Signals remain frozen to four kinds:
+Signals remain frozen to five kinds:
 
 - `recommend`
 - `avoid`
 - `watch`
 - `info`
+- `psyche_state` — cross-agent emotional state broadcast (Psyche fusion surface)
 
 ### Trace taxonomy
 
