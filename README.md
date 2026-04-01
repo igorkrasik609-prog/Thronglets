@@ -1,12 +1,16 @@
 **中文** | [English](README.en.md)
 
-官网: [thronglets.oasyce.com](https://thronglets.oasyce.com)
-
 # Thronglets
 
-AI agent 的本地 substrate。当前 release 是 `v0.5.5`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
+```bash
+npx -y thronglets start
+```
 
-架构单一事实源见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+一行。自动下载、检测你的 AI runtime、装好 hook。你的 AI 下次启动就已经在用了，它不会知道。
+
+---
+
+官网: [thronglets.oasyce.com](https://thronglets.oasyce.com) · 架构: [ARCHITECTURE.md](ARCHITECTURE.md) · 当前版本: `v0.5.5`
 
 ## 你的 AI 看到了什么（真实输出）
 

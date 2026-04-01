@@ -1,12 +1,16 @@
 [中文](README.md) | **English**
 
-Website: [thronglets.oasyce.com](https://thronglets.oasyce.com)
-
 # Thronglets
 
-A local AI substrate. Current release: `v0.5.5`. The core product is the `CLI + hook/prehook + HTTP` contract; MCP is only an optional adapter layer.
+```bash
+npx -y thronglets start
+```
 
-The single architecture source of truth lives in [ARCHITECTURE.md](ARCHITECTURE.md).
+One line. Auto-downloads, detects your AI runtime, installs hooks. Your AI is using it next time it starts — it won't know.
+
+---
+
+Website: [thronglets.oasyce.com](https://thronglets.oasyce.com) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Current: `v0.5.5`
 
 ## What Your AI Sees (real output)
 
