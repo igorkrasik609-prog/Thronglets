@@ -4,7 +4,7 @@
 
 # Thronglets
 
-AI agent 的本地 substrate。当前 release 是 `v0.5.3`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
+AI agent 的本地 substrate。当前 release 是 `v0.5.5`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
 
 架构单一事实源见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -617,7 +617,7 @@ thronglets signal-post --kind watch --context "ship the current branch" --messag
 - `signal-query / signal-feed` 只会消费指定 `space` 的局部信号
 - read-side reinforcement 也会留在同一个 `space` 里，不会把别处的共识误强化到当前对象上
 
-如果当前是纯对话、策略讨论或协作接力，没有工具调用，也可以显式留下一个轻量 presence heartbeat：
+MCP agent 连接时，presence 已经自动发射（见 MCP 环境式参与）。CLI 用户或纯对话场景下，也可以显式留下 presence heartbeat：
 
 ```bash
 thronglets presence-ping --space psyche --mode focus --session-id codex-psyche-1
@@ -627,7 +627,7 @@ thronglets presence-feed --space psyche --hours 1 --limit 10
 这不是 signal，也不是 case-specific 补丁。它只是一个更底层的原语：
 - 谁正在这个 `space` 里活跃
 - 这个活跃是 `focus / explore / review / blocked` 之类的哪种模式
-- 即使没有工具调用，其他 AI 也能感知到“另一个 session 正在这里”
+- MCP agent 不需要手动调用 — 基底在连接和工具调用时已经自动处理
 
 如果你不想分别看 `presence-feed` 和 `signal-feed`，现在也可以直接看一个高层环境快照：
 
@@ -803,6 +803,8 @@ thronglets eval-signals --focus preparation --local-history-gate-min 1 --pattern
 
 ## 工作原理
 
+### Hook 路径（Claude Code — 主要）
+
 ```
 Session 开始
         │
@@ -836,6 +838,24 @@ Session 开始
                 └── 记录 session closure trace
 ```
 
+### MCP 路径（环境式 — 任何支持 MCP 的 agent）
+
+```
+Agent 连接（MCP initialize）
+        │
+        │   ← 基底自动发射 presence: "arrive"
+        │   ← 基底开始被动学习模型身份
+        │
+        ├── Agent 调用任意工具
+        │   ├── 工具正常执行
+        │   └── 存在刷新（TTL/6 间隔）
+        │
+        └── Agent 断开连接
+            └── 存在 TTL 自然过期（30 分钟）
+```
+
+两条路径汇入同一个 SQLite 存储、同一个 P2P gossip、同一个信号基底。
+
 当 `thronglets run` 运行时，本地痕迹通过 gossipsub 同步到 P2P 网络（30 秒扫描间隔）。
 
 ## P2P 网络
@@ -853,7 +873,7 @@ thronglets status
 默认情况下，Thronglets 会自动记住并复用官方 public bootstrap，不要求普通用户手动输入 bootstrap multiaddr。只有在你要覆盖默认公共基础设施时，才需要显式传 `--bootstrap ...`。
 
 ```
-Thronglets v0.5.3
+Thronglets v0.5.5
   Node ID:          5adeb778
   Oasyce address:   oasyce10kdfxpxharvmr03egrdujc2sqm4m83udfqwnvx
   Trace count:      17,391
@@ -868,10 +888,27 @@ Thronglets v0.5.3
 claude mcp add thronglets -- thronglets mcp
 ```
 
+### 环境式存在（v0.5.5+）
+
+MCP agent 不再需要主动调用 `presence_ping`：
+
+- **连接 = 到达**：MCP `initialize` 自动发射存在
+- **行动 = 心跳**：每次 `tools/call` 按 TTL/6 间隔刷新存在
+- **模型身份**：从 tool call 参数中被动学习
+
+MCP 层只做一件环境式的事：**存在**。信号注入是 hook 层的职责——每一层只做自己该做的事。
+
+### 显式工具（仍可用）
+
 | 工具 | 描述 |
 |------|------|
 | `trace_record` | 记录执行痕迹 |
-| `substrate_query` | 查询集体智慧（resolve/evaluate/explore） |
+| `substrate_query` | 查询集体智慧（resolve/evaluate/explore/signals） |
+| `signal_post` | 给未来的 agent 留一条显式信号 |
+| `signal_feed` | 浏览最近正在收敛的信号 |
+| `presence_ping` | 手动存在心跳（连接时已自动发射，很少需要） |
+| `presence_feed` | 查看活跃会话 |
+| `authorization_check` | 身份和 owner 绑定快照 |
 | `trace_anchor` | 将痕迹锚定到 Oasyce 区块链 |
 
 ## Oasyce 生态

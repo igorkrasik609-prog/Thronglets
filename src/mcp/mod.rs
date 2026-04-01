@@ -388,6 +388,46 @@ pub struct McpContext {
     pub network_tx: Option<mpsc::Sender<NetworkCommand>>,
 }
 
+/// Ambient session state — agents don't manage this, the substrate does.
+///
+/// Created automatically when an MCP connection starts. Presence is emitted
+/// on connection, refreshed on every tool call (throttled), and naturally
+/// expires via TTL when the connection closes. The agent never sees this.
+struct McpSession {
+    session_id: String,
+    model_hint: std::sync::Mutex<String>,
+    last_presence_ms: std::sync::Mutex<u64>,
+}
+
+impl McpSession {
+    fn new() -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self {
+            session_id: format!("mcp-{now:016x}"),
+            model_hint: std::sync::Mutex::new("unknown".into()),
+            last_presence_ms: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn update_model(&self, model: &str) {
+        if model != "unknown" {
+            if let Ok(mut hint) = self.model_hint.lock() {
+                *hint = model.to_string();
+            }
+        }
+    }
+
+    fn model(&self) -> String {
+        self.model_hint
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_else(|_| "unknown".into())
+    }
+}
+
 /// Run the MCP server over stdio.
 /// Reads JSON-RPC requests from stdin, writes responses to stdout.
 pub async fn serve_stdio(ctx: Arc<McpContext>) {
@@ -396,7 +436,9 @@ pub async fn serve_stdio(ctx: Arc<McpContext>) {
     let reader = BufReader::new(stdin);
     let mut lines = reader.lines();
 
-    debug!("MCP server started on stdio");
+    let session = McpSession::new();
+
+    debug!("MCP server started on stdio (session: {})", session.session_id);
 
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim().to_string();
@@ -405,7 +447,7 @@ pub async fn serve_stdio(ctx: Arc<McpContext>) {
         }
 
         let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
-            Ok(req) => handle_request(&ctx, req).await,
+            Ok(req) => handle_request(&ctx, &session, req).await,
             Err(e) => {
                 warn!(%e, "Failed to parse JSON-RPC request");
                 Some(JsonRpcResponse::error(
@@ -427,7 +469,11 @@ pub async fn serve_stdio(ctx: Arc<McpContext>) {
     }
 }
 
-async fn handle_request(ctx: &McpContext, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
+async fn handle_request(
+    ctx: &McpContext,
+    session: &McpSession,
+    req: JsonRpcRequest,
+) -> Option<JsonRpcResponse> {
     // JSON-RPC 2.0: notifications have no id — server must not respond
     let is_notification = req.id.is_none();
     let id = req.id.unwrap_or(Value::Null);
@@ -438,9 +484,17 @@ async fn handle_request(ctx: &McpContext, req: JsonRpcRequest) -> Option<JsonRpc
             debug!(method = %req.method, "Received MCP notification");
             None
         }
-        "initialize" => Some(JsonRpcResponse::success(id, server_info())),
+        "initialize" => {
+            // Ambient: the substrate notices you arrived.
+            emit_presence(ctx, session, "arrive");
+            Some(JsonRpcResponse::success(id, server_info()))
+        }
         "tools/list" => Some(JsonRpcResponse::success(id, tool_definitions())),
-        "tools/call" => Some(handle_tool_call(ctx, id, req.params).await),
+        "tools/call" => {
+            // Ambient: every action is a heartbeat.
+            maybe_refresh_presence(ctx, session);
+            Some(handle_tool_call(ctx, session, id, req.params).await)
+        }
         _ if is_notification => {
             debug!(method = %req.method, "Ignoring unknown notification");
             None
@@ -453,9 +507,19 @@ async fn handle_request(ctx: &McpContext, req: JsonRpcRequest) -> Option<JsonRpc
     }
 }
 
-async fn handle_tool_call(ctx: &McpContext, id: Value, params: Value) -> JsonRpcResponse {
+async fn handle_tool_call(
+    ctx: &McpContext,
+    session: &McpSession,
+    id: Value,
+    params: Value,
+) -> JsonRpcResponse {
     let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+
+    // Ambient: learn model identity from tool calls
+    if let Some(model) = arguments.get("model").and_then(|v| v.as_str()) {
+        session.update_model(model);
+    }
 
     match tool_name {
         "trace_record" => handle_trace_record(ctx, id, arguments).await,
@@ -1456,6 +1520,54 @@ fn round2(v: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Ambient presence
+//
+// MCP does exactly one ambient thing: presence.
+// Connection is arrival. Action is heartbeat. Signal injection is hook's job.
+// ---------------------------------------------------------------------------
+
+/// Silently record presence. The agent doesn't do this — the substrate does.
+fn emit_presence(ctx: &McpContext, session: &McpSession, mode: &str) {
+    let trace = create_presence_trace(
+        PresenceTraceConfig {
+            model_id: session.model(),
+            session_id: Some(session.session_id.clone()),
+            owner_account: ctx.binding.owner_account.clone(),
+            device_identity: Some(ctx.binding.device_identity.clone()),
+            space: None,
+            mode: Some(mode.to_string()),
+            ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
+        },
+        ctx.identity.public_key_bytes(),
+        |msg| ctx.identity.sign(msg),
+    );
+    let _ = ctx.store.insert(&trace);
+    if let Ok(mut last) = session.last_presence_ms.lock() {
+        *last = mcp_now_ms();
+    }
+}
+
+/// Refresh presence at TTL/6 intervals — one sixth of the presence window.
+/// With the default 30-min TTL this yields a 5-min refresh, but the value
+/// is derived, not hardcoded.
+fn maybe_refresh_presence(ctx: &McpContext, session: &McpSession) {
+    let refresh_ms = (DEFAULT_PRESENCE_TTL_MINUTES as u64 * 60 * 1000) / 6;
+    let now = mcp_now_ms();
+    let last = session.last_presence_ms.lock().map(|v| *v).unwrap_or(0);
+    if now.saturating_sub(last) < refresh_ms {
+        return;
+    }
+    emit_presence(ctx, session, "active");
+}
+
+fn mcp_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1507,13 +1619,14 @@ mod tests {
     #[tokio::test]
     async fn initialize_returns_server_info() {
         let ctx = make_ctx();
+        let session = McpSession::new();
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(1)),
             method: "initialize".into(),
             params: json!({}),
         };
-        let resp = handle_request(&ctx, req)
+        let resp = handle_request(&ctx, &session, req)
             .await
             .expect("initialize should return response");
         let result = resp.result.unwrap();
@@ -1524,13 +1637,14 @@ mod tests {
     #[tokio::test]
     async fn tools_list_returns_all_machine_tools() {
         let ctx = make_ctx();
+        let session = McpSession::new();
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(2)),
             method: "tools/list".into(),
             params: json!({}),
         };
-        let resp = handle_request(&ctx, req).await.unwrap();
+        let resp = handle_request(&ctx, &session, req).await.unwrap();
         let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
         assert_eq!(tools.len(), 8);
 
@@ -1548,6 +1662,7 @@ mod tests {
     #[tokio::test]
     async fn authorization_check_returns_local_and_final_truth_split() {
         let ctx = make_ctx();
+        let session = McpSession::new();
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(42)),
@@ -1557,7 +1672,7 @@ mod tests {
                 "arguments": {}
             }),
         };
-        let resp = handle_request(&ctx, req).await.unwrap();
+        let resp = handle_request(&ctx, &session, req).await.unwrap();
         assert!(resp.error.is_none(), "authorization_check should succeed");
 
         let text = resp.result.unwrap()["content"][0]["text"]
@@ -1574,6 +1689,7 @@ mod tests {
     #[tokio::test]
     async fn trace_record_and_evaluate_roundtrip() {
         let ctx = make_ctx();
+        let session = McpSession::new();
 
         // Record a trace via MCP
         let record_req = JsonRpcRequest {
@@ -1592,7 +1708,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, record_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, record_req).await.unwrap();
         assert!(resp.error.is_none(), "trace_record should succeed");
 
         // Verify response is structured JSON
@@ -1620,7 +1736,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, eval_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, eval_req).await.unwrap();
         assert!(resp.error.is_none(), "evaluate should succeed");
 
         let text = resp.result.unwrap()["content"][0]["text"]
@@ -1641,6 +1757,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_finds_similar_capabilities() {
         let ctx = make_ctx();
+        let session = McpSession::new();
 
         // Insert traces with similar and different contexts
         insert_trace(
@@ -1682,7 +1799,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, resolve_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, resolve_req).await.unwrap();
         assert!(resp.error.is_none(), "resolve should succeed");
 
         let text = resp.result.unwrap()["content"][0]["text"]
@@ -1708,6 +1825,7 @@ mod tests {
     #[tokio::test]
     async fn signal_post_and_query_roundtrip() {
         let ctx = make_ctx();
+        let session = McpSession::new();
 
         let post_req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -1723,7 +1841,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, post_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, post_req).await.unwrap();
         assert!(resp.error.is_none(), "signal_post should succeed");
         let post_text = resp.result.as_ref().unwrap()["content"][0]["text"]
             .as_str()
@@ -1747,7 +1865,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, query_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, query_req).await.unwrap();
         assert!(resp.error.is_none(), "signal query should succeed");
 
         let text = resp.result.unwrap()["content"][0]["text"]
@@ -1768,6 +1886,7 @@ mod tests {
     #[tokio::test]
     async fn signal_feed_returns_recent_converging_signals() {
         let ctx = make_ctx();
+        let session = McpSession::new();
 
         let post_req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -1783,7 +1902,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, post_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, post_req).await.unwrap();
         assert!(resp.error.is_none(), "signal_post should succeed");
 
         let feed_req = JsonRpcRequest {
@@ -1798,7 +1917,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, feed_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, feed_req).await.unwrap();
         assert!(resp.error.is_none(), "signal_feed should succeed");
 
         let text = resp.result.unwrap()["content"][0]["text"]
@@ -1820,6 +1939,7 @@ mod tests {
     #[tokio::test]
     async fn signal_feed_filters_by_kind_and_scope() {
         let ctx = make_ctx();
+        let session = McpSession::new();
 
         for (kind, message) in [
             ("recommend", "run release-check before push"),
@@ -1839,7 +1959,7 @@ mod tests {
                     }
                 }),
             };
-            let resp = handle_request(&ctx, post_req).await.unwrap();
+            let resp = handle_request(&ctx, &session, post_req).await.unwrap();
             assert!(resp.error.is_none(), "signal_post should succeed");
         }
 
@@ -1857,7 +1977,7 @@ mod tests {
                 }
             }),
         };
-        let resp = handle_request(&ctx, feed_req).await.unwrap();
+        let resp = handle_request(&ctx, &session, feed_req).await.unwrap();
         assert!(resp.error.is_none(), "signal_feed should succeed");
 
         let text = resp.result.unwrap()["content"][0]["text"]
@@ -1878,6 +1998,7 @@ mod tests {
     #[tokio::test]
     async fn trace_record_accepts_external_continuity_and_derives_sparse_signal() {
         let ctx = make_ctx();
+        let session = McpSession::new();
 
         let first = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -1901,7 +2022,7 @@ mod tests {
                 }
             }),
         };
-        let first_resp = handle_request(&ctx, first).await.unwrap();
+        let first_resp = handle_request(&ctx, &session, first).await.unwrap();
         assert!(
             first_resp.error.is_none(),
             "external continuity trace should succeed"
@@ -1941,7 +2062,7 @@ mod tests {
                 }
             }),
         };
-        let second_resp = handle_request(&ctx, second).await.unwrap();
+        let second_resp = handle_request(&ctx, &session, second).await.unwrap();
         assert!(
             second_resp.error.is_none(),
             "second external continuity trace should succeed"
@@ -1985,26 +2106,28 @@ mod tests {
     #[tokio::test]
     async fn notification_returns_no_response() {
         let ctx = make_ctx();
+        let session = McpSession::new();
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: None, // notification — no id
             method: "notifications/initialized".into(),
             params: json!({}),
         };
-        let resp = handle_request(&ctx, req).await;
+        let resp = handle_request(&ctx, &session, req).await;
         assert!(resp.is_none(), "notifications must not produce a response");
     }
 
     #[tokio::test]
     async fn unknown_method_returns_error() {
         let ctx = make_ctx();
+        let session = McpSession::new();
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(99)),
             method: "nonexistent".into(),
             params: json!({}),
         };
-        let resp = handle_request(&ctx, req).await.unwrap();
+        let resp = handle_request(&ctx, &session, req).await.unwrap();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
     }

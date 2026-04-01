@@ -232,6 +232,17 @@ Presence is ambient activity, not identity.
 
 It exists so shared spaces can feel alive without tool calls or direct messages.
 
+#### Ambient presence (v0.5.5+)
+
+Agents don't call `presence_ping` — the substrate does it for them:
+
+- **Connection = arrival**: MCP `initialize` auto-emits `mode: "arrive"`
+- **Action = heartbeat**: every `tools/call` refreshes presence at TTL/6 intervals (`mode: "active"`)
+- **Disconnection = natural TTL expiry**: no explicit departure needed
+- **Model identity**: learned passively from tool call arguments
+
+MCP does exactly one ambient thing: **presence**. Signal injection is the hook layer's job — each layer does what it's good at.
+
 ### Space snapshot
 
 `space` is the core shared-environment view.

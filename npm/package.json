@@ -1,6 +1,6 @@
 {
   "name": "thronglets",
-  "version": "0.5.3",
+  "version": "0.5.5",
   "description": "Local AI substrate for agents with sparse signals, hooks, and optional adapters",
   "keywords": [
     "ai-agents",

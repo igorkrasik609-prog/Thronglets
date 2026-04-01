@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v0.5.5 — 2026-04-01
+
+- **Ambient presence** — MCP agents no longer need to call `presence_ping`; `initialize` auto-emits arrival, every `tools/call` refreshes presence at TTL/6 intervals (derived, not hardcoded), and model identity is learned passively from tool call arguments; signal injection remains the hook layer's responsibility — MCP does exactly one ambient thing: presence
+
+## v0.5.4 — 2026-04-01
+
+- **Anchor broadcast enabled** — `AnchorClient` now actually broadcasts signed transactions to the Oasyce chain REST endpoint (`/cosmos/tx/v1beta1/txs`) via `reqwest::blocking`, replacing the previous placeholder that only computed tx hashes locally; returns real chain tx_hash on success, `AnchorError::Http` on network failure, `AnchorError::Chain` on rejection; tests gracefully handle offline (no-chain) environments
+- **reqwest blocking feature** — added `blocking` feature to reqwest dependency for sync HTTP from MCP handler context
+
 ## v0.5.3 — 2026-04-01
 
 - **Lifecycle hooks** — Thronglets now hooks into 6 of Claude Code's 26 hook events (was 2): `SessionStart`, `SessionEnd`, `SubagentStart`, `SubagentStop` join existing `PreToolUse` and `PostToolUse`; session-start records a lifecycle trace, emits presence, and surfaces any active avoid signals as a brief `additionalContext` briefing; session-end records closure; subagent-start/-stop record multi-agent lifecycle traces with agent type, id, and completion summary — enabling the substrate to observe session boundaries and multi-agent coordination rather than inferring them from tool call patterns

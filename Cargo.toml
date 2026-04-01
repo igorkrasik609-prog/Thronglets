@@ -1,6 +1,6 @@
 [package]
 name = "thronglets"
-version = "0.5.3"
+version = "0.5.5"
 edition = "2024"
 description = "Local AI substrate for agents with sparse signals, hooks, and optional adapters"
 license = "MIT"
@@ -40,7 +40,7 @@ serde_json = "1"
 toml = "0.8"
 
 # Anchor layer (Oasyce chain)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 base64 = "0.22"
 thiserror = "2"
 
