@@ -176,6 +176,34 @@ GET  /v1/status — Node info: version, node_id, trace_count
 - **ed25519 identity**: Cosmos-compatible oasyce1... bech32 address
 - **Optional adapters**: MCP is supported, but the substrate is not defined by MCP
 
+## Machine Bootstrap
+
+Agents should not parse long prose to configure Thronglets. Use the contract:
+
+thronglets detect --json
+thronglets install-plan --agent codex --json
+thronglets apply-plan --agent codex --json
+thronglets doctor --agent codex --json
+
+Or use the single-step path:
+
+thronglets bootstrap --agent codex --json
+
+The machine schema is:
+
+thronglets.bootstrap.v2
+
+All bootstrap commands return:
+- data.summary first
+- details second
+
+## Operator Commands
+
+thronglets profile-summary
+thronglets profile-check
+thronglets eval-signals --json
+thronglets release-check --eval-scope both --json
+
 ## Seed Node
 
 ```

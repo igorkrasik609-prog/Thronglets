@@ -1,6 +1,6 @@
 # TODO
 
-Thronglets 现在的主线已经明确（当前 release: `v0.4.7`）：
+Thronglets 现在的主线已经明确（当前 release: `v0.5.5`）：
 
 - 产品形态：`AI-first decision substrate`
 - 接入形态：`one-command setup + machine bootstrap contract`
@@ -401,7 +401,7 @@ Thronglets 现在的主线已经明确（当前 release: `v0.4.7`）：
 目标：真正的一行命令安装。
 
 当前状态：
-- npm / python wrapper metadata and package docs now track the current `v0.4.1` sparse-signal product shape
+- npm / python wrapper metadata and package docs now track the current `v0.5.5` sparse-signal product shape
 - CI 已经会挡住 package-facing 文案和版本再漂回旧的 `0.2.0 / 8 layers`
 - repo 内已经有 tagged release workflow 和 `scripts/install.sh`
 

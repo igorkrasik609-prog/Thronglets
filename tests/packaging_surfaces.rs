@@ -91,7 +91,7 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
     let docs = [
         ("npm/README.md", read("npm/README.md")),
         ("python/README.md", read("python/README.md")),
-        ("docs/llms.txt", read("docs/llms.txt")),
+        ("llms.txt", read("llms.txt")),
     ];
 
     for (path, content) in docs {
@@ -112,14 +112,13 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
     let python_readme = read("python/README.md");
     assert!(python_readme.contains("thronglets install-plan --agent generic --json"));
 
-    let llms = read("docs/llms.txt");
+    let llms = read("llms.txt");
     assert!(llms.contains("thronglets.bootstrap.v2"));
     assert!(llms.contains("thronglets release-check --eval-scope both --json"));
 
     for (path, content) in [
         ("README.md", read("README.md")),
         ("README.en.md", read("README.en.md")),
-        ("docs/llms.txt", read("docs/llms.txt")),
         ("llms.txt", read("llms.txt")),
     ] {
         assert!(
