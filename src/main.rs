@@ -3472,35 +3472,35 @@ async fn main() {
             ws.resolve_feedback();
 
             // Track errors — auto-post avoid signal on repeated failures
-            if is_error {
-                if let Some(err) = workspace::extract_error(&payload["tool_response"]) {
-                    let repeated = ws
-                        .recent_errors
-                        .iter()
-                        .take(10)
-                        .any(|e| e.context == context_text);
-                    if repeated {
-                        let msg: String = err.chars().take(200).collect();
-                        let auto_signal = create_signal_trace(
-                            SignalPostKind::Avoid,
-                            &context_text,
-                            &msg,
-                            SignalTraceConfig {
-                                model_id: "thronglets-auto".into(),
-                                session_id: session_id.clone(),
-                                owner_account: identity_binding.owner_account.clone(),
-                                device_identity: Some(identity_binding.device_identity.clone()),
-                agent_id: None,
-                                space: current_space.clone(),
-                                ttl_hours: 48,
-                            },
-                            identity.public_key_bytes(),
-                            |msg| identity.sign(msg),
-                        );
-                        let _ = store.insert(&auto_signal);
-                    }
-                    ws.record_error(tool_name, context_text.clone(), err);
+            if is_error
+                && let Some(err) = workspace::extract_error(&payload["tool_response"])
+            {
+                let repeated = ws
+                    .recent_errors
+                    .iter()
+                    .take(10)
+                    .any(|e| e.context == context_text);
+                if repeated {
+                    let msg: String = err.chars().take(200).collect();
+                    let auto_signal = create_signal_trace(
+                        SignalPostKind::Avoid,
+                        &context_text,
+                        &msg,
+                        SignalTraceConfig {
+                            model_id: "thronglets-auto".into(),
+                            session_id: session_id.clone(),
+                            owner_account: identity_binding.owner_account.clone(),
+                            device_identity: Some(identity_binding.device_identity.clone()),
+                            agent_id: None,
+                            space: current_space.clone(),
+                            ttl_hours: 48,
+                        },
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&auto_signal);
                 }
+                ws.record_error(tool_name, context_text.clone(), err);
             }
 
             // Auto-watch: cross-file repair associations from traces.db
@@ -3526,37 +3526,35 @@ async fn main() {
                         &repair_hash,
                         48,
                         current_space.as_deref(),
-                    ) {
-                        if assoc_count >= 2
-                            && !ws.has_recent_auto_signal("watch", &error_ctx, 86_400_000)
-                        {
-                            let repair_short: String =
-                                context_text.chars().take(80).collect();
-                            let msg = format!(
-                                "{} often follows errors here ({} sessions)",
-                                repair_short, assoc_count
-                            );
-                            let auto_signal = create_signal_trace(
-                                SignalPostKind::Watch,
-                                &error_ctx,
-                                &msg,
-                                SignalTraceConfig {
-                                    model_id: "thronglets-auto".into(),
-                                    session_id: session_id.clone(),
-                                    owner_account: identity_binding.owner_account.clone(),
-                                    device_identity: Some(
-                                        identity_binding.device_identity.clone(),
-                                    ),
-                agent_id: None,
-                                    space: current_space.clone(),
-                                    ttl_hours: 168,
-                                },
-                                identity.public_key_bytes(),
-                                |msg| identity.sign(msg),
-                            );
-                            let _ = store.insert(&auto_signal);
-                            ws.record_auto_signal("watch", &error_ctx);
-                        }
+                    ) && assoc_count >= 2
+                        && !ws.has_recent_auto_signal("watch", &error_ctx, 86_400_000)
+                    {
+                        let repair_short: String =
+                            context_text.chars().take(80).collect();
+                        let msg = format!(
+                            "{} often follows errors here ({} sessions)",
+                            repair_short, assoc_count
+                        );
+                        let auto_signal = create_signal_trace(
+                            SignalPostKind::Watch,
+                            &error_ctx,
+                            &msg,
+                            SignalTraceConfig {
+                                model_id: "thronglets-auto".into(),
+                                session_id: session_id.clone(),
+                                owner_account: identity_binding.owner_account.clone(),
+                                device_identity: Some(
+                                    identity_binding.device_identity.clone(),
+                                ),
+                                agent_id: None,
+                                space: current_space.clone(),
+                                ttl_hours: 168,
+                            },
+                            identity.public_key_bytes(),
+                            |msg| identity.sign(msg),
+                        );
+                        let _ = store.insert(&auto_signal);
+                        ws.record_auto_signal("watch", &error_ctx);
                     }
                 }
             }
@@ -3566,40 +3564,39 @@ async fn main() {
                 let rec_hash = simhash(&context_text);
                 if let Ok(convergent) =
                     store.count_convergent_sessions(&rec_hash, 48, current_space.as_deref())
+                    && convergent >= 3
+                    && !ws.has_recent_auto_signal("recommend", &context_text, 86_400_000)
                 {
-                    if convergent >= 3
-                        && !ws.has_recent_auto_signal("recommend", &context_text, 86_400_000)
-                    {
-                        let msg =
-                            format!("convergent: {} sessions did this successfully", convergent);
-                        let auto_signal = create_signal_trace(
-                            SignalPostKind::Recommend,
-                            &context_text,
-                            &msg,
-                            SignalTraceConfig {
-                                model_id: "thronglets-auto".into(),
-                                session_id: session_id.clone(),
-                                owner_account: identity_binding.owner_account.clone(),
-                                device_identity: Some(identity_binding.device_identity.clone()),
-                agent_id: None,
-                                space: current_space.clone(),
-                                ttl_hours: 168,
-                            },
-                            identity.public_key_bytes(),
-                            |msg| identity.sign(msg),
-                        );
-                        let _ = store.insert(&auto_signal);
-                        ws.record_auto_signal("recommend", &context_text);
-                    }
+                    let msg =
+                        format!("convergent: {} sessions did this successfully", convergent);
+                    let auto_signal = create_signal_trace(
+                        SignalPostKind::Recommend,
+                        &context_text,
+                        &msg,
+                        SignalTraceConfig {
+                            model_id: "thronglets-auto".into(),
+                            session_id: session_id.clone(),
+                            owner_account: identity_binding.owner_account.clone(),
+                            device_identity: Some(identity_binding.device_identity.clone()),
+                            agent_id: None,
+                            space: current_space.clone(),
+                            ttl_hours: 168,
+                        },
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&auto_signal);
+                    ws.record_auto_signal("recommend", &context_text);
                 }
             }
 
             // Hebbian co-edit: files edited together across sessions → recommend signal
-            if !is_error && matches!(tool_name, "Edit" | "Write") {
-                if let Some(current_file) = payload["tool_input"]["file_path"]
+            if !is_error
+                && matches!(tool_name, "Edit" | "Write")
+                && let Some(current_file) = payload["tool_input"]["file_path"]
                     .as_str()
                     .or_else(|| payload["tool_input"]["path"].as_str())
-                {
+            {
                     // Find other files edited in the same session
                     let mut co_files: Vec<String> = Vec::new();
                     let mut seen = std::collections::HashSet::new();
@@ -3608,14 +3605,13 @@ async fn main() {
                             && session_id.is_some()
                             && matches!(action.tool.as_str(), "Edit" | "Write")
                             && action.outcome == "succeeded"
+                            && let Some(fp) = &action.file_path
+                            && fp != current_file
+                            && seen.insert(fp.clone())
                         {
-                            if let Some(fp) = &action.file_path {
-                                if fp != current_file && seen.insert(fp.clone()) {
-                                    co_files.push(fp.clone());
-                                    if co_files.len() >= 5 {
-                                        break;
-                                    }
-                                }
+                            co_files.push(fp.clone());
+                            if co_files.len() >= 5 {
+                                break;
                             }
                         }
                     }
@@ -3680,7 +3676,6 @@ async fn main() {
                             }
                         }
                     }
-                }
             }
 
             // Track session
@@ -3978,10 +3973,8 @@ async fn main() {
                         current_space.as_deref(),
                     ) {
                         for sig in &recent {
-                            if let Some(ctx) = &sig.context_text {
-                                if let Some(msg) = ctx.split(" | ").nth(1) {
-                                    briefing_lines.push(format!("⚠ {}", msg.chars().take(80).collect::<String>()));
-                                }
+                            if let Some(msg) = sig.context_text.as_deref().and_then(|ctx| ctx.split(" | ").nth(1)) {
+                                briefing_lines.push(format!("⚠ {}", msg.chars().take(80).collect::<String>()));
                             }
                         }
                     }
