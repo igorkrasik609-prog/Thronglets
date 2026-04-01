@@ -4,7 +4,7 @@
 
 # Thronglets
 
-AI agent 的本地 substrate。当前 release 是 `v0.5.2`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
+AI agent 的本地 substrate。当前 release 是 `v0.5.3`，核心是 `CLI + hook/prehook + HTTP` contract，MCP 只是可选适配层。
 
 架构单一事实源见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -841,7 +841,7 @@ thronglets status
 默认情况下，Thronglets 会自动记住并复用官方 public bootstrap，不要求普通用户手动输入 bootstrap multiaddr。只有在你要覆盖默认公共基础设施时，才需要显式传 `--bootstrap ...`。
 
 ```
-Thronglets v0.5.2
+Thronglets v0.5.3
   Node ID:          5adeb778
   Oasyce address:   oasyce10kdfxpxharvmr03egrdujc2sqm4m83udfqwnvx
   Trace count:      17,391

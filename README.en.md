@@ -4,7 +4,7 @@ Website: [thronglets.oasyce.com](https://thronglets.oasyce.com)
 
 # Thronglets
 
-A local AI substrate. Current release: `v0.5.2`. The core product is the `CLI + hook/prehook + HTTP` contract; MCP is only an optional adapter layer.
+A local AI substrate. Current release: `v0.5.3`. The core product is the `CLI + hook/prehook + HTTP` contract; MCP is only an optional adapter layer.
 
 The single architecture source of truth lives in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -842,7 +842,7 @@ thronglets status
 By default, Thronglets now remembers and reuses the official public bootstrap path automatically, so ordinary users do not need to type a bootstrap multiaddr. Only pass `--bootstrap ...` when you intentionally want to override the default public infrastructure.
 
 ```
-Thronglets v0.5.2
+Thronglets v0.5.3
   Node ID:          5adeb778
   Oasyce address:   oasyce10kdfxpxharvmr03egrdujc2sqm4m83udfqwnvx
   Trace count:      17,391

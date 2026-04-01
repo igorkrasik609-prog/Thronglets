@@ -574,6 +574,7 @@ pub fn record_external_continuity(
                 session_id: trace.session_id.clone(),
                 owner_account: config.owner_account,
                 device_identity: Some(config.device_identity),
+                agent_id: None,
                 space: signal.space.clone(),
                 ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
             },

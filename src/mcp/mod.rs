@@ -123,6 +123,10 @@ fn tool_definitions() -> Value {
                             "type": "string",
                             "description": "Session identifier for workflow tracking — traces with the same session_id form an ordered sequence"
                         },
+                        "agent_id": {
+                            "type": "string",
+                            "description": "Optional agent identifier for multi-agent disambiguation (e.g. \"ENFP-Luna\", \"INTJ-Kai\")"
+                        },
                         "external_continuity": {
                             "type": "object",
                             "description": "Optional low-frequency external continuity residue from Psyche. Raw events stay local-first; only sparse derived signals may escape.",
@@ -165,14 +169,14 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "signal_post",
-                "description": "Leave an explicit short signal for future agents. Use this when you want to say recommend/avoid/watch/info in a specific task context.",
+                "description": "Leave an explicit short signal for future agents. Use this when you want to say recommend/avoid/watch/info/psyche_state in a specific task context.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "kind": {
                             "type": "string",
-                            "enum": ["recommend", "avoid", "watch", "info"],
-                            "description": "Signal type"
+                            "enum": ["recommend", "avoid", "watch", "info", "psyche_state"],
+                            "description": "Signal type. Use psyche_state to broadcast agent emotional/personality state to other agents."
                         },
                         "context": {
                             "type": "string",
@@ -201,6 +205,10 @@ fn tool_definitions() -> Value {
                         "ttl_hours": {
                             "type": "integer",
                             "description": "How long the signal should remain fresh before it decays away (default: 72)"
+                        },
+                        "agent_id": {
+                            "type": "string",
+                            "description": "Optional agent identifier for multi-agent disambiguation (e.g. \"ENFP-Luna\")"
                         }
                     },
                     "required": ["kind", "context", "message"]
@@ -218,7 +226,7 @@ fn tool_definitions() -> Value {
                         },
                         "kind": {
                             "type": "string",
-                            "enum": ["recommend", "avoid", "watch", "info"],
+                            "enum": ["recommend", "avoid", "watch", "info", "psyche_state"],
                             "description": "Optional signal kind filter"
                         },
                         "scope": {
@@ -297,7 +305,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "substrate_query",
-                "description": "Query the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, 'explore' to discover what's available, or 'signals' to find explicit short messages left by other agents.",
+                "description": "Query the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, 'explore' to discover what's available, 'signals' to find explicit short messages left by other agents, or 'continuity' to query external continuity traces by taxonomy.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -307,8 +315,8 @@ fn tool_definitions() -> Value {
                         },
                         "intent": {
                             "type": "string",
-                            "enum": ["resolve", "evaluate", "explore", "signals"],
-                            "description": "Query intent: resolve (find capabilities), evaluate (get stats), explore (discover), signals (explicit short messages)"
+                            "enum": ["resolve", "evaluate", "explore", "signals", "continuity"],
+                            "description": "Query intent: resolve (find capabilities), evaluate (get stats), explore (discover), signals (explicit short messages), continuity (external continuity traces by taxonomy)"
                         },
                         "capability": {
                             "type": "string",
@@ -316,12 +324,17 @@ fn tool_definitions() -> Value {
                         },
                         "kind": {
                             "type": "string",
-                            "enum": ["recommend", "avoid", "watch", "info"],
+                            "enum": ["recommend", "avoid", "watch", "info", "psyche_state"],
                             "description": "Optional signal kind filter (used for 'signals' intent)"
+                        },
+                        "taxonomy": {
+                            "type": "string",
+                            "enum": ["coordination", "continuity", "calibration"],
+                            "description": "Continuity taxonomy filter (used for 'continuity' intent)"
                         },
                         "space": {
                             "type": "string",
-                            "description": "Optional explicit substrate space (used for 'signals' intent)"
+                            "description": "Optional explicit substrate space"
                         },
                         "limit": {
                             "type": "integer",
@@ -561,6 +574,10 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         .get("session_id")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let agent_id = args
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let context_hash = simhash(context_str);
     let context_text = if context_str.is_empty() {
@@ -569,7 +586,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         Some(context_str.to_string())
     };
 
-    let trace = Trace::new_with_identity(
+    let trace = Trace::new_with_agent(
         capability.clone(),
         outcome,
         latency_ms,
@@ -579,6 +596,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         session_id,
         ctx.binding.owner_account.clone(),
         Some(ctx.binding.device_identity.clone()),
+        agent_id,
         model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
@@ -657,6 +675,10 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
         .get("session_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let agent_id = args
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let ttl_hours = args
         .get("ttl_hours")
         .and_then(|v| v.as_u64())
@@ -672,6 +694,7 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
             session_id,
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
+            agent_id,
             space: space.clone(),
             ttl_hours,
         },
@@ -869,11 +892,31 @@ fn handle_substrate_query(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRe
                 Err(error) => error,
             }
         }
+        "continuity" => {
+            let taxonomy = args
+                .get("taxonomy")
+                .and_then(|v| v.as_str())
+                .unwrap_or("coordination");
+            if !matches!(taxonomy, "coordination" | "continuity" | "calibration") {
+                return JsonRpcResponse::error(
+                    id,
+                    -32602,
+                    format!("Unknown taxonomy: {taxonomy}. Use coordination, continuity, or calibration."),
+                );
+            }
+            handle_continuity_query(
+                ctx,
+                id,
+                taxonomy,
+                args.get("space").and_then(|v| v.as_str()),
+                limit,
+            )
+        }
         _ => JsonRpcResponse::error(
             id,
             -32602,
             format!(
-                "Unknown intent: {intent}. Use 'resolve', 'evaluate', 'explore', or 'signals'."
+                "Unknown intent: {intent}. Use 'resolve', 'evaluate', 'explore', 'signals', or 'continuity'."
             ),
         ),
     }
@@ -1154,6 +1197,7 @@ fn handle_signals(
             session_id: None,
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
+                agent_id: None,
             space: None,
             ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
         },
@@ -1169,6 +1213,47 @@ fn handle_signals(
             "content": [{
                 "type": "text",
                 "text": serde_json::to_string(&response_json).unwrap()
+            }]
+        }),
+    )
+}
+
+fn handle_continuity_query(
+    ctx: &McpContext,
+    id: Value,
+    taxonomy: &str,
+    space: Option<&str>,
+    limit: usize,
+) -> JsonRpcResponse {
+    let traces = match ctx
+        .store
+        .query_continuity_by_taxonomy(taxonomy, 168, limit, space)
+    {
+        Ok(t) => t,
+        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
+    };
+    let results: Vec<Value> = traces
+        .iter()
+        .filter_map(|t| {
+            let payload: Value = serde_json::from_str(t.context_text.as_deref()?).ok()?;
+            Some(json!({
+                "capability": t.capability,
+                "taxonomy": payload.get("taxonomy").and_then(|v| v.as_str()),
+                "event": payload.get("event").and_then(|v| v.as_str()),
+                "summary": payload.get("summary").and_then(|v| v.as_str()),
+                "space": payload.get("space"),
+                "agent_id": t.agent_id,
+                "model_id": t.model_id,
+                "timestamp": t.timestamp,
+            }))
+        })
+        .collect();
+    JsonRpcResponse::success(
+        id,
+        json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string(&json!({ "continuity": results })).unwrap()
             }]
         }),
     )
@@ -1223,6 +1308,7 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
             session_id: None,
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
+                agent_id: None,
             space: None,
             ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
         },

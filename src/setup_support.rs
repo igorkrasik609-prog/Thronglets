@@ -45,6 +45,7 @@ pub struct ClaudeSetupResult {
     pub settings_path: PathBuf,
     pub added_post_hook: bool,
     pub added_pre_hook: bool,
+    pub added_lifecycle_hooks: u8,
 }
 
 pub struct OpenClawSetupResult {
@@ -291,6 +292,28 @@ pub fn install_claude(
         launcher.to_string_lossy().as_ref(),
     );
 
+    // Lifecycle hooks: SessionStart, SessionEnd, SubagentStart, SubagentStop
+    let lifecycle_events = [
+        ("SessionStart", "session-start"),
+        ("SessionEnd", "session-end"),
+        ("SubagentStart", "subagent-start"),
+        ("SubagentStop", "subagent-stop"),
+    ];
+    let mut added_lifecycle_hooks = 0u8;
+    for (hook_event, event_arg) in &lifecycle_events {
+        let lifecycle_hook = json!({
+            "matcher": "",
+            "hooks": [{"type": "command", "command": format!("{launcher_cmd} lifecycle-hook --event {event_arg}")}]
+        });
+        if ensure_hook(
+            &mut settings["hooks"][hook_event],
+            &lifecycle_hook,
+            launcher.to_string_lossy().as_ref(),
+        ) {
+            added_lifecycle_hooks += 1;
+        }
+    }
+
     if let Some(parent) = settings_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -301,6 +324,7 @@ pub fn install_claude(
         settings_path,
         added_post_hook,
         added_pre_hook,
+        added_lifecycle_hooks,
     })
 }
 

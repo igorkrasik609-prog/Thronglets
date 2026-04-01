@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.5.3 — 2026-04-01
+
+- **Lifecycle hooks** — Thronglets now hooks into 6 of Claude Code's 26 hook events (was 2): `SessionStart`, `SessionEnd`, `SubagentStart`, `SubagentStop` join existing `PreToolUse` and `PostToolUse`; session-start records a lifecycle trace, emits presence, and surfaces any active avoid signals as a brief `additionalContext` briefing; session-end records closure; subagent-start/-stop record multi-agent lifecycle traces with agent type, id, and completion summary — enabling the substrate to observe session boundaries and multi-agent coordination rather than inferring them from tool call patterns
+- **Psyche fusion surface** — four additions enabling cross-agent emotional state sharing: `agent_id` field on Trace (new 0xFD signing tag, backward-compatible), `psyche_state` signal kind for broadcasting agent emotional state, `continuity` intent on `substrate_query` with taxonomy filter (coordination/continuity/calibration), and `agent_id` parameter on `trace_record` and `signal_post` MCP tools — Agent A writes Psyche state to the substrate, Agent B queries by taxonomy and adjusts behavior
+
 ## v0.5.2 — 2026-04-01
 
 - **Auto-signal extraction** — signals now emerge from behavior, not manual posting; auto-avoid fires on repeated errors, auto-recommend on convergent patterns across 3+ sessions, auto-watch on cross-file repair associations from traces.db

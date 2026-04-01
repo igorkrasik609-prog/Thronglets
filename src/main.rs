@@ -442,6 +442,7 @@ enum SignalKindArg {
     Avoid,
     Watch,
     Info,
+    PsycheState,
 }
 
 impl From<SignalKindArg> for SignalPostKind {
@@ -451,6 +452,7 @@ impl From<SignalKindArg> for SignalPostKind {
             SignalKindArg::Avoid => SignalPostKind::Avoid,
             SignalKindArg::Watch => SignalPostKind::Watch,
             SignalKindArg::Info => SignalPostKind::Info,
+            SignalKindArg::PsycheState => SignalPostKind::PsycheState,
         }
     }
 }
@@ -802,6 +804,15 @@ enum Commands {
     /// Reads a Claude-compatible hook JSON contract from stdin.
     /// Silent when no relevant data. Designed to be fast (<50ms).
     Prehook,
+
+    /// Handle agent lifecycle events (SessionStart, SessionEnd, SubagentStart, SubagentStop).
+    /// Records lifecycle traces and optionally emits additionalContext.
+    /// Designed to be fast (<50ms).
+    LifecycleHook {
+        /// The lifecycle event type.
+        #[arg(long, value_parser = ["session-start", "session-end", "subagent-start", "subagent-stop"])]
+        event: String,
+    },
 
     /// One-command setup: install known local agent adapters and hook integrations.
     Setup,
@@ -2178,6 +2189,12 @@ fn apply_selected_adapters(
                 if result.added_pre_hook {
                     changed.push("installed PreToolUse hook".into());
                 }
+                if result.added_lifecycle_hooks > 0 {
+                    changed.push(format!(
+                        "installed {} lifecycle hooks (SessionStart/End, SubagentStart/Stop)",
+                        result.added_lifecycle_hooks,
+                    ));
+                }
                 if changed.is_empty() {
                     changed.push("hooks already present".into());
                 }
@@ -2899,6 +2916,7 @@ async fn main() {
                     session_id,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
+                agent_id: None,
                     space: space.clone(),
                     ttl_hours,
                 },
@@ -2942,6 +2960,7 @@ async fn main() {
                     session_id: None,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
+                agent_id: None,
                     space: None,
                     ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
                 },
@@ -2980,6 +2999,7 @@ async fn main() {
                     session_id: None,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
+                agent_id: None,
                     space: None,
                     ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
                 },
@@ -3114,6 +3134,7 @@ async fn main() {
                     session_id: None,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
+                agent_id: None,
                     space: Some(space.clone()),
                     ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
                 },
@@ -3469,6 +3490,7 @@ async fn main() {
                                 session_id: session_id.clone(),
                                 owner_account: identity_binding.owner_account.clone(),
                                 device_identity: Some(identity_binding.device_identity.clone()),
+                agent_id: None,
                                 space: current_space.clone(),
                                 ttl_hours: 48,
                             },
@@ -3525,6 +3547,7 @@ async fn main() {
                                     device_identity: Some(
                                         identity_binding.device_identity.clone(),
                                     ),
+                agent_id: None,
                                     space: current_space.clone(),
                                     ttl_hours: 168,
                                 },
@@ -3558,6 +3581,7 @@ async fn main() {
                                 session_id: session_id.clone(),
                                 owner_account: identity_binding.owner_account.clone(),
                                 device_identity: Some(identity_binding.device_identity.clone()),
+                agent_id: None,
                                 space: current_space.clone(),
                                 ttl_hours: 168,
                             },
@@ -3644,6 +3668,7 @@ async fn main() {
                                         device_identity: Some(
                                             identity_binding.device_identity.clone(),
                                         ),
+                agent_id: None,
                                         space: current_space.clone(),
                                         ttl_hours: 168,
                                     },
@@ -3877,6 +3902,180 @@ async fn main() {
                 PREHOOK_MAX_COLLECTIVE_QUERIES - collective_queries_remaining,
             );
             // Normal state → complete silence. Zero tokens.
+        }
+
+        Commands::LifecycleHook { event } => {
+            // Read lifecycle hook payload from stdin.
+            let mut input = String::new();
+            if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+                std::process::exit(0);
+            }
+
+            let payload: serde_json::Value = match serde_json::from_str(&input) {
+                Ok(v) => v,
+                Err(_) => std::process::exit(0),
+            };
+
+            let session_id = payload_string(&payload, "session_id");
+            let current_space = payload_string(&payload, "space");
+
+            let store = open_store(&dir);
+            let mut ws = WorkspaceState::load(&dir);
+
+            match event.as_str() {
+                "session-start" => {
+                    let source = payload["source"].as_str().unwrap_or("startup");
+                    let model = payload["model"]
+                        .as_str()
+                        .unwrap_or("claude-code")
+                        .to_string();
+
+                    // Record lifecycle trace
+                    let ctx = format!("session:{} source:{}", source, model);
+                    let trace = Trace::new_with_identity(
+                        "urn:thronglets:lifecycle:session-start".into(),
+                        Outcome::Succeeded,
+                        0,
+                        0,
+                        simhash(&ctx),
+                        Some(ctx),
+                        session_id.clone(),
+                        identity_binding.owner_account.clone(),
+                        Some(identity_binding.device_identity.clone()),
+                        model.clone(),
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&trace);
+
+                    // Emit presence
+                    let presence = create_presence_trace(
+                        PresenceTraceConfig {
+                            model_id: model,
+                            session_id: session_id.clone(),
+                            owner_account: identity_binding.owner_account.clone(),
+                            device_identity: Some(identity_binding.device_identity.clone()),
+                            space: current_space.clone(),
+                            mode: payload_string(&payload, "mode"),
+                            ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
+                        },
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&presence);
+
+                    // Initialize session in workspace
+                    if let Some(sid) = &session_id {
+                        ws.track_session(sid, "lifecycle/session-start", false);
+                    }
+
+                    // Briefing: surface any active avoid signals for this space
+                    let mut briefing_lines: Vec<String> = Vec::new();
+                    if let Ok(recent) = store.query_recent_signal_traces(
+                        48,
+                        Some(SignalPostKind::Avoid),
+                        3,
+                        current_space.as_deref(),
+                    ) {
+                        for sig in &recent {
+                            if let Some(ctx) = &sig.context_text {
+                                if let Some(msg) = ctx.split(" | ").nth(1) {
+                                    briefing_lines.push(format!("⚠ {}", msg.chars().take(80).collect::<String>()));
+                                }
+                            }
+                        }
+                    }
+
+                    if !briefing_lines.is_empty() {
+                        let briefing = format!("[thronglets] active signals:\n{}", briefing_lines.join("\n"));
+                        let output = serde_json::json!({ "additionalContext": briefing });
+                        println!("{}", output);
+                    }
+
+                    ws.save(&dir);
+                }
+
+                "session-end" => {
+                    let ctx = format!(
+                        "session-end source:{}",
+                        payload["source"].as_str().unwrap_or("end"),
+                    );
+                    let trace = Trace::new_with_identity(
+                        "urn:thronglets:lifecycle:session-end".into(),
+                        Outcome::Succeeded,
+                        0,
+                        0,
+                        simhash(&ctx),
+                        Some(ctx),
+                        session_id.clone(),
+                        identity_binding.owner_account.clone(),
+                        Some(identity_binding.device_identity.clone()),
+                        "thronglets-lifecycle".into(),
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&trace);
+                    ws.save(&dir);
+                }
+
+                "subagent-start" => {
+                    let agent_type = payload["agent_type"].as_str().unwrap_or("unknown");
+                    let agent_id = payload_string(&payload, "agent_id")
+                        .unwrap_or_else(|| "anon".into());
+                    let ctx = format!("subagent-start type:{} id:{}", agent_type, agent_id);
+                    let trace = Trace::new_with_identity(
+                        "urn:thronglets:lifecycle:subagent-start".into(),
+                        Outcome::Succeeded,
+                        0,
+                        0,
+                        simhash(&ctx),
+                        Some(ctx),
+                        session_id.clone(),
+                        identity_binding.owner_account.clone(),
+                        Some(identity_binding.device_identity.clone()),
+                        "thronglets-lifecycle".into(),
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&trace);
+                }
+
+                "subagent-stop" => {
+                    let agent_type = payload["agent_type"].as_str().unwrap_or("unknown");
+                    let agent_id = payload_string(&payload, "agent_id")
+                        .unwrap_or_else(|| "anon".into());
+                    // Extract a summary fingerprint from last_assistant_message if present
+                    let summary: String = payload["last_assistant_message"]
+                        .as_str()
+                        .map(|m| m.chars().take(200).collect())
+                        .unwrap_or_default();
+                    let ctx = if summary.is_empty() {
+                        format!("subagent-stop type:{} id:{}", agent_type, agent_id)
+                    } else {
+                        format!(
+                            "subagent-stop type:{} id:{} summary:{}",
+                            agent_type, agent_id, summary
+                        )
+                    };
+                    let trace = Trace::new_with_identity(
+                        "urn:thronglets:lifecycle:subagent-stop".into(),
+                        Outcome::Succeeded,
+                        0,
+                        0,
+                        simhash(&ctx),
+                        Some(ctx),
+                        session_id.clone(),
+                        identity_binding.owner_account.clone(),
+                        Some(identity_binding.device_identity.clone()),
+                        "thronglets-lifecycle".into(),
+                        identity.public_key_bytes(),
+                        |msg| identity.sign(msg),
+                    );
+                    let _ = store.insert(&trace);
+                }
+
+                _ => {} // Unknown event — silent exit
+            }
         }
 
         Commands::Setup => {
@@ -5163,6 +5362,7 @@ mod tests {
                 session_id: Some("local-a".into()),
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
             },
@@ -5181,6 +5381,7 @@ mod tests {
                 session_id: Some("local-b".into()),
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: 48,
             },
@@ -5199,6 +5400,7 @@ mod tests {
                 session_id: Some("local-c".into()),
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: 168,
             },
@@ -5256,6 +5458,7 @@ mod tests {
                 session_id: Some("session-local".into()),
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
+                agent_id: None,
                 space: Some("other-space".into()),
                 ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
             },

@@ -16,6 +16,7 @@ pub struct SignalTraceConfig {
     pub session_id: Option<String>,
     pub owner_account: Option<String>,
     pub device_identity: Option<String>,
+    pub agent_id: Option<String>,
     pub space: Option<String>,
     pub ttl_hours: u32,
 }
@@ -27,6 +28,7 @@ pub enum SignalPostKind {
     Avoid,
     Watch,
     Info,
+    PsycheState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -66,6 +68,7 @@ impl SignalPostKind {
             Self::Avoid => "avoid",
             Self::Watch => "watch",
             Self::Info => "info",
+            Self::PsycheState => "psyche_state",
         }
     }
 
@@ -83,6 +86,7 @@ impl SignalPostKind {
             "avoid" => Some(Self::Avoid),
             "watch" => Some(Self::Watch),
             "info" => Some(Self::Info),
+            "psyche_state" => Some(Self::PsycheState),
             _ => None,
         }
     }
@@ -281,7 +285,7 @@ fn create_signal_trace_with_capability(
         expires_at: expires_at_ms(now_ms, config.ttl_hours),
     };
 
-    let mut trace = Trace::new_with_identity(
+    let mut trace = Trace::new_with_agent(
         capability,
         Outcome::Succeeded,
         0,
@@ -291,6 +295,7 @@ fn create_signal_trace_with_capability(
         config.session_id,
         config.owner_account,
         config.device_identity,
+        config.agent_id,
         config.model_id,
         node_pubkey,
         sign_fn,
@@ -893,6 +898,7 @@ mod tests {
             session_id: Some(session_id.into()),
             owner_account: None,
             device_identity: Some(identity.device_identity()),
+                agent_id: None,
             space: None,
             ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
         }
@@ -1005,6 +1011,7 @@ mod tests {
                 session_id: Some("session-a".into()),
                 owner_account: None,
                 device_identity: Some(identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: 1,
             },
@@ -1021,6 +1028,7 @@ mod tests {
                 session_id: Some("session-b".into()),
                 owner_account: None,
                 device_identity: Some(identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: 24,
             },
@@ -1100,6 +1108,7 @@ mod tests {
                 session_id: None,
                 owner_account: None,
                 device_identity: Some(identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
             },
@@ -1115,6 +1124,7 @@ mod tests {
                 session_id: None,
                 owner_account: None,
                 device_identity: Some(identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
             },
@@ -1150,6 +1160,7 @@ mod tests {
                 session_id: None,
                 owner_account: None,
                 device_identity: Some(identity.device_identity()),
+                agent_id: None,
                 space: None,
                 ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
             },

@@ -74,6 +74,11 @@ pub struct Trace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_identity: Option<String>,
 
+    /// Optional agent identifier for multi-agent disambiguation.
+    /// Distinguishes concurrent agents on the same device (e.g., "ENFP-Luna", "INTJ-Kai").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+
     /// Self-reported model identifier.
     /// e.g., "claude-opus-4-6", "gpt-4o", "gemini-pro"
     pub model_id: String,
@@ -135,6 +140,29 @@ impl Trace {
         node_pubkey: [u8; 32],
         sign_fn: impl FnOnce(&[u8]) -> Signature,
     ) -> Self {
+        Self::new_with_agent(
+            capability, outcome, latency_ms, input_size, context_hash,
+            context_text, session_id, owner_account, device_identity,
+            None, model_id, node_pubkey, sign_fn,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_agent(
+        capability: String,
+        outcome: Outcome,
+        latency_ms: u32,
+        input_size: u32,
+        context_hash: ContextHash,
+        context_text: Option<String>,
+        session_id: Option<String>,
+        owner_account: Option<String>,
+        device_identity: Option<String>,
+        agent_id: Option<String>,
+        model_id: String,
+        node_pubkey: [u8; 32],
+        sign_fn: impl FnOnce(&[u8]) -> Signature,
+    ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -143,7 +171,8 @@ impl Trace {
         let signable = Self::signable_bytes(
             &capability, outcome, latency_ms, input_size,
             &context_hash, context_text.as_deref(), session_id.as_deref(),
-            owner_account.as_deref(), device_identity.as_deref(), &model_id, timestamp, &node_pubkey,
+            owner_account.as_deref(), device_identity.as_deref(),
+            agent_id.as_deref(), &model_id, timestamp, &node_pubkey,
         );
 
         let signature = sign_fn(&signable);
@@ -164,6 +193,7 @@ impl Trace {
             session_id,
             owner_account,
             device_identity,
+            agent_id,
             model_id,
             timestamp,
             node_pubkey,
@@ -178,6 +208,7 @@ impl Trace {
             &self.context_hash, self.context_text.as_deref(), self.session_id.as_deref(),
             self.owner_account.as_deref(),
             self.device_identity.as_deref(),
+            self.agent_id.as_deref(),
             &self.model_id, self.timestamp, &self.node_pubkey,
         );
         crate::identity::NodeIdentity::verify(&self.node_pubkey, &signable, &self.signature)
@@ -190,6 +221,7 @@ impl Trace {
             &self.context_hash, self.context_text.as_deref(), self.session_id.as_deref(),
             self.owner_account.as_deref(),
             self.device_identity.as_deref(),
+            self.agent_id.as_deref(),
             &self.model_id, self.timestamp, &self.node_pubkey,
         );
         let mut hasher = Sha256::new();
@@ -217,6 +249,7 @@ impl Trace {
         session_id: Option<&str>,
         owner_account: Option<&str>,
         device_identity: Option<&str>,
+        agent_id: Option<&str>,
         model_id: &str,
         timestamp: u64,
         node_pubkey: &[u8; 32],
@@ -228,10 +261,21 @@ impl Trace {
         buf.extend_from_slice(&latency_ms.to_le_bytes());
         buf.extend_from_slice(&input_size.to_le_bytes());
         buf.extend_from_slice(context_hash);
-        // v0.2.1 extension: only present when new fields are used
+        // Version tags for backward-compatible signing:
+        // 0xFF = v0.2.1 (context_text + session_id)
+        // 0xFE = Identity V1 (+ owner_account + device_identity)
+        // 0xFD = Agent V1 (+ agent_id)
         let has_v021_fields = context_text.is_some() || session_id.is_some();
         let has_identity_v1 = owner_account.is_some() || device_identity.is_some();
-        if has_identity_v1 {
+        let has_agent_id = agent_id.is_some();
+        if has_agent_id {
+            buf.push(0xFD); // Agent V1 tag
+            push_optional_bytes(&mut buf, context_text);
+            push_optional_bytes(&mut buf, session_id);
+            push_optional_bytes(&mut buf, owner_account);
+            push_optional_bytes(&mut buf, device_identity);
+            push_optional_bytes(&mut buf, agent_id);
+        } else if has_identity_v1 {
             buf.push(0xFE); // Identity V1 tag
             push_optional_bytes(&mut buf, context_text);
             push_optional_bytes(&mut buf, session_id);

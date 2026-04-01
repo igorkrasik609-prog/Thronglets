@@ -120,6 +120,100 @@ fn setup_keeps_prehook_narrow() {
 }
 
 #[test]
+fn setup_registers_lifecycle_hooks() {
+    let home = tempfile::tempdir().unwrap();
+
+    let output = run_bin(&["setup"], None, Some(home.path()));
+    assert!(
+        output.status.success(),
+        "setup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let settings_path = home.path().join(".claude/settings.json");
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(settings_path).expect("settings.json"))
+            .expect("valid settings json");
+
+    for (event, arg) in [
+        ("SessionStart", "session-start"),
+        ("SessionEnd", "session-end"),
+        ("SubagentStart", "subagent-start"),
+        ("SubagentStop", "subagent-stop"),
+    ] {
+        let hooks = settings["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("{event} hooks missing"));
+        let found = hooks.iter().any(|entry| {
+            entry["hooks"].as_array().is_some_and(|hs| {
+                hs.iter().any(|h| {
+                    h["command"].as_str().is_some_and(|cmd| {
+                        cmd.contains("thronglets-managed")
+                            && cmd.contains(&format!("lifecycle-hook --event {arg}"))
+                    })
+                })
+            })
+        });
+        assert!(found, "lifecycle hook for {event} not found in settings");
+    }
+}
+
+#[test]
+fn lifecycle_hook_session_start_is_silent_by_default() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let payload = r#"{"session_id":"test-s1","source":"startup","model":"test-model"}"#;
+
+    let output = run_bin(
+        &[
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "lifecycle-hook",
+            "--event",
+            "session-start",
+        ],
+        Some(payload),
+        None,
+    );
+
+    assert!(
+        output.status.success(),
+        "lifecycle-hook session-start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // No avoid signals → no briefing → empty stdout
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+}
+
+#[test]
+fn lifecycle_hook_session_end_records_trace() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let payload = r#"{"session_id":"test-s1","source":"end"}"#;
+
+    let output = run_bin(
+        &[
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "lifecycle-hook",
+            "--event",
+            "session-end",
+        ],
+        Some(payload),
+        None,
+    );
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+
+    // Verify trace was recorded
+    let store = TraceStore::open(&data_dir.path().join("traces.db")).unwrap();
+    let stats = store
+        .aggregate("urn:thronglets:lifecycle:session-end")
+        .unwrap();
+    assert!(stats.is_some(), "session-end trace not found");
+    assert_eq!(stats.unwrap().total_traces, 1);
+}
+
+#[test]
 fn prehook_is_silent_without_signals() {
     let data_dir = tempfile::tempdir().unwrap();
     let payload = r#"{"tool_name":"Bash","tool_input":{"command":"cargo test"}}"#;
