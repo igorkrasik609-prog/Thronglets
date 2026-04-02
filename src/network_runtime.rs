@@ -2,6 +2,7 @@ use crate::continuity::is_continuity_capability;
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use crate::network_state::NetworkSnapshot;
+use crate::pheromone::PheromoneField;
 use crate::posts::is_signal_capability;
 use crate::presence::is_presence_capability;
 use crate::storage::TraceStore;
@@ -52,6 +53,7 @@ pub async fn start_network_runtime(
     identity: &NodeIdentity,
     binding: &IdentityBinding,
     store: Arc<TraceStore>,
+    field: Option<Arc<PheromoneField>>,
     listen_port: u16,
     bootstrap: &[String],
     options: NetworkRuntimeOptions,
@@ -103,6 +105,7 @@ pub async fn start_network_runtime(
             task_data_dir,
             task_binding,
             store,
+            field,
             network_snapshot,
             event_rx,
             task_command_tx,
@@ -151,6 +154,7 @@ pub async fn attempt_first_connection(
         identity,
         binding,
         store,
+        None, // no pheromone field for connection attempts
         0,
         &[],
         NetworkRuntimeOptions::embedded(),
@@ -203,6 +207,7 @@ async fn run_network_runtime_loop(
     data_dir: PathBuf,
     binding: IdentityBinding,
     store: Arc<TraceStore>,
+    field: Option<Arc<PheromoneField>>,
     mut network_snapshot: NetworkSnapshot,
     mut event_rx: mpsc::Receiver<NetworkEvent>,
     command_tx: mpsc::Sender<NetworkCommand>,
@@ -214,6 +219,9 @@ async fn run_network_runtime_loop(
     dht_publish_interval.tick().await;
     let mut publish_scan_interval = tokio::time::interval(Duration::from_secs(30));
     publish_scan_interval.tick().await;
+    // Field self-evolution: diffusion + coupling decay every 5 minutes
+    let mut field_tick_interval = tokio::time::interval(Duration::from_secs(300));
+    field_tick_interval.tick().await;
 
     loop {
         tokio::select! {
@@ -224,6 +232,7 @@ async fn run_network_runtime_loop(
                             &data_dir,
                             &binding,
                             &store,
+                            field.as_deref(),
                             &mut network_snapshot,
                             event,
                         );
@@ -237,12 +246,31 @@ async fn run_network_runtime_loop(
                     Ok(_) => {}
                     Err(e) => warn!(%e, "Evaporation failed"),
                 }
+                if let Some(ref f) = field {
+                    let pruned = f.prune();
+                    if pruned > 0 {
+                        info!(pruned, "Pruned dead pheromone field points");
+                    }
+                }
             }
             _ = wait_on_interval(options.publish_summaries, &mut dht_publish_interval) => {
                 publish_capability_summaries(&store, &command_tx).await;
             }
             _ = wait_on_interval(options.publish_local_traces, &mut publish_scan_interval) => {
                 publish_local_traces(&store, &command_tx).await;
+            }
+            _ = field_tick_interval.tick() => {
+                if let Some(ref f) = field {
+                    let result = f.tick();
+                    if result.diffused > 0 || result.points_pruned > 0 || result.couplings_pruned > 0 {
+                        info!(
+                            diffused = result.diffused,
+                            points_pruned = result.points_pruned,
+                            couplings_pruned = result.couplings_pruned,
+                            "Pheromone field tick"
+                        );
+                    }
+                }
             }
         }
     }
@@ -252,6 +280,7 @@ fn handle_network_event(
     data_dir: &Path,
     binding: &IdentityBinding,
     store: &TraceStore,
+    field: Option<&PheromoneField>,
     network_snapshot: &mut NetworkSnapshot,
     event: NetworkEvent,
 ) {
@@ -326,6 +355,9 @@ fn handle_network_event(
             match store.insert(&trace) {
                 Ok(true) => {
                     let _ = store.mark_published(&[trace_id]);
+                    if let Some(f) = field {
+                        f.excite(&trace);
+                    }
                     info!(
                         capability = %trace.capability,
                         outcome = ?trace.outcome,

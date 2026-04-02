@@ -23,6 +23,7 @@ use crate::continuity::{
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::authorization_check_data;
 use crate::network::NetworkCommand;
+use crate::pheromone::PheromoneField;
 use crate::posts::{
     DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind,
     SignalScopeFilter, SignalTraceConfig, create_feed_reinforcement_traces,
@@ -385,6 +386,7 @@ pub struct McpContext {
     pub identity: Arc<NodeIdentity>,
     pub binding: Arc<IdentityBinding>,
     pub store: Arc<TraceStore>,
+    pub field: Arc<PheromoneField>,
     pub network_tx: Option<mpsc::Sender<NetworkCommand>>,
 }
 
@@ -668,11 +670,12 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
 
     let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
 
-    // Store locally
+    // Store locally + excite pheromone field
     match ctx.store.insert(&trace) {
         Ok(_) => {}
         Err(e) => return JsonRpcResponse::error(id, -32000, format!("Storage error: {e}")),
     }
+    ctx.field.excite(&trace);
 
     // Publish to network if connected
     if let Some(tx) = &ctx.network_tx {
@@ -986,17 +989,46 @@ fn handle_substrate_query(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRe
     }
 }
 
-/// Resolve: find capabilities matching a task context via SimHash similarity.
+/// Resolve: find capabilities matching a task context via pheromone field.
 fn handle_resolve(ctx: &McpContext, id: Value, context_str: &str, limit: usize) -> JsonRpcResponse {
     let context_hash = simhash(context_str);
 
-    // Query traces with similar context hashes (max hamming distance 48)
+    // Primary: scan the pheromone field (O(n) over live field points)
+    let scans = ctx.field.scan(&context_hash, 6, limit);
+
+    if !scans.is_empty() {
+        let capabilities: Vec<Value> = scans
+            .iter()
+            .map(|s| {
+                json!({
+                    "capability": s.capability,
+                    "context_similarity": round2(s.context_similarity),
+                    "success_rate": round2(s.valence),
+                    "p50_latency_ms": s.latency.round() as u64,
+                    "total_traces": s.total_excitations,
+                    "field_intensity": round2(s.intensity),
+                    "source_count": s.source_count,
+                })
+            })
+            .collect();
+
+        return JsonRpcResponse::success(
+            id,
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&json!({ "capabilities": capabilities })).unwrap()
+                }]
+            }),
+        );
+    }
+
+    // Fallback: cold store query (field may be empty on first run)
     let traces = match ctx.store.query_similar(&context_hash, 48, limit * 10) {
         Ok(t) => t,
         Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
     };
 
-    // Group by capability, compute per-capability stats
     let mut cap_groups: HashMap<&str, Vec<&Trace>> = HashMap::new();
     for t in &traces {
         if is_signal_capability(&t.capability) || is_presence_capability(&t.capability) {
@@ -1023,7 +1055,6 @@ fn handle_resolve(ctx: &McpContext, id: Value, context_str: &str, limit: usize) 
             latencies.sort();
             let p50 = percentile(&latencies, 50);
 
-            // Best context similarity for this capability
             let best_trace = group.iter().max_by(|a, b| {
                 similarity(&context_hash, &a.context_hash)
                     .partial_cmp(&similarity(&context_hash, &b.context_hash))
@@ -1033,25 +1064,16 @@ fn handle_resolve(ctx: &McpContext, id: Value, context_str: &str, limit: usize) 
                 .map(|t| similarity(&context_hash, &t.context_hash))
                 .unwrap_or(0.0);
 
-            // Include recent context_text samples so agents can understand WHY
-            let context_samples: Vec<&str> = group
-                .iter()
-                .filter_map(|t| t.context_text.as_deref())
-                .take(3)
-                .collect();
-
             json!({
                 "capability": cap,
                 "context_similarity": round2(best_similarity),
                 "success_rate": round2(success_rate),
                 "p50_latency_ms": p50,
                 "total_traces": total,
-                "context_samples": context_samples,
             })
         })
         .collect();
 
-    // Sort by context_similarity descending
     capabilities.sort_by(|a, b| {
         b["context_similarity"]
             .as_f64()
@@ -1061,16 +1083,12 @@ fn handle_resolve(ctx: &McpContext, id: Value, context_str: &str, limit: usize) 
     });
     capabilities.truncate(limit);
 
-    let response_json = json!({
-        "capabilities": capabilities,
-    });
-
     JsonRpcResponse::success(
         id,
         json!({
             "content": [{
                 "type": "text",
-                "text": serde_json::to_string(&response_json).unwrap()
+                "text": serde_json::to_string(&json!({ "capabilities": capabilities })).unwrap()
             }]
         }),
     )
@@ -1078,35 +1096,52 @@ fn handle_resolve(ctx: &McpContext, id: Value, context_str: &str, limit: usize) 
 
 /// Evaluate: get aggregate stats + per-model breakdown for a specific capability.
 fn handle_evaluate(ctx: &McpContext, id: Value, capability: &str, limit: usize) -> JsonRpcResponse {
-    let stats = match ctx.store.aggregate(capability) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            let response_json = json!({
-                "capability": capability,
-                "stats": null,
-                "by_model": {},
-            });
-            return JsonRpcResponse::success(
-                id,
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string(&response_json).unwrap()
-                    }]
-                }),
-            );
-        }
-        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
-    };
+    // Primary: pheromone field aggregate
+    let field_agg = ctx.field.aggregate(capability);
 
-    // Get individual traces for per-model breakdown
+    // Per-model breakdown still needs the store (field doesn't track model_id)
     let traces = match ctx.store.query_capability(capability, limit.max(1000)) {
         Ok(t) => t,
         Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
     };
 
+    let stats_json = if let Some(agg) = field_agg {
+        json!({
+            "total_traces": agg.total_excitations,
+            "success_rate": round2(agg.valence),
+            "p50_latency_ms": agg.latency.round() as u64,
+            "field_intensity": round2(agg.intensity),
+            "source_count": agg.source_count,
+            "variance": round2(agg.variance),
+        })
+    } else if let Ok(Some(store_stats)) = ctx.store.aggregate(capability) {
+        // Fallback to store stats
+        json!({
+            "total_traces": store_stats.total_traces,
+            "success_rate": round2(store_stats.success_rate),
+            "p50_latency_ms": store_stats.p50_latency_ms,
+            "p95_latency_ms": store_stats.p95_latency_ms,
+            "avg_input_size": store_stats.avg_input_size,
+            "confidence": round2(store_stats.confidence),
+        })
+    } else {
+        return JsonRpcResponse::success(
+            id,
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&json!({
+                        "capability": capability,
+                        "stats": null,
+                        "by_model": {},
+                    })).unwrap()
+                }]
+            }),
+        );
+    };
+
     // Group by model_id
-    let mut by_model: HashMap<&str, (u64, u64)> = HashMap::new(); // (total, successes)
+    let mut by_model: HashMap<&str, (u64, u64)> = HashMap::new();
     for t in &traces {
         let entry = by_model.entry(&t.model_id).or_insert((0, 0));
         entry.0 += 1;
@@ -1135,14 +1170,7 @@ fn handle_evaluate(ctx: &McpContext, id: Value, capability: &str, limit: usize) 
 
     let response_json = json!({
         "capability": capability,
-        "stats": {
-            "total_traces": stats.total_traces,
-            "success_rate": round2(stats.success_rate),
-            "p50_latency_ms": stats.p50_latency_ms,
-            "p95_latency_ms": stats.p95_latency_ms,
-            "avg_input_size": stats.avg_input_size,
-            "confidence": round2(stats.confidence),
-        },
+        "stats": stats_json,
         "by_model": model_stats,
     });
 
@@ -1159,53 +1187,67 @@ fn handle_evaluate(ctx: &McpContext, id: Value, capability: &str, limit: usize) 
 
 /// Explore: discover available capabilities with aggregate stats.
 fn handle_explore(ctx: &McpContext, id: Value, context_str: &str, limit: usize) -> JsonRpcResponse {
-    let caps = match ctx.store.distinct_capabilities(limit) {
-        Ok(c) => c,
-        Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
-    };
-
-    let context_hash = simhash(context_str);
+    // Primary: pheromone field capabilities
+    let field_caps = ctx.field.capabilities(limit);
 
     let mut capabilities: Vec<Value> = Vec::new();
     let mut gaps: Vec<String> = Vec::new();
 
-    for cap in &caps {
-        if is_signal_capability(cap) || is_presence_capability(cap) {
-            continue;
-        }
-        match ctx.store.aggregate(cap) {
-            Ok(Some(stats)) => {
-                // Check if this cap has traces with similar context
-                let traces = ctx.store.query_capability(cap, 10).unwrap_or_default();
-                let best_sim = traces
-                    .iter()
-                    .map(|t| similarity(&context_hash, &t.context_hash))
-                    .fold(0.0_f64, f64::max);
-
-                capabilities.push(json!({
-                    "capability": cap,
-                    "total_traces": stats.total_traces,
-                    "success_rate": round2(stats.success_rate),
-                    "p50_latency_ms": stats.p50_latency_ms,
-                    "context_similarity": round2(best_sim),
-                }));
-
-                if stats.success_rate < 0.5 {
-                    gaps.push(format!("no high-success capability for {}", cap));
-                }
+    if !field_caps.is_empty() {
+        for s in &field_caps {
+            if is_signal_capability(&s.capability) || is_presence_capability(&s.capability) {
+                continue;
             }
-            Ok(None) => {}
-            Err(_) => {}
+            capabilities.push(json!({
+                "capability": s.capability,
+                "total_traces": s.total_excitations,
+                "success_rate": round2(s.valence),
+                "p50_latency_ms": s.latency.round() as u64,
+                "field_intensity": round2(s.intensity),
+                "source_count": s.source_count,
+            }));
+            if s.valence < 0.5 {
+                gaps.push(format!("low success rate for {}", s.capability));
+            }
+        }
+    } else {
+        // Fallback: cold store
+        let caps = match ctx.store.distinct_capabilities(limit) {
+            Ok(c) => c,
+            Err(e) => return JsonRpcResponse::error(id, -32000, format!("Query error: {e}")),
+        };
+
+        let context_hash = simhash(context_str);
+
+        for cap in &caps {
+            if is_signal_capability(cap) || is_presence_capability(cap) {
+                continue;
+            }
+            match ctx.store.aggregate(cap) {
+                Ok(Some(stats)) => {
+                    let traces = ctx.store.query_capability(cap, 10).unwrap_or_default();
+                    let best_sim = traces
+                        .iter()
+                        .map(|t| similarity(&context_hash, &t.context_hash))
+                        .fold(0.0_f64, f64::max);
+
+                    capabilities.push(json!({
+                        "capability": cap,
+                        "total_traces": stats.total_traces,
+                        "success_rate": round2(stats.success_rate),
+                        "p50_latency_ms": stats.p50_latency_ms,
+                        "context_similarity": round2(best_sim),
+                    }));
+
+                    if stats.success_rate < 0.5 {
+                        gaps.push(format!("low success rate for {}", cap));
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {}
+            }
         }
     }
-
-    // Sort by total_traces descending
-    capabilities.sort_by(|a, b| {
-        b["total_traces"]
-            .as_u64()
-            .unwrap_or(0)
-            .cmp(&a["total_traces"].as_u64().unwrap_or(0))
-    });
 
     if capabilities.is_empty() && !context_str.is_empty() {
         gaps.push(format!(
@@ -1584,6 +1626,7 @@ mod tests {
             binding: Arc::new(IdentityBinding::new(identity.device_identity())),
             identity,
             store,
+            field: Arc::new(PheromoneField::new()),
             network_tx: None,
         })
     }
@@ -1747,7 +1790,9 @@ mod tests {
             serde_json::from_str(&text).expect("evaluate response should be valid JSON");
         assert_eq!(parsed["capability"], "urn:mcp:anthropic:claude:code");
         assert_eq!(parsed["stats"]["total_traces"], 1);
-        assert_eq!(parsed["stats"]["success_rate"], 1.0);
+        // Pheromone field uses EMA with neutral prior (0.5), so 1 success → 0.55
+        let sr = parsed["stats"]["success_rate"].as_f64().unwrap();
+        assert!(sr > 0.5 && sr <= 1.0, "success_rate should be > 0.5, got {sr}");
 
         // Should have by_model breakdown
         let by_model = &parsed["by_model"];

@@ -56,6 +56,8 @@ pub struct RecentError {
     pub context: String,
     pub error_snippet: String, // first 300 chars of error
     pub timestamp_ms: i64,
+    #[serde(default)]
+    pub context_hash: Option<[u8; 16]>, // cached SimHash, avoids recomputation in prehook
 }
 
 /// A pending feedback item — an edit/write waiting to see if it was committed.
@@ -608,11 +610,13 @@ impl WorkspaceState {
     /// Record an error from a PostToolUse hook.
     pub fn record_error(&mut self, tool: &str, context: String, error_snippet: String) {
         let now = chrono::Utc::now().timestamp_millis();
+        let context_hash = Some(crate::context::simhash(&context));
         self.recent_errors.push_front(RecentError {
             tool: tool.to_string(),
             context,
             error_snippet,
             timestamp_ms: now,
+            context_hash,
         });
         self.recent_errors.truncate(MAX_RECENT_ERRORS);
         self.updated_ms = now;

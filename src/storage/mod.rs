@@ -602,6 +602,53 @@ impl TraceStore {
         Ok(sessions.len() as u32)
     }
 
+    /// Query recent failed traces with similar context.
+    /// Surfaces experiential failure hints — "this context has failed before."
+    /// Used by prehook to provide intuition-like warnings before the agent
+    /// repeats a known mistake. Excludes internal thronglets traces.
+    pub fn query_similar_failed_traces(
+        &self,
+        context_hash: &[u8; 16],
+        max_distance: u32,
+        hours: u64,
+        limit: usize,
+        space: Option<&str>,
+    ) -> rusqlite::Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let target_bucket = context_bucket(context_hash);
+        let bucket_radius = (max_distance / 8).max(1) as i64;
+        let bucket_lo = (target_bucket - bucket_radius).max(0);
+        let bucket_hi = (target_bucket + bucket_radius).min(65535);
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let query_limit = (limit.max(1) * 10) as i64;
+
+        let sql = "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
+                          context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                   FROM traces
+                   WHERE context_bucket BETWEEN ?1 AND ?2
+                     AND outcome IN (1, 3)
+                     AND capability NOT LIKE 'urn:thronglets:%'
+                     AND timestamp > ?3
+                     AND (?5 IS NULL OR space = ?5)
+                   ORDER BY timestamp DESC
+                   LIMIT ?4";
+
+        let mut stmt = conn.prepare(sql)?;
+        let candidates = Self::collect_traces(
+            &mut stmt,
+            params![bucket_lo, bucket_hi, cutoff_ms, query_limit, space],
+        )?;
+
+        let mut matched: Vec<Trace> = candidates
+            .into_iter()
+            .filter(|trace| {
+                crate::context::hamming_distance(&trace.context_hash, context_hash) <= max_distance
+            })
+            .collect();
+        matched.truncate(limit);
+        Ok(matched)
+    }
+
     /// Query recent explicit signal traces for a feed view.
     /// When `space` is `Some`, only returns traces tagged with that space.
     pub fn query_recent_signal_traces(
@@ -1609,5 +1656,142 @@ mod tests {
         let results = store.query_recent_signal_traces(24, None, 10, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session_id.as_deref(), Some("recent"));
+    }
+
+    // ── query_similar_failed_traces ──
+
+    #[test]
+    fn query_similar_failed_traces_finds_failures() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // A failed trace with known context
+        store
+            .insert(&make_trace(
+                &id,
+                "claude-code/Bash",
+                Outcome::Failed,
+                "bash: ssh -p 22 47.93.32.88",
+            ))
+            .unwrap();
+
+        // Query with similar context
+        let hash = crate::context::simhash("bash: ssh -p 22 47.93.32.88");
+        let results = store
+            .query_similar_failed_traces(&hash, 48, 168, 10, None)
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].capability, "claude-code/Bash");
+    }
+
+    #[test]
+    fn query_similar_failed_traces_excludes_successes() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // A succeeded trace — should NOT appear
+        store
+            .insert(&make_trace(
+                &id,
+                "claude-code/Bash",
+                Outcome::Succeeded,
+                "bash: ssh -p 22 47.93.32.88",
+            ))
+            .unwrap();
+
+        let hash = crate::context::simhash("bash: ssh -p 22 47.93.32.88");
+        let results = store
+            .query_similar_failed_traces(&hash, 48, 168, 10, None)
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn query_similar_failed_traces_excludes_signals() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // A signal trace (internal) — should NOT appear
+        store
+            .insert(&make_trace(
+                &id,
+                "urn:thronglets:signal:avoid",
+                Outcome::Failed,
+                "bash: ssh -p 22 47.93.32.88",
+            ))
+            .unwrap();
+
+        let hash = crate::context::simhash("bash: ssh -p 22 47.93.32.88");
+        let results = store
+            .query_similar_failed_traces(&hash, 48, 168, 10, None)
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn query_similar_failed_traces_excludes_old() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // A failed trace, but very old
+        let mut trace = make_trace(
+            &id,
+            "claude-code/Bash",
+            Outcome::Failed,
+            "bash: ssh -p 22 47.93.32.88",
+        );
+        trace.timestamp = trace.timestamp.saturating_sub(8 * 24 * 3_600_000); // 8 days ago
+        store.insert(&trace).unwrap();
+
+        let hash = crate::context::simhash("bash: ssh -p 22 47.93.32.88");
+        let results = store
+            .query_similar_failed_traces(&hash, 48, 168, 10, None)
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn query_similar_failed_traces_includes_timeout() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // A timeout trace — should appear (outcome IN (1, 3))
+        store
+            .insert(&make_trace(
+                &id,
+                "claude-code/Bash",
+                Outcome::Timeout,
+                "bash: ssh -p 22 47.93.32.88",
+            ))
+            .unwrap();
+
+        let hash = crate::context::simhash("bash: ssh -p 22 47.93.32.88");
+        let results = store
+            .query_similar_failed_traces(&hash, 48, 168, 10, None)
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn query_similar_failed_traces_filters_dissimilar() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        // A failed trace with completely different context
+        store
+            .insert(&make_trace(
+                &id,
+                "claude-code/Bash",
+                Outcome::Failed,
+                "bash: npm install --save-dev typescript eslint prettier",
+            ))
+            .unwrap();
+
+        // Query for SSH context — should NOT match
+        let hash = crate::context::simhash("bash: ssh -p 22 47.93.32.88");
+        let results = store
+            .query_similar_failed_traces(&hash, 48, 168, 10, None)
+            .unwrap();
+        assert!(results.is_empty());
     }
 }

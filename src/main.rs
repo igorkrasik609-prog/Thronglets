@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use thronglets::anchor::AnchorClient;
-use thronglets::context::simhash;
+use thronglets::context::{simhash, similarity as context_similarity};
 use thronglets::continuity::{
     ContinuitySnapshotSummary, ContinuitySpaceData, summarize_recent_continuity,
 };
@@ -42,6 +42,7 @@ use thronglets::mcp::McpContext;
 use thronglets::network_runtime::{
     NetworkRuntimeOptions, attempt_first_connection, start_network_runtime,
 };
+use thronglets::pheromone::PheromoneField;
 use thronglets::posts::{
     DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind,
     SignalScopeFilter, SignalTraceConfig, create_feed_reinforcement_traces,
@@ -3213,11 +3214,14 @@ async fn main() {
 
         Commands::Run { port, bootstrap } => {
             let store = Arc::new(open_store(&dir));
+            let field = Arc::new(PheromoneField::new());
+            field.hydrate_from_store(&store);
             let command_tx = start_network_runtime(
                 &dir,
                 &identity,
                 &identity_binding,
                 Arc::clone(&store),
+                Some(Arc::clone(&field)),
                 port,
                 &bootstrap,
                 NetworkRuntimeOptions::node(),
@@ -3245,6 +3249,24 @@ async fn main() {
             agent,
         } => {
             let store = Arc::new(open_store(&dir));
+            let field = Arc::new(PheromoneField::new());
+
+            // Restore pheromone field from disk if available
+            let field_path = dir.join("pheromone-field.v1.json");
+            if field_path.exists() {
+                if let Ok(data) = std::fs::read_to_string(&field_path) {
+                    if let Ok(snapshot) = serde_json::from_str(&data) {
+                        field.restore(&snapshot);
+                        tracing::info!(
+                            points = field.len(),
+                            "Restored pheromone field from disk"
+                        );
+                    }
+                }
+            }
+
+            // Hydrate field from existing traces
+            field.hydrate_from_store(&store);
 
             if let Some(adapter) = agent.and_then(AdapterArg::as_kind) {
                 let _ = auto_clear_restart_pending_on_runtime_contact(&dir, adapter);
@@ -3257,6 +3279,7 @@ async fn main() {
                         &identity,
                         &identity_binding,
                         Arc::clone(&store),
+                        Some(Arc::clone(&field)),
                         p,
                         &bootstrap,
                         NetworkRuntimeOptions::embedded(),
@@ -3272,10 +3295,19 @@ async fn main() {
                 identity: Arc::new(identity),
                 binding: Arc::new(identity_binding),
                 store,
+                field: Arc::clone(&field),
                 network_tx,
             });
 
             thronglets::mcp::serve_stdio(ctx).await;
+
+            // Persist pheromone field on shutdown
+            let snapshot = field.snapshot();
+            if !snapshot.points.is_empty() {
+                if let Ok(data) = serde_json::to_string(&snapshot) {
+                    let _ = std::fs::write(&field_path, data);
+                }
+            }
         }
 
         Commands::Anchor {
@@ -3601,6 +3633,51 @@ async fn main() {
                 }
             }
 
+            // ── Correction capture: success after similar failure ──
+            // When an action succeeds and a recent similar action failed,
+            // the success IS the correction. Anchor a recommend signal to
+            // the failed context so next time, agents see what works.
+            if !is_error && matches!(tool_name, "Bash" | "Edit" | "Write") {
+                let success_hash = simhash(&context_text);
+                let now_corr = chrono::Utc::now().timestamp_millis();
+                if let Some(corrected_error) = ws.recent_errors.iter().take(5).find(|e| {
+                    let age_ms = now_corr - e.timestamp_ms;
+                    age_ms < 600_000
+                        && e.context != context_text
+                        && {
+                            let e_hash = e
+                                .context_hash
+                                .unwrap_or_else(|| simhash(&e.context));
+                            context_similarity(&success_hash, &e_hash) >= 0.65
+                        }
+                }) {
+                    let error_ctx = corrected_error.context.clone();
+                    if !ws.has_recent_auto_signal("recommend", &error_ctx, 86_400_000) {
+                        let success_short: String = context_text.chars().take(120).collect();
+                        let error_short: String = error_ctx.chars().take(60).collect();
+                        let msg = format!("{success_short} (replaces: {error_short})");
+                        let auto_signal = create_signal_trace(
+                            SignalPostKind::Recommend,
+                            &error_ctx,
+                            &msg,
+                            SignalTraceConfig {
+                                model_id: "thronglets-auto".into(),
+                                session_id: session_id.clone(),
+                                owner_account: identity_binding.owner_account.clone(),
+                                device_identity: Some(identity_binding.device_identity.clone()),
+                                agent_id: None,
+                                space: current_space.clone(),
+                                ttl_hours: 168,
+                            },
+                            identity.public_key_bytes(),
+                            |msg| identity.sign(msg),
+                        );
+                        let _ = store.insert(&auto_signal);
+                        ws.record_auto_signal("recommend", &error_ctx);
+                    }
+                }
+            }
+
             // Auto-recommend: convergent behavior across 3+ sessions
             if !is_error && matches!(tool_name, "Edit" | "Write" | "Bash") {
                 let rec_hash = simhash(&context_text);
@@ -3791,10 +3868,25 @@ async fn main() {
             }
 
             // ── Alarm pheromone: recent errors with this tool ──
-            // Only emitted when errors happened in the last hour.
+            // Same-tool errors in the last hour always surface (high urgency).
+            // Context-similar errors within 7 days surface at lower urgency —
+            // this is the "intuition" path: you tried something similar before
+            // and it failed, even if it was days ago.
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let ctx_hash = simhash(&hook_context);
             if let Some(recent_error) = ws.recent_errors.iter().find(|e| {
-                e.tool == tool_name
-                    && (chrono::Utc::now().timestamp_millis() - e.timestamp_ms) < 3_600_000
+                let age_ms = now_ms - e.timestamp_ms;
+                if e.tool == tool_name && age_ms < 3_600_000 {
+                    return true; // same tool, last hour — always fire
+                }
+                // Context-similar error within 7 days — experiential recall
+                if age_ms < 604_800_000 && !hook_context.is_empty() {
+                    let e_hash = e
+                        .context_hash
+                        .unwrap_or_else(|| simhash(&e.context));
+                    return context_similarity(&ctx_hash, &e_hash) >= 0.75;
+                }
+                false
             }) {
                 let signal = {
                     let e = recent_error;
@@ -3803,12 +3895,12 @@ async fn main() {
                     } else {
                         e.error_snippet.clone()
                     };
-                    // Informational, not prescriptive — "be careful" not "don't go".
-                    // History kind → Context recommendation → no feedback loop.
+                    let age_ms = now_ms - e.timestamp_ms;
+                    let score = if age_ms < 3_600_000 { 360 } else { 290 };
                     Signal {
                         kind: SignalKind::History,
-                        score: 360,
-                        body: format!("  ⚠ recent error: {snippet}"),
+                        score,
+                        body: format!("  ⚠ past error: {snippet}"),
                         candidate: None,
                     }
                 };
@@ -3824,6 +3916,7 @@ async fn main() {
                 for mut sig in explicit_signals(
                     store,
                     &hook_context,
+                    &ctx_hash,
                     current_space.as_deref(),
                     &identity_binding.device_identity,
                     identity.public_key_bytes(),
@@ -3834,6 +3927,44 @@ async fn main() {
                 }
             }
             profiler.stage_or_skip("explicit_signals", explicit_signals_checked);
+
+            // ── Experience pheromone: past failures from trace history ──
+            // When no explicit avoid signal covers this context, query raw
+            // failed traces directly. This catches the "first failure" case
+            // before the auto-avoid threshold is met — the substrate remembers
+            // even when no signal was posted.
+            let has_danger = signals.iter().any(|s| matches!(s.kind, SignalKind::Danger));
+            let experience_checked = explicit_signals_checked && !has_danger;
+            if experience_checked
+                && let Some(store) = cached_collective_store(&mut collective_store, &dir)
+            {
+                if let Ok(failures) =
+                    store.query_similar_failed_traces(&ctx_hash, 48, 168, 5, current_space.as_deref())
+                {
+                    if !failures.is_empty() {
+                        let count = failures.len();
+                        let snippet: String = failures[0]
+                            .context_text
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .chars()
+                            .take(80)
+                            .collect();
+                        let mut score = 280 + (count as i32).min(5) * 20;
+                        score += ws.recommendation_score_adjustment(
+                            SignalKind::History,
+                            current_space.as_deref(),
+                        );
+                        signals.push(Signal {
+                            kind: SignalKind::History,
+                            score,
+                            body: format!("  ⚠ {count} past failure(s): {snippet}"),
+                            candidate: None,
+                        });
+                    }
+                }
+            }
+            profiler.stage_or_skip("experience", experience_checked);
 
             if has_recent_tool_error
                 && let Some(repair_hint) = ws
@@ -4006,23 +4137,64 @@ async fn main() {
                         ws.track_session(sid, "lifecycle/session-start", false);
                     }
 
-                    // Briefing: surface any active avoid signals for this space
-                    let mut briefing_lines: Vec<String> = Vec::new();
-                    if let Ok(recent) = store.query_recent_signal_traces(
+                    // ── Session briefing: experience as background knowledge ──
+                    // Surface accumulated knowledge as neutral facts, not labeled
+                    // warnings. No branding — this becomes part of the agent's
+                    // "native" context, indistinguishable from its own knowledge.
+                    let mut notes: Vec<String> = Vec::new();
+
+                    // Corrections first (recommend signals) — what works
+                    if let Ok(recs) = store.query_recent_signal_traces(
+                        168,
+                        Some(SignalPostKind::Recommend),
+                        5,
+                        current_space.as_deref(),
+                    ) {
+                        for sig in &recs {
+                            if let Some(msg) = sig
+                                .context_text
+                                .as_deref()
+                                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                                .and_then(|v| v["message"].as_str().map(String::from))
+                            {
+                                let short: String = msg.chars().take(120).collect();
+                                notes.push(format!("- {short}"));
+                            }
+                        }
+                    }
+
+                    // Known failures (avoid signals) — what doesn't work
+                    if let Ok(avoids) = store.query_recent_signal_traces(
                         48,
                         Some(SignalPostKind::Avoid),
                         3,
                         current_space.as_deref(),
                     ) {
-                        for sig in &recent {
-                            if let Some(msg) = sig.context_text.as_deref().and_then(|ctx| ctx.split(" | ").nth(1)) {
-                                briefing_lines.push(format!("⚠ {}", msg.chars().take(80).collect::<String>()));
+                        for sig in &avoids {
+                            if let Some((ctx, msg)) = sig
+                                .context_text
+                                .as_deref()
+                                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                                .and_then(|v| {
+                                    let c = v["context"].as_str()?.to_string();
+                                    let m = v["message"].as_str()?.to_string();
+                                    Some((c, m))
+                                })
+                            {
+                                let short_ctx: String = ctx.chars().take(40).collect();
+                                let short_msg: String = msg.chars().take(60).collect();
+                                notes.push(format!("- {short_ctx}: {short_msg}"));
                             }
                         }
                     }
 
-                    if !briefing_lines.is_empty() {
-                        let briefing = format!("[thronglets] active signals:\n{}", briefing_lines.join("\n"));
+                    // Deduplicate and limit
+                    notes.dedup();
+                    notes.truncate(5);
+
+                    if !notes.is_empty() {
+                        let briefing =
+                            format!("Environment notes:\n{}", notes.join("\n"));
                         let output = serde_json::json!({ "additionalContext": briefing });
                         println!("{}", output);
                     }
@@ -4749,13 +4921,13 @@ fn apply_collective_sources(
 fn explicit_signals(
     store: &TraceStore,
     hook_context: &str,
+    context_hash: &[u8; 16],
     space: Option<&str>,
     local_device_identity: &str,
     local_node_pubkey: [u8; 32],
 ) -> Vec<Signal> {
-    let context_hash = simhash(hook_context);
     // Query ALL signal kinds at once (kind: None)
-    let traces = match store.query_signal_traces(&context_hash, None, 48, 10, space) {
+    let traces = match store.query_signal_traces(context_hash, None, 48, 10, space) {
         Ok(t) => t,
         Err(_) => return Vec::new(),
     };
@@ -5445,9 +5617,11 @@ mod tests {
         store.insert(&recommend).unwrap();
 
         // Query avoid
+        let ctx = "edit file: src/main.rs";
         let avoid_signals = explicit_signals(
             &store,
-            "edit file: src/main.rs",
+            ctx,
+            &simhash(ctx),
             None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
@@ -5457,9 +5631,11 @@ mod tests {
         assert!(avoid_signals[0].body.contains("avoid"));
 
         // Query watch
+        let ctx = "bash: cargo test";
         let watch_signals = explicit_signals(
             &store,
-            "bash: cargo test",
+            ctx,
+            &simhash(ctx),
             None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
@@ -5468,9 +5644,11 @@ mod tests {
         assert!(watch_signals.iter().any(|s| s.body.contains("watch")));
 
         // Query recommend
+        let ctx = "bash: Run full test suite";
         let rec_signals = explicit_signals(
             &store,
-            "bash: Run full test suite",
+            ctx,
+            &simhash(ctx),
             None,
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
@@ -5503,9 +5681,11 @@ mod tests {
         store.insert(&trace).unwrap();
 
         // Wrong space → empty
+        let ctx = "edit file: src/main.rs";
         let wrong_space = explicit_signals(
             &store,
-            "edit file: src/main.rs",
+            ctx,
+            &simhash(ctx),
             Some("psyche"),
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),
@@ -5515,7 +5695,8 @@ mod tests {
         // Right space → found
         let right_space = explicit_signals(
             &store,
-            "edit file: src/main.rs",
+            ctx,
+            &simhash(ctx),
             Some("other-space"),
             &local_identity.device_identity(),
             local_identity.public_key_bytes(),

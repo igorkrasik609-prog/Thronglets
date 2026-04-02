@@ -8,6 +8,7 @@ pub mod identity;
 pub mod identity_surface;
 pub mod mcp;
 pub mod network;
+pub mod pheromone;
 pub mod network_runtime;
 pub mod network_state;
 pub mod posts;
