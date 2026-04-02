@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.7.0 — 2026-04-02
+
+- **Overlay effect signals** — `field.overlay(&context_hash, "capability")` now projects pheromone field state into a semantic-stable `FieldOverlay` struct with four dimensions: `familiarity` (how well the field knows this capability in this context), `consensus` (agreement across observations, inverse variance), `momentum` (activity trend, positive = recently active), and `coupling` (Hebbian connectedness to other capabilities); this is a pure read — no side effects, no field mutation — paralleling Psyche's `PsycheOverlay` pattern where internal state becomes a broadcast signal any external system can consume without coupling to any specific consumer
+
+## v0.6.0 — 2026-04-02
+
+- **Unified pheromone field graph** — collapsed the previous 3-Mutex field architecture into a single unified graph, reducing lock contention and simplifying the internal state model while preserving all existing field semantics
+
 ## v0.5.5 — 2026-04-01
 
 - **Ambient presence** — MCP agents no longer need to call `presence_ping`; `initialize` auto-emits arrival, every `tools/call` refreshes presence at TTL/6 intervals (derived, not hardcoded), and model identity is learned passively from tool call arguments; signal injection remains the hook layer's responsibility — MCP does exactly one ambient thing: presence

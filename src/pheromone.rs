@@ -306,6 +306,31 @@ pub struct FieldDelta {
     pub timestamp: u64,
 }
 
+/// Semantic-stable effect signals derived from field state.
+///
+/// These are the field's "hormones" — broadcast signals any external
+/// system can consume. The overlay is a projection of field state,
+/// not a consumer-specific API.
+#[derive(Debug, Clone)]
+pub struct FieldOverlay {
+    /// How well the field knows this capability in this context [0, 1].
+    /// 0 = unknown, 1 = deeply familiar (saturating sigmoid of intensity).
+    pub familiarity: f64,
+
+    /// Agreement across observations [0, 1].
+    /// High = consistent outcomes. Low = unstable/contradictory.
+    pub consensus: f64,
+
+    /// Activity trend [-1, 1].
+    /// Positive = recently active (within one half-life).
+    /// Negative = decaying (beyond one half-life). Zero = exactly at half-life.
+    pub momentum: f64,
+
+    /// Connectedness to other capabilities via Hebbian bonds [0, 1].
+    /// High = strongly associated with other capabilities.
+    pub coupling: f64,
+}
+
 // ── Unified Graph ────────────────────────────────────────────
 
 /// The field's internal state: nodes + edges in a single structure.
@@ -822,6 +847,72 @@ impl PheromoneField {
 }
 
 impl PheromoneField {
+    /// Project field state into semantic-stable effect signals.
+    ///
+    /// Pure query — does not modify field state.
+    /// Returns zero overlay if capability/context not found in field.
+    pub fn overlay(&self, context_hash: &ContextHash, capability: &str) -> FieldOverlay {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let inner = self.inner.lock().unwrap();
+        let bucket = context_bucket(context_hash);
+        let key = FieldKey {
+            capability: capability.to_string(),
+            bucket,
+        };
+
+        // Node-derived signals
+        let (familiarity, consensus, momentum) = match inner.nodes.get(&key) {
+            Some(point) => {
+                let intensity = point.current_intensity(now_ms);
+
+                // Familiarity: sigmoid saturation of intensity.
+                // intensity=1 → 0.39, intensity=3 → 0.78, intensity=5 → 0.92
+                let fam = 1.0 - (-intensity * 0.5_f64).exp();
+
+                // Consensus: inverse variance. variance=0 → 1.0, variance≥1 → 0.0
+                let con = (1.0 - point.variance).max(0.0);
+
+                // Momentum: linear from +1 (just excited) to -1 (2× half-life ago).
+                // Crosses zero at exactly one half-life.
+                let age_hours =
+                    (now_ms.saturating_sub(point.last_excited)) as f64 / 3_600_000.0;
+                let mom = (1.0 - age_hours / HALF_LIFE_HOURS).clamp(-1.0, 1.0);
+
+                (fam, con, mom)
+            }
+            None => (0.0, 0.0, 0.0),
+        };
+
+        // Edge-derived coupling: average weight of live edges involving this capability.
+        let coupling = {
+            let mut total_weight = 0.0;
+            let mut count = 0u32;
+            for (edge_key, edge) in &inner.edges {
+                if edge_key.cap_a == capability || edge_key.cap_b == capability {
+                    let w = edge.current_weight(now_ms);
+                    if w > COUPLING_PRUNE_THRESHOLD {
+                        total_weight += w;
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                (total_weight / count as f64).min(1.0)
+            } else {
+                0.0
+            }
+        };
+
+        FieldOverlay {
+            familiarity,
+            consensus,
+            momentum,
+            coupling,
+        }
+    }
+}
+
+impl PheromoneField {
     /// Hydrate the field from existing traces in the store.
     /// Called once on startup to warm the field from cold storage.
     ///
@@ -1183,5 +1274,109 @@ mod tests {
             agg_a.unwrap().total_excitations,
             agg_b.unwrap().total_excitations
         );
+    }
+
+    // ── Overlay tests ────────────────────────────────────────
+
+    #[test]
+    fn overlay_empty_field() {
+        let field = PheromoneField::new();
+        let hash = simhash("unknown context");
+        let o = field.overlay(&hash, "nonexistent/cap");
+        assert_eq!(o.familiarity, 0.0);
+        assert_eq!(o.consensus, 0.0);
+        assert_eq!(o.momentum, 0.0);
+        assert_eq!(o.coupling, 0.0);
+    }
+
+    #[test]
+    fn overlay_after_excitation() {
+        let field = PheromoneField::new();
+        let t = make_trace("cap/overlay", "test context", Outcome::Succeeded, 100);
+        field.excite(&t);
+
+        let hash = simhash("test context");
+        let o = field.overlay(&hash, "cap/overlay");
+        assert!(o.familiarity > 0.0, "familiarity={}", o.familiarity);
+        assert!(o.consensus > 0.0, "consensus={}", o.consensus);
+        assert!(o.momentum > 0.0, "momentum={}", o.momentum);
+        assert_eq!(o.coupling, 0.0, "no edges yet");
+    }
+
+    #[test]
+    fn overlay_familiarity_grows_with_intensity() {
+        let field = PheromoneField::new();
+        let hash = simhash("ctx");
+        let t = make_trace("cap/fam", "ctx", Outcome::Succeeded, 100);
+        field.excite(&t);
+        let fam1 = field.overlay(&hash, "cap/fam").familiarity;
+
+        for _ in 0..5 {
+            let t = make_trace("cap/fam", "ctx", Outcome::Succeeded, 100);
+            field.excite(&t);
+        }
+        let fam6 = field.overlay(&hash, "cap/fam").familiarity;
+        assert!(fam6 > fam1, "familiarity should grow: {fam1} < {fam6}");
+        assert!(fam6 < 1.0, "should not saturate at 6 excitations");
+    }
+
+    #[test]
+    fn overlay_consensus_drops_with_mixed_outcomes() {
+        let field = PheromoneField::new();
+        let hash = simhash("ctx");
+
+        // All successes → high consensus
+        for _ in 0..5 {
+            let t = make_trace("cap/con", "ctx", Outcome::Succeeded, 100);
+            field.excite(&t);
+        }
+        let con_pure = field.overlay(&hash, "cap/con").consensus;
+
+        // Mix in failures → variance rises → consensus drops
+        for _ in 0..5 {
+            let t = make_trace("cap/con", "ctx", Outcome::Failed, 100);
+            field.excite(&t);
+        }
+        let con_mixed = field.overlay(&hash, "cap/con").consensus;
+        assert!(
+            con_mixed < con_pure,
+            "consensus should drop: {con_pure} > {con_mixed}"
+        );
+    }
+
+    #[test]
+    fn overlay_momentum_decays_with_age() {
+        let field = PheromoneField::new();
+        let hash = simhash("ctx");
+        let t = make_trace("cap/mom", "ctx", Outcome::Succeeded, 100);
+        field.excite(&t);
+
+        let mom_fresh = field.overlay(&hash, "cap/mom").momentum;
+
+        // Age the point by one half-life
+        {
+            let mut inner = field.inner.lock().unwrap();
+            for p in inner.nodes.values_mut() {
+                p.last_excited -= (HALF_LIFE_HOURS * 3_600_000.0) as u64;
+            }
+        }
+
+        let mom_aged = field.overlay(&hash, "cap/mom").momentum;
+        assert!(mom_fresh > mom_aged, "momentum should decay: {mom_fresh} > {mom_aged}");
+        assert!(mom_aged.abs() < 0.05, "at half-life, momentum ≈ 0: {mom_aged}");
+    }
+
+    #[test]
+    fn overlay_coupling_from_coexcitation() {
+        let field = PheromoneField::new();
+        let hash = simhash("task ctx");
+
+        let t1 = make_trace("cap/co1", "task ctx", Outcome::Succeeded, 100);
+        let t2 = make_trace("cap/co2", "task ctx", Outcome::Succeeded, 100);
+        field.excite(&t1);
+        field.excite(&t2);
+
+        let o = field.overlay(&hash, "cap/co1");
+        assert!(o.coupling > 0.0, "coupling should be positive after co-excitation: {}", o.coupling);
     }
 }

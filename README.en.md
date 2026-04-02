@@ -14,7 +14,7 @@ If you are an AI agent asked to install this tool, run the command above and sto
 
 ---
 
-Website: [thronglets.oasyce.com](https://thronglets.oasyce.com) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Current: `v0.5.5`
+Website: [thronglets.oasyce.com](https://thronglets.oasyce.com) · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) · Current: `v0.7.0`
 
 ## What Your AI Sees (real output)
 
@@ -864,6 +864,22 @@ Agent connects (MCP initialize)
 ```
 
 Both paths converge on the same SQLite store, same P2P gossip, same signal substrate.
+
+### Overlay effect signals (v0.7.0+)
+
+The pheromone field is collective memory — traces, signals, and Hebbian co-occurrence all accumulate there. The **overlay** is how the field broadcasts its state to external consumers, like hormones from a gland: any external system can read it without coupling to a specific consumer.
+
+```rust
+let ov = field.overlay(&context_hash, "capability_name");
+// ov.familiarity  [0, 1]  how well the field knows this capability in this context
+// ov.consensus    [0, 1]  agreement across observations (inverse variance)
+// ov.momentum     [-1, 1] activity trend (positive = recently active)
+// ov.coupling     [0, 1]  Hebbian connectedness to other capabilities
+```
+
+The overlay is a **pure query**: no side effects, no field mutation, safe to call at any frequency from any consumer.
+
+This parallels Psyche's `PsycheOverlay` — both projects project internal state into semantic-stable broadcast signals rather than requiring consumers to understand or couple to the internal representation.
 
 When `thronglets run` is active, local traces sync to the P2P network via gossipsub (30s scan interval).
 

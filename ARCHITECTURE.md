@@ -154,6 +154,23 @@ Hard rules:
 - `Oasyce SDK = policy, operations, and resource orchestration`
 - `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
 
+### Overlay: field state as effect signals
+
+Both Thronglets and Psyche project internal state into **semantic-stable effect signals** that any external system can consume without coupling to any specific consumer.
+
+In Thronglets, the pheromone field is collective memory — traces, signals, and Hebbian co-occurrence all accumulate there. The **overlay** is how the field communicates its state outward, like hormones broadcast from a gland. External systems read the overlay; they never reach into the field directly.
+
+`field.overlay(&context_hash, "capability_name")` returns a `FieldOverlay` with four dimensions:
+
+- **familiarity** `[0, 1]` — how well the field knows this capability in this context; high familiarity means dense, repeated observation
+- **consensus** `[0, 1]` — agreement across observations (inverse variance); high consensus means the field's evidence points in one direction
+- **momentum** `[-1, 1]` — activity trend; positive means recently active, negative means cooling off
+- **coupling** `[0, 1]` — Hebbian connectedness to other capabilities; high coupling means this capability reliably co-occurs with others
+
+The overlay is a **pure query**: no side effects, no field mutation, no writes. It is safe to call at any frequency from any consumer.
+
+This parallels Psyche's `PsycheOverlay`, which projects subjective self-state into the same kind of semantic-stable signal surface. The pattern is deliberate: both projects expose internal state as broadcast signals rather than requiring consumers to understand or couple to the internal representation.
+
 ### Psyche
 
 Psyche is responsible for low-frequency, externalized continuity residue.

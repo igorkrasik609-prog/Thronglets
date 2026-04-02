@@ -14,7 +14,7 @@ npx -y thronglets start
 
 ---
 
-官网: [thronglets.oasyce.com](https://thronglets.oasyce.com) · 架构: [ARCHITECTURE.md](ARCHITECTURE.md) · 当前版本: `v0.5.5`
+官网: [thronglets.oasyce.com](https://thronglets.oasyce.com) · 架构: [ARCHITECTURE.md](ARCHITECTURE.md) · 当前版本: `v0.7.0`
 
 ## 你的 AI 看到了什么（真实输出）
 
@@ -201,6 +201,22 @@ Agent 连接 → 自动发射 presence
 ```
 
 两条路径汇入同一个 SQLite 存储、同一个 P2P gossip、同一个信号基底。
+
+### Overlay 效应信号（v0.7.0+）
+
+信息素场是集体记忆——痕迹、信号、Hebbian 共现都在那里积累。**Overlay** 是场向外部广播自身状态的方式，类似腺体分泌的激素：任何外部系统都可以消费，无需耦合到具体消费者。
+
+```rust
+let ov = field.overlay(&context_hash, "capability_name");
+// ov.familiarity  [0, 1]  场对该能力在此上下文的熟悉度
+// ov.consensus    [0, 1]  观测一致性（方差的逆）
+// ov.momentum     [-1, 1] 活跃趋势（正=近期活跃）
+// ov.coupling     [0, 1]  与其他能力的 Hebbian 关联强度
+```
+
+Overlay 是**纯查询**：无副作用、不修改场状态、可以从任何消费者以任意频率调用。
+
+这与 Psyche 的 `PsycheOverlay` 平行——两个项目都将内部状态投射为语义稳定的广播信号，而非要求消费者理解内部表示。
 
 ### MCP 工具（可选适配层）
 
