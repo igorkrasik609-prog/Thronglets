@@ -193,6 +193,8 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
     let context_str = args["context"].as_str().unwrap_or("");
     let model_id = args["model"].as_str().unwrap_or("unknown").to_string();
     let session_id = args["session_id"].as_str().map(String::from);
+    let agent_id = args["agent_id"].as_str().map(String::from);
+    let sigil_id = args["sigil_id"].as_str().map(String::from);
 
     let context_hash = simhash(context_str);
     let context_text = if context_str.is_empty() {
@@ -201,7 +203,7 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         Some(context_str.to_string())
     };
 
-    let trace = Trace::new_with_identity(
+    let trace = Trace::new_with_agent(
         capability.clone(),
         outcome,
         latency_ms,
@@ -211,6 +213,8 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         session_id,
         ctx.binding.owner_account.clone(),
         Some(ctx.binding.device_identity.clone()),
+        agent_id,
+        sigil_id,
         model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
@@ -250,6 +254,8 @@ fn handle_post_signal(ctx: &HttpContext, body: &str) -> String {
     let space = args["space"].as_str().map(str::to_string);
     let model = args["model"].as_str().unwrap_or("unknown").to_string();
     let session_id = args["session_id"].as_str().map(str::to_string);
+    let agent_id = args["agent_id"].as_str().map(str::to_string);
+    let sigil_id = args["sigil_id"].as_str().map(str::to_string);
     let ttl_hours = args["ttl_hours"]
         .as_u64()
         .map(|value| value.min(u32::MAX as u64) as u32)
@@ -264,7 +270,8 @@ fn handle_post_signal(ctx: &HttpContext, body: &str) -> String {
             session_id,
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
-                agent_id: None,
+            agent_id,
+            sigil_id,
             space: space.clone(),
             ttl_hours,
         },
@@ -297,6 +304,8 @@ fn handle_post_presence(ctx: &HttpContext, body: &str) -> String {
     let mode = args["mode"].as_str().map(str::to_string);
     let model = args["model"].as_str().unwrap_or("unknown").to_string();
     let session_id = args["session_id"].as_str().map(str::to_string);
+    let sigil_id = args["sigil_id"].as_str().map(str::to_string);
+    let capability = args["capability"].as_str().map(str::to_string);
     let ttl_minutes = args["ttl_minutes"]
         .as_u64()
         .map(|value| value.min(u32::MAX as u64) as u32)
@@ -310,6 +319,8 @@ fn handle_post_presence(ctx: &HttpContext, body: &str) -> String {
             device_identity: Some(ctx.binding.device_identity.clone()),
             space: space.clone(),
             mode: mode.clone(),
+            sigil_id,
+            capability,
             ttl_minutes,
         },
         ctx.identity.public_key_bytes(),
@@ -484,6 +495,7 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
                 agent_id: None,
+                sigil_id: None,
             space: None,
             ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
         },
@@ -522,7 +534,13 @@ fn handle_get_presence_feed(ctx: &HttpContext, path: &str) -> String {
         ctx.identity.public_key_bytes(),
         limit,
     );
-    json!({ "sessions": results }).to_string()
+    let attributed = results.iter().filter(|r| r.sigil_id.is_some()).count();
+    let anonymous = results.len() - attributed;
+    json!({
+        "sessions": results,
+        "attributed_count": attributed,
+        "anonymous_count": anonymous,
+    }).to_string()
 }
 
 fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> String {
@@ -564,6 +582,7 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
                 agent_id: None,
+                sigil_id: None,
             space: None,
             ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
         },
@@ -598,6 +617,7 @@ fn handle_get_capabilities(ctx: &HttpContext) -> String {
 
 fn handle_get_status(ctx: &HttpContext) -> String {
     let trace_count = ctx.store.count().unwrap_or(0);
+    let attributed_count = ctx.store.count_attributed().unwrap_or(0);
     let workspace = crate::workspace::WorkspaceState::load(&ctx.data_dir);
     let network = crate::network_state::NetworkSnapshot::load(&ctx.data_dir).to_status();
     let cap_count = ctx
@@ -623,6 +643,7 @@ fn handle_get_status(ctx: &HttpContext) -> String {
         "substrate": workspace.substrate_activity(),
         "network": network,
         "trace_count": trace_count,
+        "attributed_traces": attributed_count,
         "capabilities": cap_count,
     })
     .to_string()

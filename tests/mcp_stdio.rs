@@ -174,7 +174,9 @@ async fn mcp_full_protocol_handshake() {
     let parsed: Value = serde_json::from_str(text).expect("evaluate response should be JSON");
     assert_eq!(parsed["capability"], "mcp-test/integration");
     assert_eq!(parsed["stats"]["total_traces"], 1);
-    assert_eq!(parsed["stats"]["success_rate"], 1.0);
+    // Pheromone field uses EMA with neutral prior (0.5), so 1 success → ~0.55
+    let sr = parsed["stats"]["success_rate"].as_f64().unwrap();
+    assert!(sr > 0.5 && sr <= 1.0, "success_rate should be > 0.5, got {sr}");
 
     // 6. Explore available capabilities
     let resp = rpc_call(

@@ -46,6 +46,17 @@ impl NetworkRuntimeOptions {
             publish_local_traces: false,
         }
     }
+
+    /// Participant mode: publishes local traces to the network but does not
+    /// publish DHT capability summaries.  This is the right mode for MCP and
+    /// HTTP servers — they contribute to the collective without taking on
+    /// the overhead of full DHT publishing.
+    pub fn participant() -> Self {
+        Self {
+            publish_summaries: false,
+            publish_local_traces: true,
+        }
+    }
 }
 
 pub async fn start_network_runtime(

@@ -41,6 +41,17 @@
         "note": null
       },
       {
+        "agent": "cursor",
+        "present": false,
+        "configurable": true,
+        "integration": "native",
+        "apply_by_default": true,
+        "paths": [
+          "<HOME>/.cursor/mcp.json"
+        ],
+        "note": "Cursor was not detected; apply-plan can still bootstrap ~/.cursor if explicitly requested."
+      },
+      {
         "agent": "openclaw",
         "present": true,
         "configurable": true,

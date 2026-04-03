@@ -1,5 +1,5 @@
 use crate::context::simhash;
-use crate::trace::{Outcome, Trace};
+use crate::trace::{Outcome, Trace, TraceConfig};
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,6 +17,8 @@ pub struct PresenceTraceConfig {
     pub device_identity: Option<String>,
     pub space: Option<String>,
     pub mode: Option<String>,
+    pub sigil_id: Option<String>,
+    pub capability: Option<String>,
     pub ttl_minutes: u32,
 }
 
@@ -24,6 +26,8 @@ pub struct PresenceTraceConfig {
 struct PresenceTracePayload {
     space: Option<String>,
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capability: Option<String>,
     expires_at: u64,
 }
 
@@ -31,6 +35,10 @@ struct PresenceTracePayload {
 pub struct PresenceFeedResult {
     pub space: Option<String>,
     pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sigil_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
     pub model_id: String,
     pub session_id: Option<String>,
     pub device_identity: Option<String>,
@@ -43,6 +51,7 @@ pub struct PresenceFeedResult {
 struct DecodedPresenceTrace {
     space: Option<String>,
     mode: Option<String>,
+    capability: Option<String>,
     expires_at: u64,
 }
 
@@ -50,6 +59,8 @@ struct DecodedPresenceTrace {
 struct PresenceGroup {
     space: Option<String>,
     mode: Option<String>,
+    sigil_id: Option<String>,
+    capability: Option<String>,
     model_id: String,
     session_id: Option<String>,
     device_identity: Option<String>,
@@ -71,27 +82,22 @@ pub fn create_presence_trace(
     let payload = PresenceTracePayload {
         space: config.space.clone(),
         mode: config.mode.clone(),
+        capability: config.capability.clone(),
         expires_at: expires_at_ms(now_ms, config.ttl_minutes),
     };
-    let context = format!(
+    let context_key = format!(
         "presence:{}:{}",
         config.space.as_deref().unwrap_or("global"),
         config.mode.as_deref().unwrap_or("active")
     );
-    let mut trace = Trace::new_with_identity(
-        PRESENCE_HEARTBEAT_CAPABILITY.to_string(),
-        Outcome::Succeeded,
-        0,
-        0,
-        simhash(&context),
-        Some(serde_json::to_string(&payload).expect("presence payload should serialize")),
-        config.session_id,
-        config.owner_account,
-        config.device_identity,
-        config.model_id,
-        node_pubkey,
-        sign_fn,
-    );
+    let payload_json = serde_json::to_string(&payload).expect("presence payload should serialize");
+
+    let mut trace = TraceConfig::new(PRESENCE_HEARTBEAT_CAPABILITY, Outcome::Succeeded, config.model_id)
+        .context_raw(simhash(&context_key), Some(payload_json))
+        .session_id(config.session_id)
+        .identity(config.owner_account, config.device_identity)
+        .sigil_id(config.sigil_id)
+        .sign(node_pubkey, sign_fn);
     trace.timestamp = now_ms;
     trace
 }
@@ -133,6 +139,8 @@ pub fn summarize_recent_presence(
         let entry = groups.entry(key).or_insert_with(|| PresenceGroup {
             space: decoded.space.clone(),
             mode: decoded.mode.clone(),
+            sigil_id: trace.sigil_id.clone(),
+            capability: decoded.capability.clone(),
             model_id: trace.model_id.clone(),
             session_id: trace.session_id.clone(),
             device_identity: trace.device_identity.clone(),
@@ -142,6 +150,8 @@ pub fn summarize_recent_presence(
         });
         if trace.timestamp >= entry.latest_timestamp {
             entry.mode = decoded.mode;
+            entry.sigil_id = trace.sigil_id.clone();
+            entry.capability = decoded.capability;
             entry.latest_timestamp = trace.timestamp;
             entry.expires_at = decoded.expires_at.max(entry.expires_at);
         }
@@ -152,6 +162,8 @@ pub fn summarize_recent_presence(
         .map(|group| PresenceFeedResult {
             space: group.space,
             mode: group.mode,
+            sigil_id: group.sigil_id,
+            capability: group.capability,
             model_id: group.model_id,
             session_id: group.session_id,
             device_identity: group.device_identity,
@@ -180,6 +192,7 @@ fn decode_presence_trace(trace: &Trace) -> Option<DecodedPresenceTrace> {
     Some(DecodedPresenceTrace {
         space: decoded.space,
         mode: decoded.mode,
+        capability: decoded.capability,
         expires_at: decoded.expires_at,
     })
 }
@@ -246,6 +259,8 @@ mod tests {
                 device_identity: Some(device_identity.into()),
                 space: space.map(str::to_string),
                 mode: mode.map(str::to_string),
+                sigil_id: None,
+                capability: None,
                 ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
             },
             [7u8; 32],

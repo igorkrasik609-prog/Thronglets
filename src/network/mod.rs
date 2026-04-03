@@ -7,9 +7,8 @@
 
 use libp2p::futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, kad, mdns, noise,
-    swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
+    Multiaddr, PeerId, SwarmBuilder, autonat, dcutr, gossipsub, identify, kad, mdns, noise,
+    relay, swarm::{NetworkBehaviour, SwarmEvent}, tcp, upnp, yamux,
 };
 use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -99,12 +98,24 @@ fn space_topic(space: &str) -> String {
 }
 
 /// Combined libp2p behaviour for Thronglets.
+///
+/// Includes full NAT traversal stack so nodes behind home routers can
+/// connect to each other without a VPS:
+/// - relay: any public-IP node can relay for NAT'd peers
+/// - dcutr: upgrades relay connections to direct via hole-punching
+/// - autonat: detects whether this node is publicly reachable
+/// - upnp: attempts UPnP port mapping on the local router
 #[derive(NetworkBehaviour)]
 struct ThrongletsNetworkBehaviour {
     gossipsub: gossipsub::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     mdns: mdns::tokio::Behaviour,
     identify: identify::Behaviour,
+    relay_server: relay::Behaviour,
+    relay_client: relay::client::Behaviour,
+    dcutr: dcutr::Behaviour,
+    autonat: autonat::Behaviour,
+    upnp: upnp::tokio::Behaviour,
 }
 
 /// Configuration for the network layer.
@@ -166,21 +177,38 @@ pub async fn start(
         keypair.public(),
     ));
 
-    let behaviour = ThrongletsNetworkBehaviour {
-        gossipsub: gossipsub_behaviour,
-        kademlia,
-        mdns,
-        identify,
-    };
+    // Build relay server — any node can relay for NAT'd peers.
+    // NAT'd nodes won't be chosen as relays because others can't reach them.
+    let relay_server = relay::Behaviour::new(local_peer_id, Default::default());
 
-    let mut swarm = SwarmBuilder::with_existing_identity(keypair)
+    // Build autonat — detect if behind NAT
+    let autonat = autonat::Behaviour::new(local_peer_id, Default::default());
+
+    // Build UPnP — attempt automatic port mapping on the router
+    let upnp = upnp::tokio::Behaviour::default();
+
+    // Swarm with relay client transport (required for connecting through relays)
+    let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
         .with_tcp(
             tcp::Config::default(),
             noise::Config::new,
             yamux::Config::default,
         )?
-        .with_behaviour(|_| behaviour)?
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_behaviour(|_keypair, relay_client| {
+            Ok(ThrongletsNetworkBehaviour {
+                gossipsub: gossipsub_behaviour,
+                kademlia,
+                mdns,
+                identify,
+                relay_server,
+                relay_client,
+                dcutr: dcutr::Behaviour::new(local_peer_id),
+                autonat,
+                upnp,
+            })
+        })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
@@ -379,6 +407,45 @@ pub async fn start(
                                     debug!(?e, "Failed to publish summary to DHT");
                                 }
                             }
+                        }
+                        // Relay server events
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::RelayServer(
+                            relay::Event::ReservationReqAccepted { src_peer_id, .. }
+                        )) => {
+                            info!(%src_peer_id, "Relay: accepted reservation from peer");
+                        }
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::RelayServer(
+                            relay::Event::CircuitReqAccepted { src_peer_id, dst_peer_id, .. }
+                        )) => {
+                            debug!(%src_peer_id, %dst_peer_id, "Relay: circuit established");
+                        }
+                        // DCUtR: direct connection upgrade through relay (hole punching)
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Dcutr(
+                            dcutr::Event { remote_peer_id, result }
+                        )) => {
+                            match result {
+                                Ok(_) => info!(%remote_peer_id, "DCUtR: upgraded to direct connection"),
+                                Err(ref e) => debug!(%remote_peer_id, %e, "DCUtR: hole-punch failed, keeping relay"),
+                            }
+                        }
+                        // AutoNAT: detect if we're publicly reachable
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Autonat(
+                            autonat::Event::StatusChanged { old, new }
+                        )) => {
+                            info!(?old, ?new, "AutoNAT: reachability status changed");
+                        }
+                        // UPnP: automatic port mapping on the router
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Upnp(
+                            upnp::Event::NewExternalAddr(addr)
+                        )) => {
+                            info!(%addr, "UPnP: mapped external address");
+                            swarm.add_external_address(addr);
+                        }
+                        SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Upnp(
+                            upnp::Event::ExpiredExternalAddr(addr)
+                        )) => {
+                            info!(%addr, "UPnP: external address mapping expired");
+                            swarm.remove_external_address(&addr);
                         }
                         SwarmEvent::NewListenAddr { address, .. } => {
                             info!(%address, "Listening on");

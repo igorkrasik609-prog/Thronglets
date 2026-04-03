@@ -289,7 +289,7 @@ pub fn install_claude(
     let added_post_hook = ensure_hook(
         &mut settings["hooks"]["PostToolUse"],
         &post_hook,
-        launcher.to_string_lossy().as_ref(),
+        " hook",
     );
 
     let pre_hook = json!({
@@ -299,7 +299,7 @@ pub fn install_claude(
     let added_pre_hook = ensure_hook(
         &mut settings["hooks"]["PreToolUse"],
         &pre_hook,
-        launcher.to_string_lossy().as_ref(),
+        " prehook",
     );
 
     // Lifecycle hooks: SessionStart, SessionEnd, SubagentStart, SubagentStop
@@ -318,7 +318,7 @@ pub fn install_claude(
         if ensure_hook(
             &mut settings["hooks"][hook_event],
             &lifecycle_hook,
-            launcher.to_string_lossy().as_ref(),
+            event_arg,
         ) {
             added_lifecycle_hooks += 1;
         }
@@ -1242,21 +1242,21 @@ fn doctor_openclaw(home_dir: &Path, data_dir: &Path) -> AdapterDoctor {
 
 fn ensure_hook(target: &mut Value, hook: &Value, command_fragment: &str) -> bool {
     if let Some(arr) = target.as_array_mut() {
-        let has_hook = arr.iter().any(|entry| {
-            entry["hooks"].as_array().is_some_and(|hooks| {
+        // Remove any existing thronglets hooks for this subcommand,
+        // then add the new one. This prevents duplicate entries when
+        // the binary path changes (e.g. release → managed launcher).
+        let old_len = arr.len();
+        arr.retain(|entry| {
+            !entry["hooks"].as_array().is_some_and(|hooks| {
                 hooks.iter().any(|candidate| {
-                    candidate["command"]
-                        .as_str()
-                        .is_some_and(|command| command.contains(command_fragment))
+                    candidate["command"].as_str().is_some_and(|command| {
+                        command.contains("thronglets") && command.contains(command_fragment)
+                    })
                 })
             })
         });
-        if has_hook {
-            false
-        } else {
-            arr.push(hook.clone());
-            true
-        }
+        arr.push(hook.clone());
+        arr.len() != old_len // true if we changed something (replaced or added)
     } else {
         *target = json!([hook.clone()]);
         true

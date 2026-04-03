@@ -128,6 +128,10 @@ fn tool_definitions() -> Value {
                             "type": "string",
                             "description": "Optional agent identifier for multi-agent disambiguation (e.g. \"ENFP-Luna\", \"INTJ-Kai\")"
                         },
+                        "sigil_id": {
+                            "type": "string",
+                            "description": "Sigil identity (e.g. \"SIG_abc123...\") — the Loop's on-chain identity anchor"
+                        },
                         "external_continuity": {
                             "type": "object",
                             "description": "Optional low-frequency external continuity residue from Psyche. Raw events stay local-first; only sparse derived signals may escape.",
@@ -210,6 +214,10 @@ fn tool_definitions() -> Value {
                         "agent_id": {
                             "type": "string",
                             "description": "Optional agent identifier for multi-agent disambiguation (e.g. \"ENFP-Luna\")"
+                        },
+                        "sigil_id": {
+                            "type": "string",
+                            "description": "Sigil identity (e.g. \"SIG_abc123...\") — the Loop's on-chain identity anchor"
                         }
                     },
                     "required": ["kind", "context", "message"]
@@ -267,6 +275,14 @@ fn tool_definitions() -> Value {
                         "session_id": {
                             "type": "string",
                             "description": "Optional session identifier"
+                        },
+                        "sigil_id": {
+                            "type": "string",
+                            "description": "Sigil identity (SIG_...) of the agent announcing presence"
+                        },
+                        "capability": {
+                            "type": "string",
+                            "description": "What this agent does (e.g. \"data-asset-management\", \"code-review\")"
                         },
                         "ttl_minutes": {
                             "type": "integer",
@@ -644,6 +660,10 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         .get("agent_id")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let sigil_id = args
+        .get("sigil_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let context_hash = simhash(context_str);
     let context_text = if context_str.is_empty() {
@@ -663,6 +683,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         ctx.binding.owner_account.clone(),
         Some(ctx.binding.device_identity.clone()),
         agent_id,
+        sigil_id,
         model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
@@ -746,6 +767,10 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
         .get("agent_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let sigil_id = args
+        .get("sigil_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let ttl_hours = args
         .get("ttl_hours")
         .and_then(|v| v.as_u64())
@@ -762,6 +787,7 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
             agent_id,
+            sigil_id,
             space: space.clone(),
             ttl_hours,
         },
@@ -809,6 +835,14 @@ async fn handle_presence_ping(ctx: &McpContext, id: Value, args: Value) -> JsonR
         .get("session_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let sigil_id = args
+        .get("sigil_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let capability = args
+        .get("capability")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let ttl_minutes = args
         .get("ttl_minutes")
         .and_then(|v| v.as_u64())
@@ -823,6 +857,8 @@ async fn handle_presence_ping(ctx: &McpContext, id: Value, args: Value) -> JsonR
             device_identity: Some(ctx.binding.device_identity.clone()),
             space: space.clone(),
             mode: mode.clone(),
+            sigil_id,
+            capability,
             ttl_minutes,
         },
         ctx.identity.public_key_bytes(),
@@ -870,6 +906,8 @@ fn handle_presence_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResp
         ctx.identity.public_key_bytes(),
         limit,
     );
+    let attributed = sessions.iter().filter(|s| s.sigil_id.is_some()).count();
+    let anonymous = sessions.len() - attributed;
     JsonRpcResponse::success(
         id,
         json!({
@@ -877,6 +915,8 @@ fn handle_presence_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResp
                 "type": "text",
                 "text": serde_json::to_string(&json!({
                     "sessions": sessions,
+                    "attributed_count": attributed,
+                    "anonymous_count": anonymous,
                 })).unwrap()
             }]
         }),
@@ -1304,6 +1344,7 @@ fn handle_signals(
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
                 agent_id: None,
+                sigil_id: None,
             space: None,
             ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
         },
@@ -1415,6 +1456,7 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
             owner_account: ctx.binding.owner_account.clone(),
             device_identity: Some(ctx.binding.device_identity.clone()),
                 agent_id: None,
+                sigil_id: None,
             space: None,
             ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
         },
@@ -1578,6 +1620,8 @@ fn emit_presence(ctx: &McpContext, session: &McpSession, mode: &str) {
             device_identity: Some(ctx.binding.device_identity.clone()),
             space: None,
             mode: Some(mode.to_string()),
+            sigil_id: None,
+            capability: None,
             ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
         },
         ctx.identity.public_key_bytes(),

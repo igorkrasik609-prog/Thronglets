@@ -74,6 +74,8 @@ impl TraceStore {
         );
         // Agent V1: agent_id for multi-agent disambiguation
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN agent_id TEXT", []);
+        // Sigil V1: on-chain identity of the Loop that produced this trace
+        let _ = conn.execute("ALTER TABLE traces ADD COLUMN sigil_id TEXT", []);
         // Phase B: space as first-class column for SQL-level isolation
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN space TEXT", []);
         // Backfill space from signal trace JSON payloads (idempotent)
@@ -93,7 +95,8 @@ impl TraceStore {
             CREATE INDEX IF NOT EXISTS idx_traces_session_id ON traces(session_id);
             CREATE INDEX IF NOT EXISTS idx_traces_context_bucket ON traces(context_bucket);
             CREATE INDEX IF NOT EXISTS idx_traces_space ON traces(space);
-            CREATE INDEX IF NOT EXISTS idx_traces_space_capability ON traces(space, capability);",
+            CREATE INDEX IF NOT EXISTS idx_traces_space_capability ON traces(space, capability);
+            CREATE INDEX IF NOT EXISTS idx_traces_sigil_id ON traces(sigil_id);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -112,8 +115,8 @@ impl TraceStore {
         let bucket = context_bucket(&trace.context_hash);
         let space = extract_space(&trace.context_text);
         let result = conn.execute(
-            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature, context_bucket, space)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature, context_bucket, space)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 trace.id.as_slice(),
                 trace.capability,
@@ -126,6 +129,7 @@ impl TraceStore {
                 trace.owner_account,
                 trace.device_identity,
                 trace.agent_id,
+                trace.sigil_id,
                 trace.model_id,
                 trace.timestamp as i64,
                 trace.node_pubkey.as_slice(),
@@ -142,7 +146,7 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
              FROM traces WHERE capability = ?1 ORDER BY timestamp DESC LIMIT ?2",
         )?;
         Self::collect_traces(&mut stmt, params![capability, limit as i64])
@@ -173,7 +177,7 @@ impl TraceStore {
 
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
              FROM traces
              WHERE context_bucket BETWEEN ?1 AND ?2
              ORDER BY timestamp DESC",
@@ -240,7 +244,7 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
              FROM traces WHERE session_id = ?1 ORDER BY timestamp ASC LIMIT ?2",
         )?;
         Self::collect_traces(&mut stmt, params![session_id, limit as i64])
@@ -405,7 +409,7 @@ impl TraceStore {
             let cap_filter = if use_like { "capability LIKE ?3" } else { "capability = ?3" };
             let sql = format!(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                        context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
                  FROM traces
                  WHERE context_bucket BETWEEN ?1 AND ?2
                    AND {cap_filter}
@@ -623,7 +627,7 @@ impl TraceStore {
         let query_limit = (limit.max(1) * 10) as i64;
 
         let sql = "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                          context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                          context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
                    FROM traces
                    WHERE context_bucket BETWEEN ?1 AND ?2
                      AND outcome IN (1, 3)
@@ -677,7 +681,7 @@ impl TraceStore {
             let cap_filter = if use_like { "capability LIKE ?1" } else { "capability = ?1" };
             let sql = format!(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                        context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
                  FROM traces
                  WHERE {cap_filter}
                    AND timestamp >= ?2
@@ -707,7 +711,7 @@ impl TraceStore {
         let like = format!("{PRESENCE_CAPABILITY_PREFIX}%");
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
              FROM traces
              WHERE capability LIKE ?1
                AND timestamp >= ?2
@@ -728,7 +732,7 @@ impl TraceStore {
         let like = format!("{CONTINUITY_CAPABILITY_PREFIX}%");
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
              FROM traces
              WHERE capability LIKE ?1
                AND timestamp >= ?2
@@ -751,7 +755,7 @@ impl TraceStore {
         let like = format!("{CONTINUITY_CAPABILITY_PREFIX}{}:%", taxonomy);
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
              FROM traces
              WHERE capability LIKE ?1
                AND timestamp >= ?2
@@ -791,12 +795,22 @@ impl TraceStore {
         })
     }
 
+    /// Count of traces attributed to a Sigil (sigil_id IS NOT NULL).
+    pub fn count_attributed(&self) -> rusqlite::Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM traces WHERE sigil_id IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0).map(|n| n as u64),
+        )
+    }
+
     /// Query traces that haven't been published to the P2P network yet.
     pub fn unpublished_traces(&self, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, model_id, timestamp, node_pubkey, signature
+                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
              FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1",
         )?;
         Self::collect_traces(&mut stmt, params![limit as i64])
@@ -846,7 +860,7 @@ impl TraceStore {
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let mut stmt = conn.prepare(
             "SELECT t.id, t.capability, t.outcome, t.latency_ms, t.input_size, t.context_hash,
-                    t.context_text, t.session_id, t.owner_account, t.device_identity, t.agent_id, t.model_id, t.timestamp, t.node_pubkey, t.signature
+                    t.context_text, t.session_id, t.owner_account, t.device_identity, t.agent_id, t.sigil_id, t.model_id, t.timestamp, t.node_pubkey, t.signature
              FROM traces t
              LEFT JOIN anchored_traces a ON t.id = a.trace_id
              WHERE a.trace_id IS NULL AND t.timestamp >= ?1
@@ -858,7 +872,7 @@ impl TraceStore {
 
     /// Column order: id(0), capability(1), outcome(2), latency_ms(3), input_size(4),
     /// context_hash(5), context_text(6), session_id(7), owner_account(8), device_identity(9),
-    /// model_id(10), timestamp(11), node_pubkey(12), signature(13)
+    /// agent_id(10), sigil_id(11), model_id(12), timestamp(13), node_pubkey(14), signature(15)
     fn collect_traces(
         stmt: &mut rusqlite::Statement,
         params: impl rusqlite::Params,
@@ -867,8 +881,8 @@ impl TraceStore {
             let id_bytes: Vec<u8> = row.get(0)?;
             let outcome_u8: u8 = row.get(2)?;
             let context_bytes: Vec<u8> = row.get(5)?;
-            let pubkey_bytes: Vec<u8> = row.get(13)?;
-            let sig_bytes: Vec<u8> = row.get(14)?;
+            let pubkey_bytes: Vec<u8> = row.get(14)?;
+            let sig_bytes: Vec<u8> = row.get(15)?;
 
             Ok(Trace {
                 id: id_bytes.try_into().unwrap_or([0u8; 32]),
@@ -887,8 +901,9 @@ impl TraceStore {
                 owner_account: row.get(8)?,
                 device_identity: row.get(9)?,
                 agent_id: row.get(10)?,
-                model_id: row.get(11)?,
-                timestamp: row.get::<_, i64>(12)? as u64,
+                sigil_id: row.get(11)?,
+                model_id: row.get(12)?,
+                timestamp: row.get::<_, i64>(13)? as u64,
                 node_pubkey: pubkey_bytes.try_into().unwrap_or([0u8; 32]),
                 signature: Signature::from_bytes(&sig_bytes.try_into().unwrap_or([0u8; 64])),
             })
@@ -1514,6 +1529,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(id.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_TTL_HOURS,
             },
@@ -1531,6 +1547,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(id.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_TTL_HOURS,
             },
@@ -1564,6 +1581,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(id.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_TTL_HOURS,
             },
@@ -1580,6 +1598,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(id.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
             },
@@ -1622,6 +1641,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(id.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: crate::posts::DEFAULT_SIGNAL_TTL_HOURS,
             },

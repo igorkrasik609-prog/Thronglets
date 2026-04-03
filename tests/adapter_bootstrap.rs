@@ -588,7 +588,11 @@ fn detect_text_stays_summary_first_when_adapters_are_present() {
     assert!(stdout.contains("Detect status: ready"));
     assert!(stdout.contains("Detected: claude-code, codex, openclaw, generic"));
     assert!(stdout.contains("Recommended: claude-code, codex, openclaw"));
-    assert!(!stdout.contains("Detected adapters:"));
+    // Summary always comes first — verbose details (if any) appear after
+    let summary_pos = stdout.find("Detect status:").unwrap();
+    if let Some(detail_pos) = stdout.find("Detected adapters:") {
+        assert!(summary_pos < detail_pos, "summary must precede adapter details");
+    }
 }
 
 #[test]

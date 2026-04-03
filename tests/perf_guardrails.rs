@@ -245,6 +245,8 @@ fn prehook_surfaces_other_active_sessions_in_same_space() {
             device_identity: Some(other_identity.device_identity()),
             space: Some("psyche".into()),
             mode: Some("focus".into()),
+            sigil_id: None,
+            capability: None,
             ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
         },
         other_identity.public_key_bytes(),
@@ -358,6 +360,7 @@ fn prehook_profile_keeps_stdout_shape_when_signals_exist() {
         context: "editing main".into(),
         error_snippet: "parser exploded".into(),
         timestamp_ms: now,
+        context_hash: None,
     });
     ws.repair_patterns.push_front(RepairPattern {
         error_tool: "Edit".into(),
@@ -388,7 +391,7 @@ fn prehook_profile_keeps_stdout_shape_when_signals_exist() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains(PREHOOK_HEADER));
-    assert!(stdout.contains("recent error: parser exploded"));
+    assert!(stdout.contains("past error: parser exploded"));
     assert!(stdout.contains("do next: Read helper.rs (medium, 2x, 2 sources)"));
     assert!(stderr.contains("[thronglets:prehook]"));
     assert!(stderr.contains("tool=Edit"));
@@ -523,6 +526,7 @@ fn prehook_ranks_danger_and_repair_above_history() {
         context: "editing main".into(),
         error_snippet: "parser exploded".into(),
         timestamp_ms: now,
+        context_hash: None,
     });
     ws.recent_actions.push_front(RecentAction {
         tool: "Edit".into(),
@@ -576,7 +580,7 @@ fn prehook_ranks_danger_and_repair_above_history() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(stdout.contains(PREHOOK_HEADER));
-    assert!(stdout.contains("recent error: parser exploded"));
+    assert!(stdout.contains("past error: parser exploded"));
     assert!(stdout.contains("do next: Read helper.rs (medium, 2x)"));
     assert!(
         !stdout.contains("git history for main.rs"),
@@ -729,6 +733,7 @@ fn prehook_upgrades_repair_with_collective_sources() {
         context: "cargo test".into(),
         error_snippet: "linker failed".into(),
         timestamp_ms: now,
+        context_hash: None,
     });
     for (offset, (tool, file_path, outcome)) in [
         ("Bash", None, "failed"),
@@ -773,7 +778,7 @@ fn prehook_upgrades_repair_with_collective_sources() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(PREHOOK_HEADER));
-    assert!(stdout.contains("recent error: linker failed"));
+    assert!(stdout.contains("past error: linker failed"));
     assert!(stdout.contains("do next: Read Cargo.toml, then Bash (medium, 2x, 2 sources)"));
 }
 

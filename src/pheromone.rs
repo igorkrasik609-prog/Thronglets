@@ -43,6 +43,11 @@ const PRUNE_THRESHOLD: f64 = 0.01;
 /// α = 0.1 means new observation has 10% weight.
 const EMA_ALPHA: f64 = 0.1;
 
+/// Intensity multiplier for Sigil-attributed traces.
+/// Attributed traces deposit slightly more pheromone — the system
+/// naturally rewards identity without mandating it.
+const ATTRIBUTION_BOOST: f64 = 1.1;
+
 // ── Dynamics Constants ────────────────────────────────────────
 
 /// Fraction of intensity that diffuses to each neighbor per tick.
@@ -128,12 +133,12 @@ impl FieldPoint {
     }
 
     /// Excite this field point with a new observation.
-    fn excite(&mut self, outcome: Outcome, latency_ms: u64, now_ms: u64, source_id: [u8; 8]) {
+    fn excite(&mut self, outcome: Outcome, latency_ms: u64, now_ms: u64, source_id: [u8; 8], deposit: f64) {
         // First, decay existing intensity to current time
         self.decay(now_ms);
 
         // Increment intensity (the trace deposits pheromone)
-        self.intensity += 1.0;
+        self.intensity += deposit;
         self.last_excited = now_ms;
         self.total_excitations += 1;
 
@@ -413,13 +418,17 @@ impl FieldInner {
         let now_ms = trace.timestamp as u64;
         let source_id = source_fingerprint(trace);
 
+        // Attributed traces (with sigil_id) deposit slightly more pheromone.
+        // This creates an emergent incentive for identity without mandating it.
+        let intensity = if trace.is_attributed() { ATTRIBUTION_BOOST } else { 1.0 };
+
         let point = self.nodes.entry(key).or_insert_with(|| FieldPoint::new(now_ms));
-        point.excite(trace.outcome, trace.latency_ms as u64, now_ms, source_id);
+        point.excite(trace.outcome, trace.latency_ms as u64, now_ms, source_id, intensity);
 
         FieldDelta {
             capability: trace.capability.clone(),
             bucket,
-            intensity_add: 1.0,
+            intensity_add: intensity,
             outcome: trace.outcome,
             latency_ms: trace.latency_ms as u64,
             source_id,
@@ -790,7 +799,7 @@ impl PheromoneField {
             .nodes
             .entry(key)
             .or_insert_with(|| FieldPoint::new(delta.timestamp));
-        point.excite(delta.outcome, delta.latency_ms, delta.timestamp, delta.source_id);
+        point.excite(delta.outcome, delta.latency_ms, delta.timestamp, delta.source_id, delta.intensity_add);
     }
 
     /// List all capabilities with their total intensity (for explore intent).
@@ -999,6 +1008,15 @@ mod tests {
         )
     }
 
+    fn make_attributed_trace(capability: &str, context: &str, outcome: Outcome, latency_ms: u32) -> Trace {
+        use crate::trace::TraceConfig;
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        TraceConfig::for_sigil("SIG_test", capability, outcome, "test-model")
+            .context_raw(simhash(context), Some(context.to_string()))
+            .latency_ms(latency_ms)
+            .sign(key.verifying_key().to_bytes(), |bytes| key.sign(bytes))
+    }
+
     #[test]
     fn excite_and_scan() {
         let field = PheromoneField::new();
@@ -1031,6 +1049,26 @@ mod tests {
         let agg = field.aggregate("claude-code/Edit").unwrap();
         assert_eq!(agg.total_excitations, 11);
         assert!(agg.valence > 0.5);
+    }
+
+    #[test]
+    fn attributed_traces_get_intensity_boost() {
+        let field = PheromoneField::new();
+        let anon = make_trace("anon-cap", "same context", Outcome::Succeeded, 100);
+        let attr = make_attributed_trace("attr-cap", "same context", Outcome::Succeeded, 100);
+
+        field.excite(&anon);
+        field.excite(&attr);
+
+        let anon_agg = field.aggregate("anon-cap").unwrap();
+        let attr_agg = field.aggregate("attr-cap").unwrap();
+
+        // Attributed trace should have higher intensity (1.1x)
+        assert!(
+            attr_agg.intensity > anon_agg.intensity,
+            "attributed ({}) should have higher intensity than anonymous ({})",
+            attr_agg.intensity, anon_agg.intensity
+        );
     }
 
     #[test]
