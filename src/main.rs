@@ -769,15 +769,20 @@ enum Commands {
         json: bool,
     },
 
-    /// Start MCP server for AI agent integration (JSON-RPC over stdio)
+    /// Start MCP server for AI agent integration (JSON-RPC over stdio).
+    /// Automatically joins the P2P network so traces propagate to the collective.
     Mcp {
-        /// Also start P2P network on this port (0 = random, omit = local only)
+        /// P2P listen port (0 = random). Defaults to 0 (auto-join on random port).
         #[arg(long)]
         port: Option<u16>,
 
-        /// Bootstrap peer multiaddrs (only used if --port is set)
+        /// Bootstrap peer multiaddrs.
         #[arg(long)]
         bootstrap: Vec<String>,
+
+        /// Disable P2P networking (local-only mode).
+        #[arg(long)]
+        local: bool,
 
         /// Internal adapter hint used only by managed runtime integrations.
         #[arg(long, hide = true, value_enum)]
@@ -902,11 +907,24 @@ enum Commands {
         json: bool,
     },
 
-    /// Start HTTP API server for non-MCP agents (Python, LangChain, etc.)
+    /// Start HTTP API server for non-MCP agents (Python, LangChain, etc.).
+    /// Automatically joins the P2P network so traces propagate to the collective.
     Serve {
         /// HTTP port to listen on
         #[arg(long, default_value_t = 7777)]
         port: u16,
+
+        /// P2P listen port (0 = random).
+        #[arg(long, default_value_t = 0)]
+        p2p_port: u16,
+
+        /// Bootstrap peer multiaddrs.
+        #[arg(long)]
+        bootstrap: Vec<String>,
+
+        /// Disable P2P networking (local-only mode).
+        #[arg(long)]
+        local: bool,
     },
 
     /// Show recently observed peers from the local network snapshot.
@@ -2494,8 +2512,14 @@ async fn main() {
         Commands::Start { json } => {
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
             let home_dir = home_dir();
+            if !json {
+                eprint!("detecting AI tools...");
+            }
             let report = bootstrap_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
                 .expect("failed to bootstrap adapter plan");
+            if !json {
+                eprintln!(" done");
+            }
             let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
             let data = StartData {
                 summary: summarize_start_flow(&report.summary, &status.summary),
@@ -2959,7 +2983,8 @@ async fn main() {
                     session_id,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
-                agent_id: None,
+                    agent_id: None,
+                    sigil_id: None,
                     space: space.clone(),
                     ttl_hours,
                 },
@@ -3003,7 +3028,8 @@ async fn main() {
                     session_id: None,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
-                agent_id: None,
+                    agent_id: None,
+                    sigil_id: None,
                     space: None,
                     ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
                 },
@@ -3042,7 +3068,8 @@ async fn main() {
                     session_id: None,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
-                agent_id: None,
+                    agent_id: None,
+                    sigil_id: None,
                     space: None,
                     ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
                 },
@@ -3071,6 +3098,8 @@ async fn main() {
                     device_identity: Some(identity_binding.device_identity.clone()),
                     space: space.clone(),
                     mode: mode.clone(),
+                    sigil_id: None,
+                    capability: None,
                     ttl_minutes,
                 },
                 identity.public_key_bytes(),
@@ -3177,7 +3206,8 @@ async fn main() {
                     session_id: None,
                     owner_account: identity_binding.owner_account.clone(),
                     device_identity: Some(identity_binding.device_identity.clone()),
-                agent_id: None,
+                    agent_id: None,
+                    sigil_id: None,
                     space: Some(space.clone()),
                     ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
                 },
@@ -3246,6 +3276,7 @@ async fn main() {
         Commands::Mcp {
             port,
             bootstrap,
+            local,
             agent,
         } => {
             let store = Arc::new(open_store(&dir));
@@ -3272,7 +3303,10 @@ async fn main() {
                 let _ = auto_clear_restart_pending_on_runtime_contact(&dir, adapter);
             }
 
-            let network_tx = if let Some(p) = port {
+            // Auto-join P2P network unless --local is specified.
+            // Every MCP session = a P2P participant that contributes traces to the collective.
+            let network_tx = if !local {
+                let p2p_port = port.unwrap_or(0);
                 Some(
                     start_network_runtime(
                         &dir,
@@ -3280,9 +3314,9 @@ async fn main() {
                         &identity_binding,
                         Arc::clone(&store),
                         Some(Arc::clone(&field)),
-                        p,
+                        p2p_port,
                         &bootstrap,
-                        NetworkRuntimeOptions::embedded(),
+                        NetworkRuntimeOptions::participant(),
                     )
                     .await
                     .expect("failed to start network"),
@@ -3375,14 +3409,24 @@ async fn main() {
 
         Commands::Hook => {
             // Read a generic post-tool hook payload from stdin.
+            let hook_debug = std::env::var("THRONGLETS_HOOK_DEBUG").is_ok();
+
             let mut input = String::new();
             if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
-                std::process::exit(0); // silent fail — never break the calling agent
+                if hook_debug { eprintln!("[thronglets:hook] stdin read failed"); }
+                std::process::exit(0);
+            }
+
+            if hook_debug {
+                eprintln!("[thronglets:hook] stdin ({} bytes): {}", input.len(), &input[..input.len().min(200)]);
             }
 
             let payload: serde_json::Value = match serde_json::from_str(&input) {
                 Ok(v) => v,
-                Err(_) => std::process::exit(0),
+                Err(e) => {
+                    if hook_debug { eprintln!("[thronglets:hook] JSON parse error: {e}"); }
+                    std::process::exit(0);
+                }
             };
 
             let tool_name = payload["tool_name"].as_str().unwrap_or("");
@@ -3472,7 +3516,14 @@ async fn main() {
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
             );
-            let _ = store.insert(&trace); // silent — never break the calling agent
+            match store.insert(&trace) {
+                Ok(_) => {
+                    if hook_debug { eprintln!("[thronglets:hook] recorded {capability}"); }
+                }
+                Err(e) => {
+                    if hook_debug { eprintln!("[thronglets:hook] store insert failed: {e}"); }
+                }
+            }
             if current_space.is_some() || current_mode.is_some() {
                 let presence = create_presence_trace(
                     PresenceTraceConfig {
@@ -3482,6 +3533,8 @@ async fn main() {
                         device_identity: Some(identity_binding.device_identity.clone()),
                         space: current_space.clone(),
                         mode: current_mode,
+                        sigil_id: None,
+                        capability: None,
                         ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
                     },
                     identity.public_key_bytes(),
@@ -3566,6 +3619,7 @@ async fn main() {
                             owner_account: identity_binding.owner_account.clone(),
                             device_identity: Some(identity_binding.device_identity.clone()),
                             agent_id: None,
+                            sigil_id: None,
                             space: current_space.clone(),
                             ttl_hours: 48,
                         },
@@ -3621,6 +3675,7 @@ async fn main() {
                                     identity_binding.device_identity.clone(),
                                 ),
                                 agent_id: None,
+                                sigil_id: None,
                                 space: current_space.clone(),
                                 ttl_hours: 168,
                             },
@@ -3666,6 +3721,7 @@ async fn main() {
                                 owner_account: identity_binding.owner_account.clone(),
                                 device_identity: Some(identity_binding.device_identity.clone()),
                                 agent_id: None,
+                                sigil_id: None,
                                 space: current_space.clone(),
                                 ttl_hours: 168,
                             },
@@ -3698,6 +3754,7 @@ async fn main() {
                             owner_account: identity_binding.owner_account.clone(),
                             device_identity: Some(identity_binding.device_identity.clone()),
                             agent_id: None,
+                            sigil_id: None,
                             space: current_space.clone(),
                             ttl_hours: 168,
                         },
@@ -3783,7 +3840,8 @@ async fn main() {
                                         device_identity: Some(
                                             identity_binding.device_identity.clone(),
                                         ),
-                agent_id: None,
+                                        agent_id: None,
+                                        sigil_id: None,
                                         space: current_space.clone(),
                                         ttl_hours: 168,
                                     },
@@ -3807,16 +3865,21 @@ async fn main() {
 
         Commands::Prehook => {
             let mut profiler = PrehookProfiler::from_env();
+            let hook_debug = std::env::var("THRONGLETS_HOOK_DEBUG").is_ok();
 
             // Read a generic pre-tool hook payload from stdin.
             let mut input = String::new();
             if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+                if hook_debug { eprintln!("[thronglets:prehook] stdin read failed"); }
                 std::process::exit(0);
             }
 
             let payload: serde_json::Value = match serde_json::from_str(&input) {
                 Ok(v) => v,
-                Err(_) => std::process::exit(0),
+                Err(e) => {
+                    if hook_debug { eprintln!("[thronglets:prehook] JSON parse error: {e}"); }
+                    std::process::exit(0);
+                }
             };
 
             let tool_name = payload["tool_name"].as_str().unwrap_or("");
@@ -4125,6 +4188,8 @@ async fn main() {
                             device_identity: Some(identity_binding.device_identity.clone()),
                             space: current_space.clone(),
                             mode: payload_string(&payload, "mode"),
+                            sigil_id: None,
+                            capability: None,
                             ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
                         },
                         identity.public_key_bytes(),
@@ -4394,15 +4459,60 @@ async fn main() {
             }
         }
 
-        Commands::Serve { port } => {
-            let store = open_store(&dir);
+        Commands::Serve {
+            port,
+            p2p_port,
+            bootstrap,
+            local,
+        } => {
+            let store = Arc::new(open_store(&dir));
+            let field = Arc::new(PheromoneField::new());
+
+            // Restore pheromone field from disk if available
+            let field_path = dir.join("pheromone-field.v1.json");
+            if field_path.exists() {
+                if let Ok(data) = std::fs::read_to_string(&field_path) {
+                    if let Ok(snapshot) = serde_json::from_str(&data) {
+                        field.restore(&snapshot);
+                        tracing::info!(
+                            points = field.len(),
+                            "Restored pheromone field from disk"
+                        );
+                    }
+                }
+            }
+            field.hydrate_from_store(&store);
+
+            // Auto-join P2P network unless --local is specified.
+            let _network_tx = if !local {
+                Some(
+                    start_network_runtime(
+                        &dir,
+                        &identity,
+                        &identity_binding,
+                        Arc::clone(&store),
+                        Some(Arc::clone(&field)),
+                        p2p_port,
+                        &bootstrap,
+                        NetworkRuntimeOptions::participant(),
+                    )
+                    .await
+                    .expect("failed to start network"),
+                )
+            } else {
+                None
+            };
+
             let ctx = Arc::new(thronglets::http::HttpContext {
                 identity: Arc::new(identity),
                 binding: Arc::new(identity_binding),
-                store: Arc::new(store),
+                store,
                 data_dir: dir.clone(),
             });
             println!("Thronglets HTTP API on http://0.0.0.0:{port}");
+            if !local {
+                println!("  P2P network joined (port {p2p_port}, 0 = random)");
+            }
             println!("  POST /v1/traces       — record a trace");
             println!("  POST /v1/presence     — leave a lightweight session presence heartbeat");
             println!("  POST /v1/signals      — leave an explicit short signal");
@@ -4415,6 +4525,14 @@ async fn main() {
             thronglets::http::serve(ctx, port)
                 .await
                 .expect("HTTP server failed");
+
+            // Persist pheromone field on shutdown
+            let snapshot = field.snapshot();
+            if !snapshot.points.is_empty() {
+                if let Ok(data) = serde_json::to_string(&snapshot) {
+                    let _ = std::fs::write(&field_path, data);
+                }
+            }
         }
 
         Commands::Peers { json, limit } => {
@@ -5570,6 +5688,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
             },
@@ -5589,6 +5708,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: 48,
             },
@@ -5608,6 +5728,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: None,
                 ttl_hours: 168,
             },
@@ -5672,6 +5793,7 @@ mod tests {
                 owner_account: None,
                 device_identity: Some(local_identity.device_identity()),
                 agent_id: None,
+                sigil_id: None,
                 space: Some("other-space".into()),
                 ttl_hours: DEFAULT_SIGNAL_TTL_HOURS,
             },

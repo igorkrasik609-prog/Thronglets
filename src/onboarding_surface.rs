@@ -401,13 +401,45 @@ pub(crate) fn summarize_share_flow(
 }
 
 pub(crate) fn render_start_report(data: &StartData) {
-    println!("Thronglets: {}", human_onboarding_label(&data.summary));
-    println!("  Meaning: {}", data.summary.detail);
-    if let Some(step) = &data.summary.next_step {
-        println!("  Next:    {step}");
+    println!();
+    println!("thronglets");
+    println!();
+
+    // Installed status
+    if data.setup.healthy {
+        println!("  installed:  yes");
+    } else {
+        println!("  installed:  needs fix");
     }
-    println!("  Device:  {}", data.identity.device_identity);
-    println!("  Ready:   {}", human_readiness_label(&data.readiness));
+
+    // Which tools were configured
+    let configured: Vec<&str> = data.setup.restart_commands.iter()
+        .filter_map(|cmd| {
+            if cmd.contains("Claude") || cmd.contains("claude") { Some("Claude Code") }
+            else if cmd.contains("Cursor") || cmd.contains("cursor") { Some("Cursor") }
+            else if cmd.contains("Windsurf") || cmd.contains("windsurf") { Some("Windsurf") }
+            else if cmd.contains("Codex") || cmd.contains("codex") { Some("Codex") }
+            else { None }
+        })
+        .collect();
+    if !configured.is_empty() {
+        println!("  configured: {}", configured.join(", "));
+    }
+
+    // Active status — the key question
+    if data.setup.restart_required || data.setup.restart_pending {
+        println!("  active:     not yet");
+        println!();
+        if let Some(cmd) = data.setup.restart_commands.first() {
+            println!("  -> {cmd}");
+        } else {
+            println!("  -> restart your AI tool to activate");
+        }
+    } else if data.setup.healthy {
+        println!("  active:     yes");
+    }
+
+    println!();
 }
 
 pub(crate) fn render_join_flow_report(data: &JoinFlowData) {
