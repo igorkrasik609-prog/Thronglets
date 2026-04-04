@@ -69,6 +69,7 @@ const PRESENCE_SCHEMA_VERSION: &str = "thronglets.presence.v1";
 const SPACE_SCHEMA_VERSION: &str = "thronglets.space.v2";
 const VERSION_SCHEMA_VERSION: &str = "thronglets.version.v1";
 const DEFAULT_CONNECTION_FILE_NAME: &str = "thronglets.connection.json";
+const TOP_LEVEL_AFTER_HELP: &str = "Normal path:\n  thronglets start\n  thronglets share\n  thronglets join\n  thronglets status\n\nAdvanced and machine-facing commands remain available, but are hidden from this top-level help so normal onboarding stays simple.";
 const RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP: i32 = 50;
 const RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP: i32 = 50;
 const RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS: i64 = 5_000;
@@ -350,7 +351,8 @@ struct SpaceSnapshotData {
 #[command(
     name = "thronglets",
     version,
-    about = "P2P shared memory substrate for AI agents"
+    about = "P2P shared memory substrate for AI agents",
+    after_help = TOP_LEVEL_AFTER_HELP
 )]
 struct Cli {
     /// Data directory (default: ~/.thronglets)
@@ -522,6 +524,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Start the Thronglets node
     Run {
         /// Port to listen on (0 = random)
@@ -533,6 +536,7 @@ enum Commands {
         bootstrap: Vec<String>,
     },
 
+    #[command(hide = true)]
     /// Show node identity
     Id {
         /// Emit machine-readable JSON instead of text.
@@ -540,6 +544,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Show the local authorization snapshot and final truth source.
     AuthorizationCheck {
         /// Emit machine-readable JSON instead of text.
@@ -547,6 +552,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Bind this device to an owner account.
     OwnerBind {
         /// Root owner account / wallet address.
@@ -558,6 +564,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Export a connection file from the primary device.
     ConnectionExport {
         /// Where to write the connection file.
@@ -573,6 +580,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Join this device to an existing owner account using a connection file.
     ConnectionJoin {
         /// Connection file exported from the primary device.
@@ -584,6 +592,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Inspect and verify a connection file before joining.
     ConnectionInspect {
         /// Connection file exported from the primary device.
@@ -595,6 +604,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Record a trace manually (for testing/debugging)
     Record {
         /// Capability URI
@@ -621,12 +631,14 @@ enum Commands {
         model: String,
     },
 
+    #[command(hide = true)]
     /// Query aggregate stats for a capability
     Query {
         /// Capability URI to query
         capability: String,
     },
 
+    #[command(hide = true)]
     /// Leave an explicit short signal for future agents.
     SignalPost {
         /// Signal type.
@@ -662,6 +674,7 @@ enum Commands {
         ttl_hours: u32,
     },
 
+    #[command(hide = true)]
     /// Query explicit short signals left by other agents.
     SignalQuery {
         /// Task context to search against.
@@ -681,6 +694,7 @@ enum Commands {
         limit: usize,
     },
 
+    #[command(hide = true)]
     /// Show recent explicit signals that are converging across agents.
     SignalFeed {
         /// Only include signals seen in roughly the last N hours.
@@ -704,6 +718,7 @@ enum Commands {
         limit: usize,
     },
 
+    #[command(hide = true)]
     /// Announce that this session is active in a space, even without tool calls.
     PresencePing {
         /// Optional explicit substrate space this presence belongs to.
@@ -731,6 +746,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Show recent active sessions in a shared substrate space.
     PresenceFeed {
         /// Only include presence heartbeats seen in roughly the last N hours.
@@ -750,6 +766,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Show the ambient state of a shared substrate space.
     Space {
         /// The explicit substrate space to inspect.
@@ -769,6 +786,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Start MCP server for AI agent integration (JSON-RPC over stdio).
     /// Automatically joins the P2P network so traces propagate to the collective.
     Mcp {
@@ -789,6 +807,7 @@ enum Commands {
         agent: Option<AdapterArg>,
     },
 
+    #[command(hide = true)]
     /// Anchor unanchored traces to the Oasyce blockchain
     Anchor {
         /// Oasyce chain RPC endpoint
@@ -804,16 +823,19 @@ enum Commands {
         hours: u64,
     },
 
+    #[command(hide = true)]
     /// Auto-record traces from agent tool hooks.
     /// Reads a Claude-compatible hook JSON contract from stdin and records a trace.
     /// Designed to be fast (<50ms).
     Hook,
 
+    #[command(hide = true)]
     /// Query substrate before tool calls and emit sparse decision signals.
     /// Reads a Claude-compatible hook JSON contract from stdin.
     /// Silent when no relevant data. Designed to be fast (<50ms).
     Prehook,
 
+    #[command(hide = true)]
     /// Handle agent lifecycle events (SessionStart, SessionEnd, SubagentStart, SubagentStop).
     /// Records lifecycle traces and optionally emits additionalContext.
     /// Designed to be fast (<50ms).
@@ -823,9 +845,11 @@ enum Commands {
         event: String,
     },
 
+    #[command(hide = true)]
     /// One-command setup: install known local agent adapters and hook integrations.
     Setup,
 
+    #[command(hide = true)]
     /// Detect locally available agent runtimes and bootstrap surfaces.
     Detect {
         /// Restrict detection to one adapter family.
@@ -837,6 +861,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Show the machine-readable install plan for one adapter or all adapters.
     InstallPlan {
         /// Restrict planning to one adapter family.
@@ -852,6 +877,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Apply the install plan for one adapter or all known adapters.
     ApplyPlan {
         /// Restrict application to one adapter family.
@@ -863,6 +889,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Verify whether a configured adapter is healthy.
     Doctor {
         /// Restrict verification to one adapter family.
@@ -874,6 +901,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Detect, plan, apply, and verify adapter setup in one command.
     Bootstrap {
         /// Restrict bootstrapping to one adapter family.
@@ -885,6 +913,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Clear persisted restart-pending state after the target runtime has been restarted.
     ClearRestart {
         /// Restrict clearing to one adapter family.
@@ -896,6 +925,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Mark a runtime as ready after it has successfully reloaded the Thronglets integration.
     RuntimeReady {
         /// Restrict readiness reporting to one adapter family.
@@ -907,6 +937,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Start HTTP API server for non-MCP agents (Python, LangChain, etc.).
     /// Automatically joins the P2P network so traces propagate to the collective.
     Serve {
@@ -927,6 +958,7 @@ enum Commands {
         local: bool,
     },
 
+    #[command(hide = true)]
     /// Show recently observed peers from the local network snapshot.
     Peers {
         /// Emit machine-readable JSON instead of text.
@@ -938,6 +970,7 @@ enum Commands {
         limit: usize,
     },
 
+    #[command(hide = true)]
     /// Diagnose whether this node is actually operating peer-first or still mostly depending on bootstrap/VPS.
     NetCheck {
         /// Emit machine-readable JSON instead of text.
@@ -956,14 +989,17 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Summarize stderr lines emitted by THRONGLETS_PROFILE_PREHOOK=1.
     /// Reads log lines from stdin and prints aggregate stats.
     ProfileSummary,
 
+    #[command(hide = true)]
     /// Check whether profiled prehook logs still fit release-oriented sparse-signal thresholds.
     /// Reads log lines from stdin and exits non-zero on regression.
     ProfileCheck,
 
+    #[command(hide = true)]
     /// Run a release-oriented operator gate across prehook profile logs and offline signal quality.
     /// Reads optional prehook profile lines from stdin, then evaluates current offline signal quality.
     ReleaseCheck {
@@ -1000,6 +1036,7 @@ enum Commands {
         json: bool,
     },
 
+    #[command(hide = true)]
     /// Replay recent sessions offline and score sparse-signal usefulness.
     EvalSignals {
         /// Look back over traces from the last N hours.
@@ -2598,6 +2635,7 @@ async fn main() {
                 .clone()
                 .joined_via_connection(
                     connection.owner_account.clone(),
+                    connection.oasyce_delegate_policy.clone(),
                     connection.primary_device_identity.clone(),
                 )
                 .expect("failed to update identity binding");
@@ -2776,6 +2814,7 @@ async fn main() {
             let inspected_binding = IdentityBinding {
                 schema_version: "thronglets.identity.v1".into(),
                 owner_account: connection.owner_account.clone(),
+                oasyce_delegate_policy: connection.oasyce_delegate_policy.clone(),
                 device_identity: connection.primary_device_identity.clone(),
                 binding_source: Some("connection_file".into()),
                 joined_from_device: None,
@@ -2848,6 +2887,7 @@ async fn main() {
                 .clone()
                 .joined_via_connection(
                     connection.owner_account.clone(),
+                    connection.oasyce_delegate_policy.clone(),
                     connection.primary_device_identity.clone(),
                 )
                 .expect("failed to update identity binding");

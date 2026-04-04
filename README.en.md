@@ -498,6 +498,7 @@ The primary multi-device onboarding path is also fixed:
 
 - the primary device exports a connection file
 - the secondary device joins the same network with that file; if the file carries an owner, it also joins the same owner
+- if the primary machine already has an Oasyce shared-account bootstrap, the same file can carry that bootstrap forward so later sdk / chain writes continue automatically
 - manual account + signer entry remains only as an advanced fallback
 - the connection file is signed by the primary device and verified on join
 - the connection file now also carries a small peer-seed set so the secondary device can try known peers before falling back to bootstrap

@@ -420,7 +420,7 @@ async fn first_connection_attempt_promotes_same_owner_path_to_trusted_seed() {
 
     let id_b = NodeIdentity::generate();
     let binding_b = IdentityBinding::new(id_b.device_identity())
-        .joined_via_connection(Some("oasyce1owner".into()), id_a.device_identity())
+        .joined_via_connection(Some("oasyce1owner".into()), None, id_a.device_identity())
         .unwrap();
 
     let remembered_a: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_a}/p2p/{peer_id_a}")
