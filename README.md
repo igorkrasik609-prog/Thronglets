@@ -39,6 +39,8 @@ AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出
 - 主设备分享连接文件：`thronglets share`
 - 第二台设备：`thronglets join`
 
+如果主设备已经有本地 Oasyce 共享账户 bootstrap，`share / join` 也会顺手带过去，后面的 sdk / chain 写操作就能自动继续，不需要用户再学一套委托命令。
+
 日常只看：
 
 ```bash

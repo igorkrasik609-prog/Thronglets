@@ -532,6 +532,7 @@ mod tests {
         let binding = IdentityBinding::new(local_identity.device_identity())
             .joined_via_connection(
                 Some("oasyce1owner".into()),
+                None,
                 remote_identity.device_identity(),
             )
             .unwrap();

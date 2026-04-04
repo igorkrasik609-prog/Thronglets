@@ -18,6 +18,7 @@ const IDENTITY_BINDING_SCHEMA_VERSION: &str = "thronglets.identity.v1";
 const CONNECTION_FILE_SCHEMA_VERSION: &str = "thronglets.connection.v1";
 const CONNECTION_FILE_SIGNING_DOMAIN: &[u8] = b"thronglets.connection.v1";
 const OASYCE_LOCAL_BINDING_SCHEMA_VERSION: &str = "oasyce.identity.v1";
+const OASYCE_DELEGATE_POLICY_SCHEMA_VERSION: &str = "oasyce.delegate_policy.v1";
 pub const DEFAULT_CONNECTION_FILE_TTL_HOURS: u32 = 24;
 
 /// A node's identity: ed25519 keypair + derived addresses.
@@ -31,6 +32,8 @@ pub struct IdentityBinding {
     pub schema_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oasyce_delegate_policy: Option<OasyceDelegatePolicy>,
     pub device_identity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_source: Option<String>,
@@ -51,6 +54,8 @@ pub struct ConnectionFile {
     pub schema_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oasyce_delegate_policy: Option<OasyceDelegatePolicy>,
     pub primary_device_identity: String,
     pub primary_device_pubkey: String,
     #[serde(default = "default_connection_seed_scope")]
@@ -75,6 +80,50 @@ struct OasyceLocalBinding {
     pub signer_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OasyceDelegatePolicy {
+    pub schema_version: String,
+    pub principal: String,
+    pub allowed_msgs: Vec<String>,
+    pub enrollment_token: String,
+    pub per_tx_limit_uoas: u64,
+    pub window_limit_uoas: u64,
+    pub window_seconds: u64,
+    pub expiration_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+impl OasyceDelegatePolicy {
+    fn validate(&self) -> std::io::Result<()> {
+        if self.schema_version != OASYCE_DELEGATE_POLICY_SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported oasyce delegate policy schema_version",
+            ));
+        }
+        if self.principal.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delegate policy principal cannot be empty",
+            ));
+        }
+        if self.enrollment_token.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delegate policy enrollment_token cannot be empty",
+            ));
+        }
+        if self.allowed_msgs.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delegate policy allowed_msgs cannot be empty",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl NodeIdentity {
@@ -188,6 +237,14 @@ impl IdentityBinding {
             binding.updated_at = now_ms();
         }
 
+        if binding.oasyce_delegate_policy.is_none()
+            && let Some(policy) = load_oasyce_delegate_policy_hint()?
+        {
+            binding.ensure_policy_compatible(Some(&policy))?;
+            binding.oasyce_delegate_policy = Some(policy);
+            binding.updated_at = now_ms();
+        }
+
         binding.save(path)?;
         Ok(binding)
     }
@@ -208,6 +265,7 @@ impl IdentityBinding {
         Self {
             schema_version: IDENTITY_BINDING_SCHEMA_VERSION.to_string(),
             owner_account: None,
+            oasyce_delegate_policy: None,
             device_identity,
             binding_source: None,
             joined_from_device: None,
@@ -242,10 +300,13 @@ impl IdentityBinding {
     pub fn joined_via_connection(
         mut self,
         owner_account: Option<String>,
+        oasyce_delegate_policy: Option<OasyceDelegatePolicy>,
         primary_device: String,
     ) -> std::io::Result<Self> {
         self.ensure_owner_compatible(owner_account.as_deref())?;
+        self.ensure_policy_compatible(oasyce_delegate_policy.as_ref())?;
         self.owner_account = owner_account;
+        self.oasyce_delegate_policy = oasyce_delegate_policy;
         self.binding_source = Some("connection_file".into());
         self.joined_from_device = Some(primary_device);
         self.updated_at = now_ms();
@@ -254,15 +315,6 @@ impl IdentityBinding {
 
     pub fn owner_account_or_unbound(&self) -> &str {
         self.owner_account.as_deref().unwrap_or("unbound")
-    }
-
-    pub fn require_owner_account(&self) -> std::io::Result<&str> {
-        self.owner_account.as_deref().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "owner account is not bound; run `thronglets owner-bind --owner-account ...` first",
-            )
-        })
     }
 
     pub fn binding_source_or_local(&self) -> &str {
@@ -281,6 +333,36 @@ impl IdentityBinding {
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "device is already bound to owner {current}; refusing to overwrite with {requested}"
+                ),
+            ));
+        }
+        if let (Some(policy), Some(requested)) =
+            (self.oasyce_delegate_policy.as_ref(), requested_owner)
+            && policy.principal != requested
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "device policy is already bound to owner {}; refusing to overwrite with {}",
+                    policy.principal, requested
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn ensure_policy_compatible(
+        &self,
+        policy: Option<&OasyceDelegatePolicy>,
+    ) -> std::io::Result<()> {
+        if let (Some(owner), Some(policy)) = (self.owner_account.as_deref(), policy)
+            && policy.principal != owner
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "delegate policy principal {} does not match owner {}",
+                    policy.principal, owner
                 ),
             ));
         }
@@ -320,6 +402,7 @@ impl ConnectionFile {
         let mut file = Self {
             schema_version: CONNECTION_FILE_SCHEMA_VERSION.to_string(),
             owner_account: binding.owner_account.clone(),
+            oasyce_delegate_policy: binding.oasyce_delegate_policy.clone(),
             primary_device_identity: binding.device_identity.clone(),
             primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
             peer_seed_scope,
@@ -352,6 +435,15 @@ impl ConnectionFile {
                 std::io::ErrorKind::InvalidData,
                 "expires_at must not be earlier than exported_at",
             ));
+        }
+        if let Some(policy) = &file.oasyce_delegate_policy {
+            policy.validate()?;
+            if file.owner_account.as_deref() != Some(policy.principal.as_str()) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "connection file delegate policy principal must match owner_account",
+                ));
+            }
         }
         file.verify()?;
         if file.is_expired_at(now_ms()) {
@@ -439,6 +531,11 @@ impl ConnectionFile {
         for seed in &self.peer_seeds {
             push_optional_bytes(&mut buf, Some(seed.as_str()));
         }
+        let delegate_policy_json = self
+            .oasyce_delegate_policy
+            .as_ref()
+            .map(|policy| serde_json::to_string(policy).expect("delegate policy should serialize"));
+        push_optional_bytes(&mut buf, delegate_policy_json.as_deref());
         buf.extend_from_slice(&self.exported_at.to_le_bytes());
         buf.extend_from_slice(&self.expires_at.to_le_bytes());
         buf
@@ -452,6 +549,15 @@ pub fn identity_binding_path(data_dir: &Path) -> std::path::PathBuf {
 fn oasyce_identity_binding_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(Path::new(&home).join(".oasyce").join("identity.v1.json"))
+}
+
+fn oasyce_delegate_policy_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        Path::new(&home)
+            .join(".oasyce")
+            .join("delegate_policy.v1.json"),
+    )
 }
 
 fn load_oasyce_owner_account_hint() -> std::io::Result<Option<String>> {
@@ -478,6 +584,26 @@ fn load_oasyce_owner_account_hint() -> std::io::Result<Option<String>> {
         Some(account) if !account.trim().is_empty() => Ok(Some(account)),
         _ => Ok(None),
     }
+}
+
+fn load_oasyce_delegate_policy_hint() -> std::io::Result<Option<OasyceDelegatePolicy>> {
+    let Some(path) = oasyce_delegate_policy_path() else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+    let policy: OasyceDelegatePolicy = match serde_json::from_slice(&bytes).map_err(invalid_data) {
+        Ok(policy) => policy,
+        Err(_) => return Ok(None),
+    };
+    policy.validate()?;
+    Ok(Some(policy))
 }
 
 fn now_ms() -> u64 {
@@ -533,7 +659,10 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn generate_and_sign() {
@@ -631,6 +760,7 @@ mod tests {
         let binding = IdentityBinding {
             schema_version: IDENTITY_BINDING_SCHEMA_VERSION.into(),
             owner_account: Some("oasyce1owner".into()),
+            oasyce_delegate_policy: None,
             device_identity: node.device_identity(),
             binding_source: Some("manual".into()),
             joined_from_device: None,
@@ -665,6 +795,7 @@ mod tests {
         let binding = IdentityBinding {
             schema_version: IDENTITY_BINDING_SCHEMA_VERSION.into(),
             owner_account: Some("oasyce1owner".into()),
+            oasyce_delegate_policy: None,
             device_identity: node.device_identity(),
             binding_source: Some("manual".into()),
             joined_from_device: None,
@@ -692,6 +823,7 @@ mod tests {
         let binding = IdentityBinding {
             schema_version: IDENTITY_BINDING_SCHEMA_VERSION.into(),
             owner_account: Some("oasyce1owner".into()),
+            oasyce_delegate_policy: None,
             device_identity: node.device_identity(),
             binding_source: Some("manual".into()),
             joined_from_device: None,
@@ -734,7 +866,7 @@ mod tests {
     fn manual_owner_bind_preserves_connection_origin() {
         let node = NodeIdentity::generate();
         let binding = IdentityBinding::new(node.device_identity())
-            .joined_via_connection(None, "oasyce1primary".into())
+            .joined_via_connection(None, None, "oasyce1primary".into())
             .unwrap()
             .bind_owner_account("oasyce1owner".into())
             .unwrap();
@@ -758,6 +890,7 @@ mod tests {
 
     #[test]
     fn load_or_create_imports_oasyce_owner_hint_when_local_binding_is_unbound() {
+        let _home_guard = HOME_ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let home = temp.path().join("home");
         let oasyce_dir = home.join(".oasyce");
@@ -794,5 +927,82 @@ mod tests {
         assert_eq!(binding.owner_account.as_deref(), Some("oasyce1owner"));
         assert_eq!(binding.binding_source.as_deref(), Some("oasyce_sdk"));
         assert_eq!(binding.device_identity, node.device_identity());
+    }
+
+    #[test]
+    fn load_or_create_imports_oasyce_delegate_policy_hint() {
+        let _home_guard = HOME_ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let oasyce_dir = home.join(".oasyce");
+        fs::create_dir_all(&oasyce_dir).unwrap();
+        fs::write(
+            oasyce_dir.join("delegate_policy.v1.json"),
+            serde_json::to_vec_pretty(&OasyceDelegatePolicy {
+                schema_version: OASYCE_DELEGATE_POLICY_SCHEMA_VERSION.into(),
+                principal: "oasyce1owner".into(),
+                allowed_msgs: vec!["/cosmos.bank.v1beta1.MsgSend".into()],
+                enrollment_token: "shared-secret".into(),
+                per_tx_limit_uoas: 1_000_000,
+                window_limit_uoas: 10_000_000,
+                window_seconds: 86_400,
+                expiration_seconds: 0,
+                updated_at: Some("2026-04-04T00:00:00Z".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let original_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &home);
+        }
+
+        let data_dir = temp.path().join("data");
+        let node = NodeIdentity::generate();
+        let path = identity_binding_path(&data_dir);
+        let binding = IdentityBinding::load_or_create(&path, &node).unwrap();
+
+        match original_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let policy = binding
+            .oasyce_delegate_policy
+            .expect("delegate policy should be imported");
+        assert_eq!(policy.principal, "oasyce1owner");
+        assert_eq!(policy.enrollment_token, "shared-secret");
+        assert_eq!(policy.allowed_msgs, vec!["/cosmos.bank.v1beta1.MsgSend"]);
+    }
+
+    #[test]
+    fn joined_connection_preserves_oasyce_delegate_policy() {
+        let node = NodeIdentity::generate();
+        let binding = IdentityBinding::new(node.device_identity())
+            .joined_via_connection(
+                Some("oasyce1owner".into()),
+                Some(OasyceDelegatePolicy {
+                    schema_version: OASYCE_DELEGATE_POLICY_SCHEMA_VERSION.into(),
+                    principal: "oasyce1owner".into(),
+                    allowed_msgs: vec!["/cosmos.bank.v1beta1.MsgSend".into()],
+                    enrollment_token: "shared-secret".into(),
+                    per_tx_limit_uoas: 1_000_000,
+                    window_limit_uoas: 10_000_000,
+                    window_seconds: 86_400,
+                    expiration_seconds: 0,
+                    updated_at: Some("2026-04-04T00:00:00Z".into()),
+                }),
+                "oasyce1primary".into(),
+            )
+            .unwrap();
+        assert_eq!(binding.owner_account.as_deref(), Some("oasyce1owner"));
+        assert_eq!(
+            binding
+                .oasyce_delegate_policy
+                .as_ref()
+                .map(|policy| policy.principal.as_str()),
+            Some("oasyce1owner")
+        );
     }
 }

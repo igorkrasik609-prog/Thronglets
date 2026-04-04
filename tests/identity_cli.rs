@@ -61,6 +61,21 @@ fn run_bin_text_in_home(args: &[&str], home: &Path, data_dir: &Path) -> String {
     String::from_utf8(output.stdout).expect("stdout should be utf-8")
 }
 
+fn run_bin_text(args: &[&str], data_dir: &Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_thronglets"))
+        .args(["--data-dir", data_dir.to_str().unwrap()])
+        .args(args)
+        .output()
+        .expect("failed to run thronglets");
+    assert!(
+        output.status.success(),
+        "command failed: {}\nstderr={}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("stdout should be utf-8")
+}
+
 #[test]
 fn id_json_surfaces_identity_summary() {
     let temp = TempDir::new().unwrap();
@@ -228,6 +243,35 @@ fn start_json_surfaces_local_ready_for_first_device() {
 }
 
 #[test]
+fn top_level_help_stays_normal_user_first() {
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("data");
+
+    let output = run_bin_text(&["--help"], &data_dir);
+
+    assert!(output.contains("thronglets start"));
+    assert!(output.contains("thronglets share"));
+    assert!(output.contains("thronglets join"));
+    assert!(output.contains("thronglets status"));
+    assert!(output.contains("Advanced and machine-facing commands remain available"));
+    assert!(!output.contains("owner-bind"));
+    assert!(!output.contains("connection-export"));
+    assert!(!output.contains("runtime-ready"));
+    assert!(!output.contains("net-check"));
+}
+
+#[test]
+fn hidden_advanced_commands_remain_callable_by_name() {
+    let temp = TempDir::new().unwrap();
+    let data_dir = temp.path().join("data");
+
+    let output = run_bin_text(&["owner-bind", "--help"], &data_dir);
+
+    assert!(output.contains("Bind this device to an owner account"));
+    assert!(output.contains("--owner-account"));
+}
+
+#[test]
 fn share_json_defaults_to_desktop_connection_file_for_primary_device() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
@@ -372,6 +416,87 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     assert_eq!(
         status["data"]["identity"]["device_identity"],
         secondary_device.as_str()
+    );
+}
+
+#[test]
+fn connection_export_and_join_carry_oasyce_delegate_policy_bootstrap() {
+    let temp = TempDir::new().unwrap();
+    let primary_home = temp.path().join("primary-home");
+    let secondary_home = temp.path().join("secondary-home");
+    let primary_dir = temp.path().join("primary");
+    let secondary_dir = temp.path().join("secondary");
+    let connection_file = temp.path().join("device.connection.json");
+
+    std::fs::create_dir_all(primary_home.join(".oasyce")).unwrap();
+    std::fs::create_dir_all(secondary_home.join(".oasyce")).unwrap();
+    std::fs::write(
+        primary_home.join(".oasyce").join("delegate_policy.v1.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "oasyce.delegate_policy.v1",
+            "principal": "oasyce1owner",
+            "allowed_msgs": ["/cosmos.bank.v1beta1.MsgSend"],
+            "enrollment_token": "shared-secret",
+            "per_tx_limit_uoas": 1000000,
+            "window_limit_uoas": 10000000,
+            "window_seconds": 86400,
+            "expiration_seconds": 0,
+            "updated_at": "2026-04-04T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    run_bin_in_home(
+        &["owner-bind", "--owner-account", "oasyce1owner", "--json"],
+        &primary_home,
+        &primary_dir,
+    );
+
+    run_bin_in_home(
+        &[
+            "connection-export",
+            "--output",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &primary_home,
+        &primary_dir,
+    );
+
+    let exported_file: Value =
+        serde_json::from_slice(&std::fs::read(&connection_file).unwrap()).unwrap();
+    assert_eq!(
+        exported_file["oasyce_delegate_policy"]["principal"],
+        "oasyce1owner"
+    );
+    assert_eq!(
+        exported_file["oasyce_delegate_policy"]["enrollment_token"],
+        "shared-secret"
+    );
+
+    run_bin_in_home(
+        &[
+            "connection-join",
+            "--file",
+            connection_file.to_str().unwrap(),
+            "--json",
+        ],
+        &secondary_home,
+        &secondary_dir,
+    );
+
+    let joined_binding: Value = serde_json::from_slice(
+        &std::fs::read(secondary_dir.join("identity.v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        joined_binding["oasyce_delegate_policy"]["principal"],
+        "oasyce1owner"
+    );
+    assert_eq!(
+        joined_binding["oasyce_delegate_policy"]["enrollment_token"],
+        "shared-secret"
     );
 }
 
