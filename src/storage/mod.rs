@@ -9,13 +9,15 @@ use crate::posts::{
 };
 use crate::presence::PRESENCE_CAPABILITY_PREFIX;
 use crate::signals::StepAction;
-use crate::trace::{Outcome, Trace};
+use crate::trace::{MethodCompliance, Outcome, Trace};
 use ed25519_dalek::Signature;
 use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::Mutex;
 
 const DEFAULT_TTL_DAYS: i64 = 7;
+const TRACE_SELECT_COLUMNS: &str = "id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, agent_id, sigil_id, method_compliance, model_id, timestamp, node_pubkey, signature";
+const TRACE_SELECT_COLUMNS_T: &str = "t.id, t.capability, t.outcome, t.latency_ms, t.input_size, t.context_hash, t.context_text, t.session_id, t.owner_account, t.device_identity, t.agent_id, t.sigil_id, t.method_compliance, t.model_id, t.timestamp, t.node_pubkey, t.signature";
 
 /// Compute a 16-bit bucket from the first 2 bytes of a context_hash.
 /// Used as a pre-filter index for similarity search — traces in nearby
@@ -26,6 +28,30 @@ pub fn context_bucket(context_hash: &[u8; 16]) -> i64 {
 
 pub struct TraceStore {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ContextResidueStats {
+    pub success_compliant: u32,
+    pub success_noncompliant: u32,
+    pub success_unknown: u32,
+    pub failure_compliant: u32,
+    pub failure_noncompliant: u32,
+    pub failure_unknown: u32,
+}
+
+impl ContextResidueStats {
+    pub fn total_success(self) -> u32 {
+        self.success_compliant + self.success_noncompliant + self.success_unknown
+    }
+
+    pub fn total_failure(self) -> u32 {
+        self.failure_compliant + self.failure_noncompliant + self.failure_unknown
+    }
+
+    pub fn total_noncompliant(self) -> u32 {
+        self.success_noncompliant + self.failure_noncompliant
+    }
 }
 
 impl TraceStore {
@@ -45,6 +71,7 @@ impl TraceStore {
                 session_id      TEXT,
                 owner_account   TEXT,
                 device_identity TEXT,
+                method_compliance TEXT,
                 model_id        TEXT NOT NULL,
                 timestamp       INTEGER NOT NULL,
                 node_pubkey     BLOB NOT NULL,
@@ -64,6 +91,7 @@ impl TraceStore {
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN session_id TEXT", []);
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN owner_account TEXT", []);
         let _ = conn.execute("ALTER TABLE traces ADD COLUMN device_identity TEXT", []);
+        let _ = conn.execute("ALTER TABLE traces ADD COLUMN method_compliance TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE traces ADD COLUMN context_bucket INTEGER NOT NULL DEFAULT 0",
             [],
@@ -115,8 +143,8 @@ impl TraceStore {
         let bucket = context_bucket(&trace.context_hash);
         let space = extract_space(&trace.context_text);
         let result = conn.execute(
-            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature, context_bucket, space)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, agent_id, sigil_id, method_compliance, model_id, timestamp, node_pubkey, signature, context_bucket, space)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 trace.id.as_slice(),
                 trace.capability,
@@ -130,6 +158,7 @@ impl TraceStore {
                 trace.device_identity,
                 trace.agent_id,
                 trace.sigil_id,
+                trace.method_compliance.map(|value| value.as_str().to_string()),
                 trace.model_id,
                 trace.timestamp as i64,
                 trace.node_pubkey.as_slice(),
@@ -144,11 +173,10 @@ impl TraceStore {
     /// Query traces by capability.
     pub fn query_capability(&self, capability: &str, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
-             FROM traces WHERE capability = ?1 ORDER BY timestamp DESC LIMIT ?2",
-        )?;
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE capability = ?1 ORDER BY timestamp DESC LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![capability, limit as i64])
     }
 
@@ -175,13 +203,10 @@ impl TraceStore {
         let bucket_lo = (target_bucket - bucket_radius).max(0);
         let bucket_hi = (target_bucket + bucket_radius).min(65535);
 
-        let mut stmt = conn.prepare(
-            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
-             FROM traces
-             WHERE context_bucket BETWEEN ?1 AND ?2
-             ORDER BY timestamp DESC",
-        )?;
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE context_bucket BETWEEN ?1 AND ?2 ORDER BY timestamp DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         let candidates = Self::collect_traces(&mut stmt, params![bucket_lo, bucket_hi])?;
 
         let mut matched: Vec<Trace> = candidates
@@ -242,11 +267,10 @@ impl TraceStore {
     /// Query traces by session, ordered by timestamp (workflow sequence).
     pub fn query_session(&self, session_id: &str, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
-             FROM traces WHERE session_id = ?1 ORDER BY timestamp ASC LIMIT ?2",
-        )?;
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE session_id = ?1 ORDER BY timestamp ASC LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![session_id, limit as i64])
     }
 
@@ -415,8 +439,7 @@ impl TraceStore {
                 "capability = ?3"
             };
             let sql = format!(
-                "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
+                "SELECT {TRACE_SELECT_COLUMNS}
                  FROM traces
                  WHERE context_bucket BETWEEN ?1 AND ?2
                    AND {cap_filter}
@@ -510,6 +533,86 @@ impl TraceStore {
             sessions.insert(key);
         }
         Ok(sessions.len() as u32)
+    }
+
+    /// Aggregate recent residue for a context, split by outcome and method compliance.
+    /// Missing compliance on older traces is treated as `unknown`.
+    pub fn residue_stats_for_context(
+        &self,
+        context_hash: &[u8; 16],
+        max_distance: u32,
+        hours: u64,
+        limit: usize,
+        space: Option<&str>,
+    ) -> rusqlite::Result<ContextResidueStats> {
+        let conn = self.conn.lock().unwrap();
+        let target_bucket = context_bucket(context_hash);
+        let bucket_radius = (max_distance / 8).max(1) as i64;
+        let bucket_lo = (target_bucket - bucket_radius).max(0);
+        let bucket_hi = (target_bucket + bucket_radius).min(65535);
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let query_limit = (limit.max(1) * 12) as i64;
+
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS}
+             FROM traces
+             WHERE context_bucket BETWEEN ?1 AND ?2
+               AND capability NOT LIKE 'urn:thronglets:%'
+               AND timestamp > ?3
+               AND (?5 IS NULL OR space = ?5)
+             ORDER BY timestamp DESC
+             LIMIT ?4"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let candidates =
+            Self::collect_traces(&mut stmt, params![bucket_lo, bucket_hi, cutoff_ms, query_limit, space])?;
+
+        let mut stats = ContextResidueStats::default();
+        let mut success_sessions = std::collections::HashSet::new();
+        let mut failure_sessions = std::collections::HashSet::new();
+
+        for trace in candidates.into_iter().filter(|trace| {
+            crate::context::hamming_distance(&trace.context_hash, context_hash) <= max_distance
+        }) {
+            let session_key = residue_session_key(&trace);
+            let is_failure = matches!(trace.outcome, Outcome::Failed | Outcome::Timeout);
+            if is_failure {
+                if !failure_sessions.insert(session_key) {
+                    continue;
+                }
+            } else if trace.outcome == Outcome::Succeeded {
+                if !success_sessions.insert(session_key) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+
+            match (trace.outcome, trace.method_compliance.unwrap_or(crate::trace::MethodCompliance::Unknown)) {
+                (Outcome::Succeeded, crate::trace::MethodCompliance::Compliant) => {
+                    stats.success_compliant += 1;
+                }
+                (Outcome::Succeeded, crate::trace::MethodCompliance::Noncompliant) => {
+                    stats.success_noncompliant += 1;
+                }
+                (Outcome::Succeeded, crate::trace::MethodCompliance::Unknown) => {
+                    stats.success_unknown += 1;
+                }
+                (Outcome::Failed | Outcome::Timeout, crate::trace::MethodCompliance::Compliant) => {
+                    stats.failure_compliant += 1;
+                }
+                (Outcome::Failed | Outcome::Timeout, crate::trace::MethodCompliance::Noncompliant) => {
+                    stats.failure_noncompliant += 1;
+                }
+                (Outcome::Failed | Outcome::Timeout, crate::trace::MethodCompliance::Unknown) => {
+                    stats.failure_unknown += 1;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(stats)
     }
 
     /// Count distinct sessions where a failure on `error_context` was followed
@@ -656,8 +759,8 @@ impl TraceStore {
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let query_limit = (limit.max(1) * 10) as i64;
 
-        let sql = "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                          context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS}
                    FROM traces
                    WHERE context_bucket BETWEEN ?1 AND ?2
                      AND outcome IN (1, 3)
@@ -665,9 +768,10 @@ impl TraceStore {
                      AND timestamp > ?3
                      AND (?5 IS NULL OR space = ?5)
                    ORDER BY timestamp DESC
-                   LIMIT ?4";
+                   LIMIT ?4"
+        );
 
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let candidates = Self::collect_traces(
             &mut stmt,
             params![bucket_lo, bucket_hi, cutoff_ms, query_limit, space],
@@ -717,8 +821,7 @@ impl TraceStore {
                 "capability = ?1"
             };
             let sql = format!(
-                "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                        context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
+                "SELECT {TRACE_SELECT_COLUMNS}
                  FROM traces
                  WHERE {cap_filter}
                    AND timestamp >= ?2
@@ -746,15 +849,10 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let like = format!("{PRESENCE_CAPABILITY_PREFIX}%");
-        let mut stmt = conn.prepare(
-            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
-             FROM traces
-             WHERE capability LIKE ?1
-               AND timestamp >= ?2
-             ORDER BY timestamp DESC
-             LIMIT ?3",
-        )?;
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE capability LIKE ?1 AND timestamp >= ?2 ORDER BY timestamp DESC LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![like, cutoff_ms, limit as i64])
     }
 
@@ -767,15 +865,10 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let like = format!("{CONTINUITY_CAPABILITY_PREFIX}%");
-        let mut stmt = conn.prepare(
-            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
-             FROM traces
-             WHERE capability LIKE ?1
-               AND timestamp >= ?2
-             ORDER BY timestamp DESC
-             LIMIT ?3",
-        )?;
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE capability LIKE ?1 AND timestamp >= ?2 ORDER BY timestamp DESC LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![like, cutoff_ms, limit as i64])
     }
 
@@ -790,16 +883,10 @@ impl TraceStore {
         let conn = self.conn.lock().unwrap();
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
         let like = format!("{CONTINUITY_CAPABILITY_PREFIX}{}:%", taxonomy);
-        let mut stmt = conn.prepare(
-            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
-             FROM traces
-             WHERE capability LIKE ?1
-               AND timestamp >= ?2
-               AND (?4 IS NULL OR space = ?4)
-             ORDER BY timestamp DESC
-             LIMIT ?3",
-        )?;
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE capability LIKE ?1 AND timestamp >= ?2 AND (?4 IS NULL OR space = ?4) ORDER BY timestamp DESC LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![like, cutoff_ms, limit as i64, space])
     }
 
@@ -845,11 +932,9 @@ impl TraceStore {
     /// Query traces that haven't been published to the P2P network yet.
     pub fn unpublished_traces(&self, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
-                    context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
-             FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1",
-        )?;
+        let sql =
+            format!("SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1");
+        let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![limit as i64])
     }
 
@@ -895,21 +980,17 @@ impl TraceStore {
     pub fn unanchored_traces(&self, hours: u64, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
-        let mut stmt = conn.prepare(
-            "SELECT t.id, t.capability, t.outcome, t.latency_ms, t.input_size, t.context_hash,
-                    t.context_text, t.session_id, t.owner_account, t.device_identity, t.agent_id, t.sigil_id, t.model_id, t.timestamp, t.node_pubkey, t.signature
-             FROM traces t
-             LEFT JOIN anchored_traces a ON t.id = a.trace_id
-             WHERE a.trace_id IS NULL AND t.timestamp >= ?1
-             ORDER BY t.timestamp ASC
-             LIMIT ?2",
-        )?;
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS_T} FROM traces t LEFT JOIN anchored_traces a ON t.id = a.trace_id WHERE a.trace_id IS NULL AND t.timestamp >= ?1 ORDER BY t.timestamp ASC LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![cutoff_ms, limit as i64])
     }
 
     /// Column order: id(0), capability(1), outcome(2), latency_ms(3), input_size(4),
     /// context_hash(5), context_text(6), session_id(7), owner_account(8), device_identity(9),
-    /// agent_id(10), sigil_id(11), model_id(12), timestamp(13), node_pubkey(14), signature(15)
+    /// agent_id(10), sigil_id(11), method_compliance(12), model_id(13), timestamp(14),
+    /// node_pubkey(15), signature(16)
     fn collect_traces(
         stmt: &mut rusqlite::Statement,
         params: impl rusqlite::Params,
@@ -918,8 +999,8 @@ impl TraceStore {
             let id_bytes: Vec<u8> = row.get(0)?;
             let outcome_u8: u8 = row.get(2)?;
             let context_bytes: Vec<u8> = row.get(5)?;
-            let pubkey_bytes: Vec<u8> = row.get(14)?;
-            let sig_bytes: Vec<u8> = row.get(15)?;
+            let pubkey_bytes: Vec<u8> = row.get(15)?;
+            let sig_bytes: Vec<u8> = row.get(16)?;
 
             Ok(Trace {
                 id: id_bytes.try_into().unwrap_or([0u8; 32]),
@@ -939,8 +1020,12 @@ impl TraceStore {
                 device_identity: row.get(9)?,
                 agent_id: row.get(10)?,
                 sigil_id: row.get(11)?,
-                model_id: row.get(12)?,
-                timestamp: row.get::<_, i64>(13)? as u64,
+                method_compliance: row
+                    .get::<_, Option<String>>(12)?
+                    .as_deref()
+                    .and_then(MethodCompliance::parse),
+                model_id: row.get(13)?,
+                timestamp: row.get::<_, i64>(14)? as u64,
                 node_pubkey: pubkey_bytes.try_into().unwrap_or([0u8; 32]),
                 signature: Signature::from_bytes(&sig_bytes.try_into().unwrap_or([0u8; 64])),
             })
@@ -973,6 +1058,14 @@ fn extract_space(context_text: &Option<String>) -> Option<String> {
     let text = context_text.as_ref()?;
     let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
     parsed.get("space")?.as_str().map(String::from)
+}
+
+fn residue_session_key(trace: &Trace) -> String {
+    trace
+        .session_id
+        .clone()
+        .or_else(|| trace.device_identity.clone())
+        .unwrap_or_else(|| format!("trace-{}", trace.timestamp))
 }
 
 fn step_match(step: &StepAction) -> (String, Option<String>, Option<String>) {
@@ -1951,5 +2044,90 @@ mod tests {
             .count_contradicting_failed_sessions(&crate::context::simhash(ctx), 48, 168, None)
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn legacy_traces_without_method_compliance_load_as_unknown() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+        let ctx = "edit file: src/app/dashboard.tsx";
+        let trace = Trace::new_with_agent(
+            "tool:Edit".into(),
+            Outcome::Succeeded,
+            100,
+            5000,
+            crate::context::simhash(ctx),
+            Some(ctx.into()),
+            Some("legacy-success".into()),
+            None,
+            Some(id.device_identity()),
+            None,
+            None,
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        store.insert(&trace).unwrap();
+
+        let stats = store
+            .residue_stats_for_context(&crate::context::simhash(ctx), 48, 168, 10, None)
+            .unwrap();
+        assert_eq!(stats.success_unknown, 1);
+        assert_eq!(stats.success_compliant, 0);
+        assert_eq!(stats.success_noncompliant, 0);
+    }
+
+    #[test]
+    fn residue_stats_split_success_and_failure_by_method_compliance() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+        let ctx = "edit file: src/app/dashboard.tsx";
+
+        let success = Trace::new_with_agent_compliance(
+            "tool:Edit".into(),
+            Outcome::Succeeded,
+            100,
+            5000,
+            crate::context::simhash(ctx),
+            Some(ctx.into()),
+            Some("success-compliant".into()),
+            None,
+            Some(id.device_identity()),
+            None,
+            None,
+            Some(MethodCompliance::Compliant),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        store.insert(&success).unwrap();
+
+        let fail = Trace::new_with_agent_compliance(
+            "tool:Edit".into(),
+            Outcome::Failed,
+            100,
+            5000,
+            crate::context::simhash(ctx),
+            Some(ctx.into()),
+            Some("failure-noncompliant".into()),
+            None,
+            Some(id.device_identity()),
+            None,
+            None,
+            Some(MethodCompliance::Noncompliant),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        store.insert(&fail).unwrap();
+
+        let stats = store
+            .residue_stats_for_context(&crate::context::simhash(ctx), 48, 168, 10, None)
+            .unwrap();
+        assert_eq!(stats.success_compliant, 1);
+        assert_eq!(stats.failure_noncompliant, 1);
+        assert_eq!(stats.total_success(), 1);
+        assert_eq!(stats.total_failure(), 1);
+        assert_eq!(stats.total_noncompliant(), 1);
     }
 }

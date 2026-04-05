@@ -34,7 +34,7 @@ use crate::presence::{
     is_presence_capability, summarize_recent_presence,
 };
 use crate::storage::TraceStore;
-use crate::trace::{Outcome, Trace};
+use crate::trace::{MethodCompliance, Outcome, Trace};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -199,6 +199,9 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
     let session_id = args["session_id"].as_str().map(String::from);
     let agent_id = args["agent_id"].as_str().map(String::from);
     let sigil_id = args["sigil_id"].as_str().map(String::from);
+    let method_compliance = args["method_compliance"]
+        .as_str()
+        .and_then(MethodCompliance::parse);
 
     let context_hash = simhash(context_str);
     let context_text = if context_str.is_empty() {
@@ -207,7 +210,7 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         Some(context_str.to_string())
     };
 
-    let trace = Trace::new_with_agent(
+    let trace = Trace::new_with_agent_compliance(
         capability.clone(),
         outcome,
         latency_ms,
@@ -219,6 +222,7 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         Some(ctx.binding.device_identity.clone()),
         agent_id,
         sigil_id,
+        method_compliance,
         model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),

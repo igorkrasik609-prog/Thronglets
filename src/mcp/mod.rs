@@ -37,7 +37,7 @@ use crate::presence::{
     is_presence_capability, summarize_recent_presence,
 };
 use crate::storage::TraceStore;
-use crate::trace::{Outcome, Trace};
+use crate::trace::{MethodCompliance, Outcome, Trace};
 
 /// JSON-RPC 2.0 request
 #[derive(Debug, Deserialize)]
@@ -117,6 +117,11 @@ fn tool_definitions() -> Value {
                         "context": {
                             "type": "string",
                             "description": "Natural language task context — preserved as-is AND SimHashed for search (default: \"\")"
+                        },
+                        "method_compliance": {
+                            "type": "string",
+                            "enum": ["compliant", "noncompliant", "unknown"],
+                            "description": "Optional method-quality classification under the current explicit policy view"
                         },
                         "model": {
                             "type": "string",
@@ -385,6 +390,20 @@ fn tool_definitions() -> Value {
                         "limit": {
                             "type": "integer",
                             "description": "Maximum priors to emit (default: 3, max: 3)"
+                        },
+                        "active_policy": {
+                            "type": "array",
+                            "description": "Optional current-turn explicit policy view. Runtime-only; not persistent memory.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string" },
+                                    "strength": { "type": "string", "enum": ["hard", "soft"] },
+                                    "scope": { "type": "string", "enum": ["task", "project"] },
+                                    "summary": { "type": "string" }
+                                },
+                                "required": ["id", "strength", "scope", "summary"]
+                            }
                         }
                     },
                     "required": ["text"]
@@ -697,6 +716,10 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         .get("sigil_id")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let method_compliance = args
+        .get("method_compliance")
+        .and_then(|v| v.as_str())
+        .and_then(MethodCompliance::parse);
 
     let context_hash = simhash(context_str);
     let context_text = if context_str.is_empty() {
@@ -705,7 +728,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         Some(context_str.to_string())
     };
 
-    let trace = Trace::new_with_agent(
+    let trace = Trace::new_with_agent_compliance(
         capability.clone(),
         outcome,
         latency_ms,
@@ -717,6 +740,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         Some(ctx.binding.device_identity.clone()),
         agent_id,
         sigil_id,
+        method_compliance,
         model_id,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
@@ -1528,6 +1552,12 @@ fn handle_ambient_priors(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRes
         .and_then(|v| v.as_str())
         .and_then(crate::ambient::AmbientTurnGoal::parse);
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+    let active_policy = args
+        .get("active_policy")
+        .or_else(|| args.get("activePolicy"))
+        .cloned()
+        .map(|value| serde_json::from_value(value).unwrap_or_default())
+        .unwrap_or_default();
     let response_json = ambient_prior_data(
         &ctx.store,
         &AmbientPriorRequest {
@@ -1535,6 +1565,7 @@ fn handle_ambient_priors(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRes
             space: space.map(str::to_string),
             goal,
             limit: Some(limit),
+            active_policy,
         },
     );
     JsonRpcResponse::success(

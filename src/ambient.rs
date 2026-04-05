@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+use crate::active_policy::{ActivePolicyRule, PolicyStrength};
 use crate::context::simhash;
 use crate::contracts::PREHOOK_MAX_HINTS;
-use crate::storage::TraceStore;
+use crate::storage::{ContextResidueStats, TraceStore};
 
 pub const AMBIENT_PRIOR_SCHEMA_VERSION: &str = "thronglets.ambient.v1";
 
@@ -36,9 +37,19 @@ pub struct AmbientPriorRequest {
     pub goal: Option<AmbientTurnGoal>,
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub active_policy: Vec<ActivePolicyRule>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmbientPolicyState {
+    PolicyConflict,
+    MethodConflict,
+    StablePath,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct AmbientPriorProjection {
     pub kind: &'static str,
     pub summary: String,
@@ -46,6 +57,8 @@ pub struct AmbientPriorProjection {
     pub provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub goal: Option<AmbientTurnGoal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_state: Option<AmbientPolicyState>,
     pub refs: Vec<String>,
 }
 
@@ -81,7 +94,14 @@ pub fn ambient_prior_data(store: &TraceStore, request: &AmbientPriorRequest) -> 
     let priors = if text.is_empty() {
         Vec::new()
     } else {
-        ambient_priors_for_context(store, &context_hash, space, goal, limit)
+        ambient_priors_for_context_with_policy(
+            store,
+            &context_hash,
+            space,
+            goal,
+            limit,
+            &request.active_policy,
+        )
     };
 
     AmbientPriorData {
@@ -103,93 +123,127 @@ pub fn ambient_priors_for_context(
     goal: Option<AmbientTurnGoal>,
     limit: usize,
 ) -> Vec<AmbientPriorProjection> {
+    ambient_priors_for_context_with_policy(store, context_hash, space, goal, limit, &[])
+}
+
+pub fn host_history_priors_for_context(
+    store: &TraceStore,
+    context_hash: &[u8; 16],
+    space: Option<&str>,
+    goal: Option<AmbientTurnGoal>,
+    active_policy: &[ActivePolicyRule],
+) -> Vec<AmbientPriorProjection> {
+    ambient_priors_for_context_with_policy(store, context_hash, space, goal, PREHOOK_MAX_HINTS, active_policy)
+        .into_iter()
+        .filter(|prior| matches!(prior.kind, "mixed-residue" | "success-prior"))
+        .collect()
+}
+
+pub fn ambient_priors_for_context_with_policy(
+    store: &TraceStore,
+    context_hash: &[u8; 16],
+    space: Option<&str>,
+    goal: Option<AmbientTurnGoal>,
+    limit: usize,
+    active_policy: &[ActivePolicyRule],
+) -> Vec<AmbientPriorProjection> {
     let mut priors = Vec::new();
     let ctx_ref = format!("ctx:{}", hex_encode(context_hash));
     let space_ref = space.map(|value| format!("space:{value}"));
+    let stats = store
+        .residue_stats_for_context(context_hash, 48, 168, 64, space)
+        .unwrap_or_default();
+    let total_failures = stats.total_failure();
+    let total_success = stats.total_success();
+    let hard_policy_active = active_policy
+        .iter()
+        .any(|rule| rule.strength == PolicyStrength::Hard);
 
-    if let Ok(failures) = store.query_similar_failed_traces(context_hash, 48, 168, 5, space)
-        && !failures.is_empty()
-    {
-        let count = failures.len();
-        let snippet: String = failures[0]
-            .context_text
-            .as_deref()
-            .unwrap_or("unknown")
-            .chars()
-            .take(80)
-            .collect();
-        let confidence = (0.58 + (count.min(4) as f32) * 0.08).min(0.9);
-        let mut refs = vec![ctx_ref.clone(), format!("failed-sessions:{count}")];
+    if total_failures > 0 {
+        let confidence = (0.58 + (total_failures.min(4) as f32) * 0.08).min(0.9);
+        let mut refs = vec![
+            ctx_ref.clone(),
+            format!("failed-sessions:{total_failures}"),
+            format!("failed-compliant:{}", stats.failure_compliant),
+            format!("failed-noncompliant:{}", stats.failure_noncompliant),
+        ];
         if let Some(space_ref) = &space_ref {
             refs.push(space_ref.clone());
         }
         priors.push(AmbientPriorProjection {
             kind: "failure-residue",
-            summary: format!(
-                "recent failure residue: {count} similar session(s) failed ({snippet})"
-            ),
+            summary: failure_residue_summary(stats, hard_policy_active),
             confidence,
             provider: "thronglets".into(),
             goal,
+            policy_state: if hard_policy_active && stats.failure_noncompliant > 0 {
+                Some(AmbientPolicyState::PolicyConflict)
+            } else {
+                None
+            },
             refs,
         });
     }
 
-    let convergent = store
-        .count_convergent_sessions(context_hash, 48, space)
-        .ok()
-        .unwrap_or(0);
-    let contradictory_failures = store
-        .count_contradicting_failed_sessions(context_hash, 48, 48, space)
-        .ok()
-        .unwrap_or(0);
-
-    let minority = convergent.min(contradictory_failures);
-    let majority = convergent.max(contradictory_failures);
-    if minority >= 2 && majority.saturating_sub(minority) < 2 {
-        let confidence =
-            (0.52 + (minority.min(3) as f32) * 0.08 + (majority.min(4) as f32) * 0.03).min(0.82);
+    if should_emit_mixed_residue(stats, hard_policy_active) {
+        let confidence = mixed_residue_confidence(stats);
         let mut refs = vec![
             ctx_ref.clone(),
-            format!("success-sessions:{convergent}"),
-            format!("failed-sessions:{contradictory_failures}"),
+            format!("success-sessions:{total_success}"),
+            format!("failed-sessions:{total_failures}"),
+            format!("success-compliant:{}", stats.success_compliant),
+            format!("success-noncompliant:{}", stats.success_noncompliant),
         ];
         if let Some(space_ref) = &space_ref {
             refs.push(space_ref.clone());
         }
         priors.push(AmbientPriorProjection {
             kind: "mixed-residue",
-            summary: format!(
-                "mixed residue: similar context still shows {convergent} success / {contradictory_failures} failure sessions"
-            ),
+            summary: mixed_residue_summary(stats, hard_policy_active),
             confidence,
             provider: "thronglets".into(),
             goal,
+            policy_state: if hard_policy_active && stats.total_noncompliant() > 0 {
+                Some(AmbientPolicyState::PolicyConflict)
+            } else if stats.success_noncompliant > 0 {
+                Some(AmbientPolicyState::MethodConflict)
+            } else {
+                None
+            },
             refs,
         });
     }
 
-    let convergence_threshold = success_prior_threshold(goal, contradictory_failures as usize);
-    if convergent as usize >= convergence_threshold {
-        let confidence = (0.56 + (convergent.min(6) as f32) * 0.06).min(0.92);
-        let scope = if convergent >= 5 {
+    let convergence_threshold =
+        success_prior_threshold(goal, total_failures as usize, stats.success_noncompliant as usize);
+    if can_form_success_prior(stats, hard_policy_active, convergence_threshold) {
+        let compliant_success = stats.success_compliant;
+        let confidence = (0.56 + (compliant_success.min(6) as f32) * 0.06).min(0.92);
+        let scope = if compliant_success >= 5 {
             "shared success prior"
         } else {
             "prior success"
         };
-        let mut refs = vec![ctx_ref, format!("success-sessions:{convergent}")];
-        if contradictory_failures > 0 {
-            refs.push(format!("failed-sessions:{contradictory_failures}"));
+        let mut refs = vec![
+            ctx_ref,
+            format!("success-compliant:{compliant_success}"),
+            format!("success-unknown:{}", stats.success_unknown),
+        ];
+        if total_failures > 0 {
+            refs.push(format!("failed-sessions:{total_failures}"));
         }
         if let Some(space_ref) = &space_ref {
             refs.push(space_ref.clone());
         }
         priors.push(AmbientPriorProjection {
             kind: "success-prior",
-            summary: format!("{scope}: {convergent} similar session(s) crossed this context"),
+            summary: format!(
+                "{scope}: {compliant_success} compliant session(s) crossed this context"
+            ),
             confidence,
             provider: "thronglets".into(),
             goal,
+            policy_state: Some(AmbientPolicyState::StablePath),
             refs,
         });
     }
@@ -202,6 +256,81 @@ pub fn ambient_priors_for_context(
     });
     priors.truncate(limit);
     priors
+}
+
+fn failure_residue_summary(stats: ContextResidueStats, hard_policy_active: bool) -> String {
+    if hard_policy_active && stats.failure_noncompliant > 0 {
+        return format!(
+            "policy conflict: {} recent failure session(s) violated the active method policy",
+            stats.failure_noncompliant
+        );
+    }
+    if stats.failure_noncompliant > 0 {
+        return format!(
+            "recent failure residue: {} similar failure session(s), including {} method-conflict path(s)",
+            stats.total_failure(),
+            stats.failure_noncompliant
+        );
+    }
+    format!(
+        "recent failure residue: {} similar failure session(s)",
+        stats.total_failure()
+    )
+}
+
+fn should_emit_mixed_residue(stats: ContextResidueStats, hard_policy_active: bool) -> bool {
+    if hard_policy_active && stats.total_noncompliant() > 0 {
+        return true;
+    }
+    if stats.success_noncompliant > 0 {
+        return true;
+    }
+    let minority = stats.total_success().min(stats.total_failure());
+    let majority = stats.total_success().max(stats.total_failure());
+    minority >= 2 && majority.saturating_sub(minority) < 2
+}
+
+fn mixed_residue_summary(stats: ContextResidueStats, hard_policy_active: bool) -> String {
+    if hard_policy_active && stats.total_noncompliant() > 0 {
+        return format!(
+            "policy conflict: similar context still succeeds sometimes, but {} session(s) violate the active hard method rule",
+            stats.total_noncompliant()
+        );
+    }
+    if stats.success_noncompliant > 0 {
+        return format!(
+            "unsettled due to method conflict: {} success session(s) exist, but {} used a contested method",
+            stats.total_success(),
+            stats.success_noncompliant
+        );
+    }
+    format!(
+        "mixed residue: similar context still shows {} success / {} failure sessions",
+        stats.total_success(),
+        stats.total_failure()
+    )
+}
+
+fn mixed_residue_confidence(stats: ContextResidueStats) -> f32 {
+    let minority = stats.total_success().min(stats.total_failure());
+    let majority = stats.total_success().max(stats.total_failure());
+    (0.52 + (minority.min(3) as f32) * 0.08 + (majority.min(4) as f32) * 0.03).min(0.84)
+}
+
+fn can_form_success_prior(
+    stats: ContextResidueStats,
+    hard_policy_active: bool,
+    threshold: usize,
+) -> bool {
+    if hard_policy_active && stats.total_noncompliant() > 0 {
+        return false;
+    }
+    let compliant = stats.success_compliant as usize;
+    if compliant < threshold || compliant == 0 {
+        return false;
+    }
+    compliant > stats.success_noncompliant as usize
+        && compliant > stats.total_failure() as usize
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -251,9 +380,166 @@ fn apply_goal_bias(priors: &mut [AmbientPriorProjection], goal: Option<AmbientTu
     }
 }
 
-fn success_prior_threshold(goal: Option<AmbientTurnGoal>, contradictory_failures: usize) -> usize {
+fn success_prior_threshold(
+    goal: Option<AmbientTurnGoal>,
+    contradictory_failures: usize,
+    noncompliant_successes: usize,
+) -> usize {
     match goal {
-        Some(AmbientTurnGoal::Explore) => 4usize.max(contradictory_failures + 3),
-        _ => 3usize.max(contradictory_failures + 2),
+        Some(AmbientTurnGoal::Explore) => {
+            4usize.max(contradictory_failures + noncompliant_successes + 3)
+        }
+        _ => 3usize.max(contradictory_failures + noncompliant_successes + 2),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::active_policy::{ActivePolicyRule, PolicyScope};
+    use crate::context::simhash;
+    use crate::identity::NodeIdentity;
+    use crate::trace::{MethodCompliance, Outcome, Trace};
+
+    fn insert_trace(
+        store: &TraceStore,
+        identity: &NodeIdentity,
+        context: &str,
+        session_id: &str,
+        outcome: Outcome,
+        compliance: Option<MethodCompliance>,
+    ) {
+        let trace = Trace::new_with_agent_compliance(
+            "tool:Edit".into(),
+            outcome,
+            0,
+            1,
+            simhash(context),
+            Some(context.into()),
+            Some(session_id.into()),
+            None,
+            Some(identity.device_identity()),
+            None,
+            None,
+            compliance,
+            "codex".into(),
+            identity.public_key_bytes(),
+            |msg| identity.sign(msg),
+        );
+        store.insert(&trace).unwrap();
+    }
+
+    #[test]
+    fn repeated_compliant_success_forms_stable_prior() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let ctx = "edit file: src/app/dashboard.tsx";
+        for idx in 0..3 {
+            insert_trace(
+                &store,
+                &identity,
+                ctx,
+                &format!("success-{idx}"),
+                Outcome::Succeeded,
+                Some(MethodCompliance::Compliant),
+            );
+        }
+
+        let priors = ambient_priors_for_context(&store, &simhash(ctx), None, None, 3);
+        let stable = priors.iter().find(|prior| prior.kind == "success-prior");
+        assert!(stable.is_some(), "{priors:#?}");
+        assert_eq!(stable.unwrap().policy_state, Some(AmbientPolicyState::StablePath));
+    }
+
+    #[test]
+    fn noncompliant_success_stays_mixed_and_never_hardens_into_stable_path() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let ctx = "edit file: src/app/dashboard.tsx";
+        for idx in 0..4 {
+            insert_trace(
+                &store,
+                &identity,
+                ctx,
+                &format!("success-{idx}"),
+                Outcome::Succeeded,
+                Some(MethodCompliance::Noncompliant),
+            );
+        }
+
+        let priors = ambient_priors_for_context(&store, &simhash(ctx), None, None, 3);
+        assert!(priors.iter().all(|prior| prior.kind != "success-prior"), "{priors:#?}");
+        let mixed = priors.iter().find(|prior| prior.kind == "mixed-residue");
+        assert!(mixed.is_some(), "{priors:#?}");
+        assert_eq!(mixed.unwrap().policy_state, Some(AmbientPolicyState::MethodConflict));
+    }
+
+    #[test]
+    fn hard_active_policy_turns_noncompliance_into_policy_conflict() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let ctx = "edit file: src/app/dashboard.tsx";
+        for idx in 0..2 {
+            insert_trace(
+                &store,
+                &identity,
+                ctx,
+                &format!("success-{idx}"),
+                Outcome::Succeeded,
+                Some(MethodCompliance::Noncompliant),
+            );
+        }
+        let active_policy = vec![ActivePolicyRule {
+            id: "task:reuse-components".into(),
+            strength: PolicyStrength::Hard,
+            scope: PolicyScope::Task,
+            summary: "reuse existing shared components".into(),
+        }];
+
+        let priors = ambient_priors_for_context_with_policy(
+            &store,
+            &simhash(ctx),
+            None,
+            Some(AmbientTurnGoal::Build),
+            3,
+            &active_policy,
+        );
+        let conflict = priors
+            .iter()
+            .find(|prior| prior.policy_state == Some(AmbientPolicyState::PolicyConflict));
+        assert!(conflict.is_some(), "{priors:#?}");
+        assert!(conflict.unwrap().summary.contains("policy conflict"));
+    }
+
+    #[test]
+    fn explore_keeps_stable_prior_soft_and_nonexclusive() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let ctx = "edit file: src/app/dashboard.tsx";
+        for idx in 0..5 {
+            insert_trace(
+                &store,
+                &identity,
+                ctx,
+                &format!("success-{idx}"),
+                Outcome::Succeeded,
+                Some(MethodCompliance::Compliant),
+            );
+        }
+
+        let priors = ambient_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            Some(AmbientTurnGoal::Explore),
+            3,
+        );
+        let stable = priors.iter().find(|prior| prior.kind == "success-prior");
+        assert!(stable.is_some(), "{priors:#?}");
+        assert!(stable
+            .unwrap()
+            .summary
+            .contains("non-exclusive baseline during exploration"));
+        assert!(stable.unwrap().confidence <= 0.68);
     }
 }
