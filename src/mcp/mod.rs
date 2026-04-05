@@ -1,11 +1,12 @@
-//! MCP (Model Context Protocol) server for AI agent integration.
+//! MCP adapter and observation surface for AI runtime integration.
 //!
-//! Exposes Thronglets capabilities as MCP tools over stdio (JSON-RPC 2.0).
-//! AI agents connect to this to read/write traces on the substrate.
+//! Exposes a small Thronglets tool surface over stdio (JSON-RPC 2.0).
+//! Ambient hooks and overlays stay primary; MCP is the explicit
+//! inspect/debug/override path when a runtime needs one.
 //!
 //! v0.2 tools:
-//! - trace_record: Record a trace on the substrate (write)
-//! - substrate_query: Query the substrate by intent (read)
+//! - trace_record: manually write sparse residue
+//! - substrate_query: explicitly inspect substrate guidance
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,6 +16,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::ambient::{
+    AmbientPriorRequest, ambient_prior_data,
+};
 use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
 use crate::continuity::{
@@ -25,10 +29,10 @@ use crate::identity_surface::authorization_check_data;
 use crate::network::NetworkCommand;
 use crate::pheromone::PheromoneField;
 use crate::posts::{
-    DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind,
-    SignalScopeFilter, SignalTraceConfig, create_feed_reinforcement_traces,
-    create_query_reinforcement_traces, create_signal_trace, filter_signal_feed_results,
-    is_signal_capability, summarize_recent_signal_feed, summarize_signal_traces,
+    DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, SignalPostKind, SignalScopeFilter, SignalTraceConfig,
+    create_feed_reinforcement_traces, create_query_reinforcement_traces, create_signal_trace,
+    filter_signal_feed_results, is_signal_capability, summarize_recent_signal_feed,
+    summarize_signal_traces,
 };
 use crate::presence::{
     DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace,
@@ -91,7 +95,7 @@ fn tool_definitions() -> Value {
         "tools": [
             {
                 "name": "trace_record",
-                "description": "Record a trace on the Thronglets substrate. Logs that you used a capability and the outcome.",
+                "description": "Manually record sparse residue on the Thronglets substrate. Use for explicit inspect/debug/override paths, not as the default interaction loop.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -209,7 +213,7 @@ fn tool_definitions() -> Value {
                         },
                         "ttl_hours": {
                             "type": "integer",
-                            "description": "How long the signal should remain fresh before it decays away (default: 72)"
+                            "description": "How long the signal should remain fresh before it decays away. If omitted, Thronglets uses a kind-specific default decay window."
                         },
                         "agent_id": {
                             "type": "string",
@@ -322,7 +326,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "substrate_query",
-                "description": "Query the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, 'explore' to discover what's available, 'signals' to find explicit short messages left by other agents, or 'continuity' to query external continuity traces by taxonomy.",
+                "description": "Explicitly inspect the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, 'explore' to discover what's available, 'signals' to find explicit short messages left by other agents, or 'continuity' to query external continuity traces by taxonomy.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -359,6 +363,28 @@ fn tool_definitions() -> Value {
                         }
                     },
                     "required": ["context", "intent"]
+                }
+            },
+            {
+                "name": "ambient_priors",
+                "description": "Project runtime-only ambient priors for a task turn. Use this when a host wants sparse environmental priors without turning them into persistent memory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Current user or task text to project priors for"
+                        },
+                        "space": {
+                            "type": "string",
+                            "description": "Optional substrate space filter"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum priors to emit (default: 3, max: 3)"
+                        }
+                    },
+                    "required": ["text"]
                 }
             },
             {
@@ -550,6 +576,7 @@ async fn handle_tool_call(
         "presence_feed" => handle_presence_feed(ctx, id, arguments),
         "authorization_check" => handle_authorization_check(ctx, id),
         "substrate_query" => handle_substrate_query(ctx, id, arguments),
+        "ambient_priors" => handle_ambient_priors(ctx, id, arguments),
         "trace_anchor" => handle_trace_anchor(ctx, id, arguments),
         _ => JsonRpcResponse::error(id, -32602, format!("Unknown tool: {tool_name}")),
     }
@@ -774,11 +801,11 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
         .get("sigil_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let ttl_hours = args
+    let explicit_ttl_hours = args
         .get("ttl_hours")
         .and_then(|v| v.as_u64())
-        .map(|value| value.min(u32::MAX as u64) as u32)
-        .unwrap_or(DEFAULT_SIGNAL_TTL_HOURS);
+        .map(|value| value.min(u32::MAX as u64) as u32);
+    let ttl_hours = explicit_ttl_hours.unwrap_or_else(|| kind.default_ttl_hours());
 
     let trace = create_signal_trace(
         kind,
@@ -811,6 +838,7 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
                         "message": message,
                         "space": space,
                         "ttl_hours": ttl_hours,
+                        "ttl_source": if explicit_ttl_hours.is_some() { "explicit" } else { "kind_default" },
                         "trace_id": trace_id_hex,
                     })).unwrap()
                 }]
@@ -1482,6 +1510,36 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
     )
 }
 
+fn handle_ambient_priors(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
+    let text = match args.get("text").and_then(|v| v.as_str()) {
+        Some(text) => text,
+        None => return JsonRpcResponse::error(id, -32602, "Missing required field: text".into()),
+    };
+    let space = args
+        .get("space")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+    let response_json = ambient_prior_data(
+        &ctx.store,
+        &AmbientPriorRequest {
+            text: text.to_string(),
+            space: space.map(str::to_string),
+            limit: Some(limit),
+        },
+    );
+    JsonRpcResponse::success(
+        id,
+        json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string(&response_json).unwrap()
+            }]
+        }),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Tool 3: trace_anchor
 // ---------------------------------------------------------------------------
@@ -1738,7 +1796,7 @@ mod tests {
         };
         let resp = handle_request(&ctx, &session, req).await.unwrap();
         let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 9);
 
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"trace_record"));
@@ -1748,6 +1806,7 @@ mod tests {
         assert!(names.contains(&"presence_feed"));
         assert!(names.contains(&"authorization_check"));
         assert!(names.contains(&"substrate_query"));
+        assert!(names.contains(&"ambient_priors"));
         assert!(names.contains(&"trace_anchor"));
     }
 
@@ -1946,7 +2005,11 @@ mod tests {
             .to_string();
         let post_json: Value =
             serde_json::from_str(&post_text).expect("signal post response should be valid JSON");
-        assert_eq!(post_json["ttl_hours"], DEFAULT_SIGNAL_TTL_HOURS);
+        assert_eq!(
+            post_json["ttl_hours"],
+            SignalPostKind::Avoid.default_ttl_hours()
+        );
+        assert_eq!(post_json["ttl_source"], "kind_default");
 
         let query_req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -1981,6 +2044,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ambient_priors_surfaces_runtime_projection() {
+        let ctx = make_ctx();
+        let session = McpSession::new();
+
+        insert_trace(
+            &ctx,
+            "claude-code/Bash",
+            Outcome::Failed,
+            "codex",
+            "restart thronglets service after ssh timeout",
+            120,
+        );
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(71)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "ambient_priors",
+                "arguments": {
+                    "text": "restart thronglets service after ssh timeout",
+                    "limit": 3
+                }
+            }),
+        };
+        let resp = handle_request(&ctx, &session, req).await.unwrap();
+        assert!(resp.error.is_none(), "ambient_priors should succeed");
+
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let parsed: Value =
+            serde_json::from_str(&text).expect("ambient prior response should be valid JSON");
+        assert_eq!(parsed["summary"]["status"], "ready");
+        let priors = parsed["priors"].as_array().unwrap();
+        assert!(!priors.is_empty());
+        assert_eq!(priors[0]["kind"], "failure-residue");
+        assert!(
+            priors[0]["summary"]
+                .as_str()
+                .unwrap()
+                .contains("recent failure residue")
+        );
+    }
+
+    #[tokio::test]
     async fn signal_feed_returns_recent_converging_signals() {
         let ctx = make_ctx();
         let session = McpSession::new();
@@ -2001,6 +2111,17 @@ mod tests {
         };
         let resp = handle_request(&ctx, &session, post_req).await.unwrap();
         assert!(resp.error.is_none(), "signal_post should succeed");
+        let post_text = resp.result.as_ref().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let post_json: Value =
+            serde_json::from_str(&post_text).expect("signal post response should be valid JSON");
+        assert_eq!(
+            post_json["ttl_hours"],
+            SignalPostKind::Recommend.default_ttl_hours()
+        );
+        assert_eq!(post_json["ttl_source"], "kind_default");
 
         let feed_req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -2090,6 +2211,37 @@ mod tests {
         assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["focus_tier"], "background");
         assert_eq!(signals[0]["evidence_scope"], "local");
+    }
+
+    #[tokio::test]
+    async fn signal_post_respects_explicit_ttl_override() {
+        let ctx = make_ctx();
+        let session = McpSession::new();
+
+        let post_req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(12)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "signal_post",
+                "arguments": {
+                    "kind": "watch",
+                    "context": "monitor noisy benchmark",
+                    "message": "compare against yesterday before acting",
+                    "ttl_hours": 5
+                }
+            }),
+        };
+        let resp = handle_request(&ctx, &session, post_req).await.unwrap();
+        assert!(resp.error.is_none(), "signal_post should succeed");
+        let post_text = resp.result.as_ref().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let post_json: Value =
+            serde_json::from_str(&post_text).expect("signal post response should be valid JSON");
+        assert_eq!(post_json["ttl_hours"], 5);
+        assert_eq!(post_json["ttl_source"], "explicit");
     }
 
     #[tokio::test]

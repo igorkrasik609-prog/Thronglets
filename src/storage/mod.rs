@@ -395,7 +395,10 @@ impl TraceStore {
         let query_limit = (limit.max(1) * 20) as i64;
 
         let caps: Vec<String> = if let Some(kind) = kind {
-            vec![kind.capability().to_string(), kind.reinforcement_capability().to_string()]
+            vec![
+                kind.capability().to_string(),
+                kind.reinforcement_capability().to_string(),
+            ]
         } else {
             vec![
                 format!("{SIGNAL_CAPABILITY_PREFIX}%"),
@@ -406,7 +409,11 @@ impl TraceStore {
 
         let mut candidates = Vec::new();
         for cap in &caps {
-            let cap_filter = if use_like { "capability LIKE ?3" } else { "capability = ?3" };
+            let cap_filter = if use_like {
+                "capability LIKE ?3"
+            } else {
+                "capability = ?3"
+            };
             let sql = format!(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
                         context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
@@ -479,6 +486,29 @@ impl TraceStore {
             }
         }
 
+        Ok(sessions.len() as u32)
+    }
+
+    /// Count distinct recent sessions that hit a similar failed context.
+    /// This is the contradiction side of a success prior: wrong paths should
+    /// remain visible long enough to resist premature recommend promotion.
+    pub fn count_contradicting_failed_sessions(
+        &self,
+        context_hash: &[u8; 16],
+        max_distance: u32,
+        hours: u64,
+        space: Option<&str>,
+    ) -> rusqlite::Result<u32> {
+        let traces =
+            self.query_similar_failed_traces(context_hash, max_distance, hours, 200, space)?;
+        let mut sessions = std::collections::HashSet::new();
+        for trace in traces {
+            let key = trace
+                .session_id
+                .or(trace.device_identity)
+                .unwrap_or_else(|| format!("trace-{}", trace.timestamp));
+            sessions.insert(key);
+        }
         Ok(sessions.len() as u32)
     }
 
@@ -667,7 +697,10 @@ impl TraceStore {
         let query_limit = (limit.max(1) * 20) as i64;
 
         let caps: Vec<String> = if let Some(kind) = kind {
-            vec![kind.capability().to_string(), kind.reinforcement_capability().to_string()]
+            vec![
+                kind.capability().to_string(),
+                kind.reinforcement_capability().to_string(),
+            ]
         } else {
             vec![
                 format!("{SIGNAL_CAPABILITY_PREFIX}%"),
@@ -678,7 +711,11 @@ impl TraceStore {
 
         let mut traces = Vec::new();
         for cap in &caps {
-            let cap_filter = if use_like { "capability LIKE ?1" } else { "capability = ?1" };
+            let cap_filter = if use_like {
+                "capability LIKE ?1"
+            } else {
+                "capability = ?1"
+            };
             let sql = format!(
                 "SELECT id, capability, outcome, latency_ms, input_size, context_hash,
                         context_text, session_id, owner_account, device_identity, agent_id, sigil_id, model_id, timestamp, node_pubkey, signature
@@ -1229,59 +1266,84 @@ mod tests {
         // Session 1: edit main.rs fails → edit tests.rs succeeds
         let err_s1 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Failed, 10, 10,
+            Outcome::Failed,
+            10,
+            10,
             simhash("edit file: src/main.rs"),
             Some("edit file: src/main.rs".into()),
-            Some("s1".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s1".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
         let fix_s1 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Succeeded, 10, 10,
+            Outcome::Succeeded,
+            10,
+            10,
             simhash("edit file: tests/perf.rs"),
             Some("edit file: tests/perf.rs".into()),
-            Some("s1".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s1".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
 
         // Session 2: same pattern
         let err_s2 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Failed, 10, 10,
+            Outcome::Failed,
+            10,
+            10,
             simhash("edit file: src/main.rs"),
             Some("edit file: src/main.rs".into()),
-            Some("s2".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s2".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
         let fix_s2 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Succeeded, 10, 10,
+            Outcome::Succeeded,
+            10,
+            10,
             simhash("edit file: tests/perf.rs"),
             Some("edit file: tests/perf.rs".into()),
-            Some("s2".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s2".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
 
         for t in [&err_s1, &fix_s1, &err_s2, &fix_s2] {
             store.insert(t).unwrap();
         }
 
-        let count = store.count_repair_associations(
-            &simhash("edit file: src/main.rs"),
-            &simhash("edit file: tests/perf.rs"),
-            48, None,
-        ).unwrap();
-        assert_eq!(count, 2, "should find 2 sessions with same error→repair pattern");
+        let count = store
+            .count_repair_associations(
+                &simhash("edit file: src/main.rs"),
+                &simhash("edit file: tests/perf.rs"),
+                48,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            count, 2,
+            "should find 2 sessions with same error→repair pattern"
+        );
 
         // Unrelated context → 0
-        let count_unrelated = store.count_repair_associations(
-            &simhash("bash: cargo build"),
-            &simhash("edit file: tests/perf.rs"),
-            48, None,
-        ).unwrap();
+        let count_unrelated = store
+            .count_repair_associations(
+                &simhash("bash: cargo build"),
+                &simhash("edit file: tests/perf.rs"),
+                48,
+                None,
+            )
+            .unwrap();
         assert_eq!(count_unrelated, 0);
     }
 
@@ -1295,59 +1357,85 @@ mod tests {
         // Session 1: edit A and B both succeed
         let a_s1 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Succeeded, 10, 10,
+            Outcome::Succeeded,
+            10,
+            10,
             simhash("edit file: src/main.rs"),
             Some("edit file: src/main.rs".into()),
-            Some("s1".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s1".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
         let b_s1 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Succeeded, 10, 10,
+            Outcome::Succeeded,
+            10,
+            10,
             simhash("edit file: src/storage/mod.rs"),
             Some("edit file: src/storage/mod.rs".into()),
-            Some("s1".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s1".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
 
         // Session 2: same pair co-edited
         let a_s2 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Succeeded, 10, 10,
+            Outcome::Succeeded,
+            10,
+            10,
             simhash("edit file: src/main.rs"),
             Some("edit file: src/main.rs".into()),
-            Some("s2".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s2".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
         let b_s2 = Trace::new(
             "claude-code/Edit".into(),
-            Outcome::Succeeded, 10, 10,
+            Outcome::Succeeded,
+            10,
+            10,
             simhash("edit file: src/storage/mod.rs"),
             Some("edit file: src/storage/mod.rs".into()),
-            Some("s2".into()), "model".into(),
-            id.public_key_bytes(), |m| id.sign(m),
+            Some("s2".into()),
+            "model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
         );
 
         for t in [&a_s1, &b_s1, &a_s2, &b_s2] {
             store.insert(t).unwrap();
         }
 
-        let count = store.count_co_occurring_sessions(
-            &simhash("edit file: src/main.rs"),
-            &simhash("edit file: src/storage/mod.rs"),
-            168, None,
-        ).unwrap();
-        assert!(count >= 2, "should find >= 2 co-occurring sessions, got {}", count);
+        let count = store
+            .count_co_occurring_sessions(
+                &simhash("edit file: src/main.rs"),
+                &simhash("edit file: src/storage/mod.rs"),
+                168,
+                None,
+            )
+            .unwrap();
+        assert!(
+            count >= 2,
+            "should find >= 2 co-occurring sessions, got {}",
+            count
+        );
 
         // Unrelated pair → 0
-        let count_unrelated = store.count_co_occurring_sessions(
-            &simhash("edit file: src/main.rs"),
-            &simhash("bash: cargo build"),
-            168, None,
-        ).unwrap();
+        let count_unrelated = store
+            .count_co_occurring_sessions(
+                &simhash("edit file: src/main.rs"),
+                &simhash("bash: cargo build"),
+                168,
+                None,
+            )
+            .unwrap();
         assert_eq!(count_unrelated, 0);
     }
 
@@ -1673,7 +1761,9 @@ mod tests {
         old.timestamp = old.timestamp.saturating_sub(48 * 3_600_000);
         store.insert(&old).unwrap();
 
-        let results = store.query_recent_signal_traces(24, None, 10, None).unwrap();
+        let results = store
+            .query_recent_signal_traces(24, None, 10, None)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session_id.as_deref(), Some("recent"));
     }
@@ -1813,5 +1903,53 @@ mod tests {
             .query_similar_failed_traces(&hash, 48, 168, 10, None)
             .unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn count_contradicting_failed_sessions_counts_distinct_sessions() {
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+        let ctx = "bash: cargo test --workspace";
+        for session_id in ["failed-a", "failed-b"] {
+            let trace = Trace::new_with_agent(
+                "claude-code/Bash".into(),
+                Outcome::Failed,
+                100,
+                5000,
+                crate::context::simhash(ctx),
+                Some(ctx.into()),
+                Some(session_id.into()),
+                None,
+                Some(id.device_identity()),
+                None,
+                None,
+                "test-model".into(),
+                id.public_key_bytes(),
+                |m| id.sign(m),
+            );
+            store.insert(&trace).unwrap();
+        }
+        let duplicate = Trace::new_with_agent(
+            "claude-code/Bash".into(),
+            Outcome::Failed,
+            100,
+            5000,
+            crate::context::simhash(ctx),
+            Some(ctx.into()),
+            Some("failed-a".into()),
+            None,
+            Some(id.device_identity()),
+            None,
+            None,
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        store.insert(&duplicate).unwrap();
+
+        let count = store
+            .count_contradicting_failed_sessions(&crate::context::simhash(ctx), 48, 168, None)
+            .unwrap();
+        assert_eq!(count, 2);
     }
 }

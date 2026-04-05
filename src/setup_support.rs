@@ -18,9 +18,11 @@ const CODEX_AGENTS_BLOCK: &str = r#"<!-- thronglets:codex:start -->
 ## Thronglets
 
 If the `thronglets` MCP server is available in this Codex session:
-- Before a high-impact `Edit`, `Write`, `Bash`, or delegated agent step, call `substrate_query` with the current task context.
-- After a meaningful tool result, call `trace_record` with the outcome and task context.
-- Treat Thronglets output as internal decision guidance. Use it to choose the next step; do not dump raw substrate warnings back to the user.
+- Treat Thronglets as ambient guidance first. Do not call tools just because they are available.
+- Use `ambient_priors` when you need a lightweight feel for whether the current path looks risky, unsettled, or already stable before a high-impact step.
+- Use `substrate_query` only when local context is still ambiguous after that, cross-session or cross-device continuity matters, or you need explicit substrate inspection.
+- Use `trace_record` only for sparse, meaningful residue: externally consequential, continuity-relevant, or coordination-relevant outcomes.
+- Keep Thronglets output as internal decision guidance. Do not dump raw substrate warnings or rankings back to the user.
 <!-- thronglets:codex:end -->
 "#;
 const OPENCLAW_PLUGIN_ID: &str = "thronglets-ai";
@@ -259,7 +261,10 @@ pub fn auto_clear_restart_pending_on_runtime_contact(
 }
 
 fn runtime_contact_proves_reload(agent: AdapterKind) -> bool {
-    matches!(agent, AdapterKind::Codex | AdapterKind::OpenClaw | AdapterKind::Cursor)
+    matches!(
+        agent,
+        AdapterKind::Codex | AdapterKind::OpenClaw | AdapterKind::Cursor
+    )
 }
 
 pub fn install_claude(
@@ -286,21 +291,13 @@ pub fn install_claude(
         "matcher": "",
         "hooks": [{"type": "command", "command": format!("{launcher_cmd} hook")}]
     });
-    let added_post_hook = ensure_hook(
-        &mut settings["hooks"]["PostToolUse"],
-        &post_hook,
-        " hook",
-    );
+    let added_post_hook = ensure_hook(&mut settings["hooks"]["PostToolUse"], &post_hook, " hook");
 
     let pre_hook = json!({
         "matcher": PREHOOK_MATCHER,
         "hooks": [{"type": "command", "command": format!("{launcher_cmd} prehook")}]
     });
-    let added_pre_hook = ensure_hook(
-        &mut settings["hooks"]["PreToolUse"],
-        &pre_hook,
-        " prehook",
-    );
+    let added_pre_hook = ensure_hook(&mut settings["hooks"]["PreToolUse"], &pre_hook, " prehook");
 
     // Lifecycle hooks: SessionStart, SessionEnd, SubagentStart, SubagentStop
     let lifecycle_events = [
@@ -839,7 +836,7 @@ fn managed_launcher_path(data_dir: &Path) -> PathBuf {
 
 fn ensure_managed_launcher(data_dir: &Path, bin_path: &Path) -> io::Result<PathBuf> {
     let launcher_path = managed_launcher_path(data_dir);
-    let repo_root = detect_repo_root();
+    let repo_root = detect_repo_root().or_else(|| existing_managed_repo_root(&launcher_path));
 
     if let Some(parent) = launcher_path.parent() {
         fs::create_dir_all(parent)?;
@@ -862,6 +859,12 @@ fn detect_repo_root() -> Option<PathBuf> {
     looks_like_repo_root(&cwd).then_some(cwd)
 }
 
+fn existing_managed_repo_root(launcher_path: &Path) -> Option<PathBuf> {
+    let content = fs::read_to_string(launcher_path).ok()?;
+    let repo_root = parse_managed_launcher_path_var(&content, "MANAGED_REPO")?;
+    looks_like_repo_root(&repo_root).then_some(repo_root)
+}
+
 fn looks_like_repo_root(path: &Path) -> bool {
     let cargo_toml = path.join("Cargo.toml");
     if !cargo_toml.exists() || !path.join("src").join("main.rs").exists() {
@@ -871,6 +874,23 @@ fn looks_like_repo_root(path: &Path) -> bool {
     fs::read_to_string(cargo_toml)
         .ok()
         .is_some_and(|content| content.contains("name = \"thronglets\""))
+}
+
+fn parse_managed_launcher_path_var(content: &str, key: &str) -> Option<PathBuf> {
+    let prefix = format!("{key}=");
+    let encoded = content
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))?
+        .trim();
+    parse_shell_quoted_path(encoded)
+}
+
+fn parse_shell_quoted_path(value: &str) -> Option<PathBuf> {
+    if value == "''" {
+        return None;
+    }
+    let inner = value.strip_prefix('\'')?.strip_suffix('\'')?;
+    Some(PathBuf::from(inner.replace(r#"'\''"#, "'")))
 }
 
 fn render_managed_launcher(bin_path: &Path, repo_root: Option<&Path>) -> String {
@@ -1640,6 +1660,8 @@ mod tests {
 
         let agents = fs::read_to_string(&result.agents_path).unwrap();
         assert!(agents.contains(CODEX_AGENTS_START));
+        assert!(agents.contains("ambient guidance first"));
+        assert!(agents.contains("ambient_priors"));
         assert!(agents.contains("substrate_query"));
         assert!(agents.contains("trace_record"));
     }
@@ -1714,5 +1736,46 @@ mod tests {
             "PreToolUse",
             launcher.to_string_lossy().as_ref()
         ));
+    }
+
+    #[test]
+    fn ensure_managed_launcher_preserves_existing_repo_root_when_called_outside_repo() {
+        let temp = TempDir::new().unwrap();
+        let data_dir = temp.path().join("data");
+        let launcher = managed_launcher_path(&data_dir);
+
+        let repo_root = temp.path().join("Thronglets");
+        fs::create_dir_all(repo_root.join("src")).unwrap();
+        fs::write(
+            repo_root.join("Cargo.toml"),
+            "[package]\nname = \"thronglets\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(repo_root.join("src").join("main.rs"), "fn main() {}\n").unwrap();
+
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        fs::write(
+            &launcher,
+            render_managed_launcher(Path::new("/tmp/thronglets"), Some(&repo_root)),
+        )
+        .unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        std::env::set_current_dir(&outside).unwrap();
+        let updated = ensure_managed_launcher(&data_dir, Path::new("/tmp/thronglets")).unwrap();
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        let content = fs::read_to_string(updated).unwrap();
+        assert!(content.contains(repo_root.to_string_lossy().as_ref()));
+        assert!(
+            content.contains(
+                &repo_root
+                    .join("target/debug/thronglets")
+                    .display()
+                    .to_string()
+            )
+        );
     }
 }

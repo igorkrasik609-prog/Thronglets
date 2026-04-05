@@ -9,6 +9,11 @@ pub const SIGNAL_CAPABILITY_PREFIX: &str = "urn:thronglets:signal:";
 pub const SIGNAL_REINFORCEMENT_CAPABILITY_PREFIX: &str = "urn:thronglets:signal-read:";
 pub const DEFAULT_SIGNAL_TTL_HOURS: u32 = 72;
 pub const DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS: u32 = 24;
+pub const DEFAULT_RECOMMEND_SIGNAL_TTL_HOURS: u32 = 12;
+pub const DEFAULT_AVOID_SIGNAL_TTL_HOURS: u32 = 72;
+pub const DEFAULT_WATCH_SIGNAL_TTL_HOURS: u32 = 48;
+pub const DEFAULT_INFO_SIGNAL_TTL_HOURS: u32 = 24;
+pub const DEFAULT_PSYCHE_STATE_SIGNAL_TTL_HOURS: u32 = 6;
 
 #[derive(Debug, Clone)]
 pub struct SignalTraceConfig {
@@ -100,6 +105,16 @@ impl SignalPostKind {
             .strip_prefix(SIGNAL_REINFORCEMENT_CAPABILITY_PREFIX)
             .and_then(Self::parse)
             .map(|kind| (kind, true))
+    }
+
+    pub fn default_ttl_hours(self) -> u32 {
+        match self {
+            Self::Recommend => DEFAULT_RECOMMEND_SIGNAL_TTL_HOURS,
+            Self::Avoid => DEFAULT_AVOID_SIGNAL_TTL_HOURS,
+            Self::Watch => DEFAULT_WATCH_SIGNAL_TTL_HOURS,
+            Self::Info => DEFAULT_INFO_SIGNAL_TTL_HOURS,
+            Self::PsycheState => DEFAULT_PSYCHE_STATE_SIGNAL_TTL_HOURS,
+        }
     }
 }
 
@@ -373,6 +388,9 @@ pub fn summarize_signal_traces(
             let model_count = group.models.len() as u32;
             let evidence_scope =
                 signal_evidence_scope(local_source_count, collective_source_count).to_string();
+            let freshness_rank =
+                signal_freshness_rank(now_ms, group.latest_timestamp, group.expires_at);
+            let decay_penalty = signal_decay_penalty(source_count, model_count, freshness_rank);
             let density_score = signal_density_score(
                 local_source_count,
                 collective_source_count,
@@ -380,7 +398,8 @@ pub fn summarize_signal_traces(
                 model_count,
                 0,
                 group.reinforcement_count,
-            );
+            )
+            .saturating_sub(decay_penalty);
             let promotion_state =
                 signal_promotion_state(density_score, local_source_count, collective_source_count);
             SignalQueryResult {
@@ -496,6 +515,7 @@ pub fn summarize_recent_signal_feed(
                 signal_evidence_scope(local_source_count, collective_source_count).to_string();
             let freshness_rank =
                 signal_freshness_rank(now_ms, group.latest_timestamp, group.expires_at);
+            let decay_penalty = signal_decay_penalty(source_count, model_count, freshness_rank);
             let density_score = signal_density_score(
                 local_source_count,
                 collective_source_count,
@@ -503,7 +523,8 @@ pub fn summarize_recent_signal_feed(
                 model_count,
                 freshness_rank,
                 group.reinforcement_count,
-            );
+            )
+            .saturating_sub(decay_penalty);
             let promotion_state =
                 signal_promotion_state(density_score, local_source_count, collective_source_count);
             let focus_score = signal_focus_score(
@@ -511,7 +532,8 @@ pub fn summarize_recent_signal_feed(
                 source_count,
                 model_count,
                 freshness_rank,
-            );
+            )
+            .saturating_sub(decay_penalty);
             SignalFeedResult {
                 kind: group.kind.as_str().to_string(),
                 message: group.message,
@@ -652,7 +674,6 @@ fn decode_signal_trace(trace: &Trace) -> Option<DecodedSignalTrace> {
     })
 }
 
-
 pub fn expires_at_ms(now_ms: u64, ttl_hours: u32) -> u64 {
     now_ms.saturating_add((ttl_hours as u64).saturating_mul(60 * 60 * 1000))
 }
@@ -725,6 +746,17 @@ fn signal_freshness_rank(now_ms: u64, latest_timestamp: u64, expires_at: u64) ->
         1
     } else {
         0
+    }
+}
+
+fn signal_decay_penalty(source_count: u32, model_count: u32, freshness_rank: u8) -> u8 {
+    match (
+        signal_corroboration_rank(source_count, model_count),
+        freshness_rank,
+    ) {
+        (0, 0) => 2,
+        (0, 1) | (1, 0) => 1,
+        _ => 0,
     }
 }
 
@@ -1153,6 +1185,78 @@ mod tests {
         assert_eq!(results[0].model_count, 1);
         assert_eq!(results[0].density_tier, "promoted");
         assert_eq!(results[0].promotion_state, "local");
+    }
+
+    #[test]
+    fn summarize_signal_posts_aging_single_source_reinforcement_evaporates() {
+        let identity = NodeIdentity::generate();
+        let now = now_ms();
+        let stale_now = now.saturating_sub(50 * 60 * 1000);
+        let signal = create_signal_trace_at(
+            SignalPostKind::Recommend,
+            "repair release flow",
+            "run release-check before push",
+            SignalTraceConfig {
+                model_id: "codex".into(),
+                session_id: None,
+                owner_account: None,
+                device_identity: Some(identity.device_identity()),
+                agent_id: None,
+                sigil_id: None,
+                space: None,
+                ttl_hours: 1,
+            },
+            stale_now,
+            identity.public_key_bytes(),
+            |msg| identity.sign(msg),
+        );
+        let reinforcement_a = create_signal_reinforcement_trace_at(
+            SignalPostKind::Recommend,
+            "repair release flow",
+            "run release-check before push",
+            SignalTraceConfig {
+                model_id: "thronglets-query".into(),
+                session_id: None,
+                owner_account: None,
+                device_identity: Some(identity.device_identity()),
+                agent_id: None,
+                sigil_id: None,
+                space: None,
+                ttl_hours: 1,
+            },
+            stale_now,
+            identity.public_key_bytes(),
+            |msg| identity.sign(msg),
+        );
+        let reinforcement_b = create_signal_reinforcement_trace_at(
+            SignalPostKind::Recommend,
+            "repair release flow",
+            "run release-check before push",
+            SignalTraceConfig {
+                model_id: "thronglets-feed".into(),
+                session_id: None,
+                owner_account: None,
+                device_identity: Some(identity.device_identity()),
+                agent_id: None,
+                sigil_id: None,
+                space: None,
+                ttl_hours: 1,
+            },
+            stale_now,
+            identity.public_key_bytes(),
+            |msg| identity.sign(msg),
+        );
+
+        let results = summarize_signal_traces(
+            &[signal, reinforcement_a, reinforcement_b],
+            "repair release flow",
+            &identity.device_identity(),
+            identity.public_key_bytes(),
+            10,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].density_tier, "candidate");
+        assert_eq!(results[0].promotion_state, "none");
     }
 
     #[test]
@@ -1681,6 +1785,14 @@ mod tests {
                 > signal_freshness_rank(now, stale_latest, stale_latest + 72 * 60 * 60 * 1000)
         );
         assert!(signal_freshness_rank(now, now, expires) >= 1);
+    }
+
+    #[test]
+    fn signal_decay_penalty_hits_weak_aging_signals_first() {
+        assert_eq!(signal_decay_penalty(1, 1, 0), 2);
+        assert_eq!(signal_decay_penalty(1, 1, 1), 1);
+        assert_eq!(signal_decay_penalty(2, 1, 0), 1);
+        assert_eq!(signal_decay_penalty(1, 2, 0), 0);
     }
 
     #[test]
