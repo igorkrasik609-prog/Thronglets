@@ -40,7 +40,7 @@ AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出
 - 第二台设备：`thronglets join`
 
 如果主设备已经有本地 Oasyce 共享账户 bootstrap，`share / join` 也会顺手带过去，后面的 sdk / chain 写操作就能自动继续，不需要用户再学一套委托命令。
-现在导出的连接文件本身也是自解释的：把文件直接发给另一台电脑上的 AI 就行，文件里已经带了安装 `oasyce-sdk` 和运行 `oasyce join <connection-file>` 的 bootstrap manifest。
+现在导出的连接文件本身也是自解释的：它会在顶层直接写明“这是一个给另一台 AI / 电脑加入现有 Oasyce 环境的 handoff artifact”，同时带上安装 `oasyce-sdk` 和运行 `oasyce join <connection-file>` 的 bootstrap manifest。
 
 日常只看：
 

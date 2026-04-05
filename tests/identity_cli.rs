@@ -310,6 +310,7 @@ fn share_json_defaults_to_desktop_connection_file_for_primary_device() {
         shared["data"]["bootstrap"]["join"]["argv"][2],
         "<connection-file>"
     );
+    assert_eq!(shared["data"]["bootstrap"]["verify"]["argv"][0], "oasyce");
     assert_eq!(
         shared["data"]["output"],
         home.join("Desktop")
@@ -501,6 +502,11 @@ fn connection_export_and_join_carry_oasyce_delegate_policy_bootstrap() {
 
     let exported_file: Value =
         serde_json::from_slice(&std::fs::read(&connection_file).unwrap()).unwrap();
+    assert_eq!(exported_file["artifact_type"], "oasyce.join-handoff");
+    assert_eq!(
+        exported_file["artifact_purpose"],
+        "Send this file to another AI or machine to join the existing Oasyce environment."
+    );
     assert_eq!(
         exported_file["bootstrap"]["install"]["package"],
         "oasyce-sdk>=0.10.4"

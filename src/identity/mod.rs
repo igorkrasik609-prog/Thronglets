@@ -18,6 +18,9 @@ const IDENTITY_BINDING_SCHEMA_VERSION: &str = "thronglets.identity.v1";
 const CONNECTION_FILE_SCHEMA_VERSION: &str = "thronglets.connection.v1";
 const CONNECTION_FILE_SIGNING_DOMAIN: &[u8] = b"thronglets.connection.v1";
 const CONNECTION_BOOTSTRAP_SCHEMA_VERSION: &str = "oasyce.bootstrap.v1";
+const CONNECTION_FILE_ARTIFACT_TYPE: &str = "oasyce.join-handoff";
+const CONNECTION_FILE_ARTIFACT_PURPOSE: &str =
+    "Send this file to another AI or machine to join the existing Oasyce environment.";
 const OASYCE_LOCAL_BINDING_SCHEMA_VERSION: &str = "oasyce.identity.v1";
 const OASYCE_DELEGATE_POLICY_SCHEMA_VERSION: &str = "oasyce.delegate_policy.v1";
 const OASYCE_BOOTSTRAP_MIN_VERSION: &str = "0.10.4";
@@ -55,6 +58,10 @@ pub enum ConnectionSeedScope {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionFile {
     pub schema_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_purpose: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_account: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -547,6 +554,8 @@ impl ConnectionFile {
         let exported_at = now_ms();
         let mut file = Self {
             schema_version: CONNECTION_FILE_SCHEMA_VERSION.to_string(),
+            artifact_type: Some(CONNECTION_FILE_ARTIFACT_TYPE.into()),
+            artifact_purpose: Some(CONNECTION_FILE_ARTIFACT_PURPOSE.into()),
             owner_account: binding.owner_account.clone(),
             oasyce_delegate_policy: binding.oasyce_delegate_policy.clone(),
             primary_device_identity: binding.device_identity.clone(),
@@ -565,6 +574,29 @@ impl ConnectionFile {
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let bytes = fs::read(path)?;
         let file: Self = serde_json::from_slice(&bytes).map_err(invalid_data)?;
+        match (&file.artifact_type, &file.artifact_purpose) {
+            (Some(artifact_type), Some(purpose)) => {
+                if artifact_type != CONNECTION_FILE_ARTIFACT_TYPE {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsupported connection file artifact_type",
+                    ));
+                }
+                if purpose.trim().is_empty() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "connection file artifact_purpose cannot be empty",
+                    ));
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "connection file artifact_type and artifact_purpose must appear together",
+                ));
+            }
+        }
         if file.owner_account.as_deref().is_some_and(str::is_empty) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -673,6 +705,8 @@ impl ConnectionFile {
     fn signable_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(192);
         buf.extend_from_slice(CONNECTION_FILE_SIGNING_DOMAIN);
+        push_optional_bytes(&mut buf, self.artifact_type.as_deref());
+        push_optional_bytes(&mut buf, self.artifact_purpose.as_deref());
         push_optional_bytes(&mut buf, Some(self.owner_account.as_deref().unwrap_or("")));
         push_optional_bytes(&mut buf, Some(self.primary_device_identity.as_str()));
         push_optional_bytes(&mut buf, Some(self.primary_device_pubkey.as_str()));
@@ -951,6 +985,14 @@ mod tests {
             loaded.primary_device_pubkey,
             hex::encode(&node.public_key_bytes())
         );
+        assert_eq!(
+            loaded.artifact_type.as_deref(),
+            Some(CONNECTION_FILE_ARTIFACT_TYPE)
+        );
+        assert_eq!(
+            loaded.artifact_purpose.as_deref(),
+            Some(CONNECTION_FILE_ARTIFACT_PURPOSE)
+        );
         assert_eq!(loaded.peer_seed_scope, ConnectionSeedScope::Trusted);
         assert_eq!(loaded.peer_seeds.len(), 1);
         assert_eq!(
@@ -1042,6 +1084,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(file.owner_account, None);
+        assert_eq!(
+            file.artifact_type.as_deref(),
+            Some(CONNECTION_FILE_ARTIFACT_TYPE)
+        );
+        assert_eq!(
+            file.artifact_purpose.as_deref(),
+            Some(CONNECTION_FILE_ARTIFACT_PURPOSE)
+        );
         assert_eq!(file.primary_device_identity, node.device_identity());
         assert_eq!(
             file.bootstrap
@@ -1066,6 +1116,8 @@ mod tests {
             vec![],
         )
         .unwrap();
+        file.artifact_type = None;
+        file.artifact_purpose = None;
         file.bootstrap = None;
         file.sign_with(&node);
         let path = dir.path().join("legacy.connection.json");
