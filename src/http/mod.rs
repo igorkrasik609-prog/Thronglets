@@ -16,9 +16,7 @@
 //! - GET  /v1/status       — node status
 //! - GET  /v1/authorization — local authorization snapshot
 
-use crate::ambient::{
-    AmbientPriorRequest, ambient_prior_data,
-};
+use crate::ambient::{AmbientPriorRequest, ambient_prior_data};
 use crate::context::{simhash, similarity};
 use crate::continuity::{
     ExternalContinuityInput, ExternalContinuityRecordConfig, record_external_continuity,

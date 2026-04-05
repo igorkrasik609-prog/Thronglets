@@ -16,9 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::ambient::{
-    AmbientPriorRequest, ambient_prior_data,
-};
+use crate::ambient::{AmbientPriorRequest, ambient_prior_data};
 use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
 use crate::continuity::{

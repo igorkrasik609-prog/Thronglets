@@ -3090,8 +3090,14 @@ async fn main() {
                 .await;
             }
             let output = output.unwrap_or_else(default_share_output_path);
-            let exported =
-                export_connection_file(&output, ttl_hours, false, &identity_binding, &identity, &dir);
+            let exported = export_connection_file(
+                &output,
+                ttl_hours,
+                false,
+                &identity_binding,
+                &identity,
+                &dir,
+            );
             let data = ShareFlowData {
                 summary: summarize_share_flow(&exported.summary, &output),
                 readiness: exported.summary,
@@ -6689,8 +6695,7 @@ mod tests {
             store.insert(&success).unwrap();
         }
 
-        let mixed_priors =
-            ambient_priors_for_context(&store, &simhash(mixed_ctx), None, None, 3);
+        let mixed_priors = ambient_priors_for_context(&store, &simhash(mixed_ctx), None, None, 3);
         assert!(!mixed_priors.is_empty());
         assert!(
             mixed_priors
@@ -6703,8 +6708,7 @@ mod tests {
                 .any(|prior| prior.kind == "mixed-residue")
         );
 
-        let stable_priors =
-            ambient_priors_for_context(&store, &simhash(stable_ctx), None, None, 3);
+        let stable_priors = ambient_priors_for_context(&store, &simhash(stable_ctx), None, None, 3);
         assert!(!stable_priors.is_empty());
         assert!(
             stable_priors
@@ -6828,6 +6832,13 @@ mod tests {
             Some(thronglets::ambient::AmbientTurnGoal::Build),
             3,
         );
+        let explore_priors = ambient_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            Some(thronglets::ambient::AmbientTurnGoal::Explore),
+            3,
+        );
         let repair_priors = ambient_priors_for_context(
             &store,
             &simhash(ctx),
@@ -6853,9 +6864,69 @@ mod tests {
             .find(|prior| prior.kind == "failure-residue")
             .unwrap();
 
+        assert!(
+            explore_priors
+                .iter()
+                .all(|prior| prior.kind != "success-prior")
+        );
         assert!(build_success.confidence > repair_success.confidence);
+        assert!(build_success.confidence > 0.8);
         assert!(repair_failure.confidence > build_failure.confidence);
         assert!(repair_priors.iter().all(|prior| prior.goal.is_some()));
+    }
+
+    #[test]
+    fn ambient_priors_keep_explore_success_soft_and_non_exclusive() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let ctx = "investigate a non-consensus optimization route with one stable prior path";
+        for idx in 0..5 {
+            let success = Trace::new_with_agent(
+                "tool:Edit".into(),
+                Outcome::Succeeded,
+                0,
+                1,
+                simhash(ctx),
+                Some(ctx.into()),
+                Some(format!("success-{idx}")),
+                None,
+                Some(identity.device_identity()),
+                None,
+                None,
+                "codex".into(),
+                identity.public_key_bytes(),
+                |msg| identity.sign(msg),
+            );
+            store.insert(&success).unwrap();
+        }
+
+        let explore_priors = ambient_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            Some(thronglets::ambient::AmbientTurnGoal::Explore),
+            3,
+        );
+        let build_priors = ambient_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            Some(thronglets::ambient::AmbientTurnGoal::Build),
+            3,
+        );
+
+        let explore_success = explore_priors
+            .iter()
+            .find(|prior| prior.kind == "success-prior")
+            .unwrap();
+        let build_success = build_priors
+            .iter()
+            .find(|prior| prior.kind == "success-prior")
+            .unwrap();
+
+        assert!(explore_success.confidence <= 0.68);
+        assert!(build_success.confidence > explore_success.confidence);
+        assert!(explore_success.summary.contains("non-exclusive baseline"));
     }
 
     #[test]

@@ -184,7 +184,9 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
         "docs/index.html should keep its i18n setup title aligned with the public install surface"
     );
     assert!(
-        !docs_index.contains("thronglets setup       <span class=\"cmt\"># install 6 hooks into Claude Code</span>"),
+        !docs_index.contains(
+            "thronglets setup       <span class=\"cmt\"># install 6 hooks into Claude Code</span>"
+        ),
         "docs/index.html should not present setup as the normal public CLI path"
     );
     assert!(
