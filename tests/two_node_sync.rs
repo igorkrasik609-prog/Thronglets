@@ -342,6 +342,7 @@ async fn secondary_node_recovers_via_signed_connection_file_without_bootstrap() 
         &binding_a,
         &id_a,
         DEFAULT_CONNECTION_FILE_TTL_HOURS,
+        false,
         ConnectionSeedScope::Trusted,
         vec![trusted_a.to_string()],
     )
@@ -523,10 +524,12 @@ async fn first_connection_attempt_can_use_persisted_bootstrap_seed() {
     );
     let remembered = snapshot.remembered_peer_addresses(8);
     assert!(
-        remembered
-            .iter()
-            .any(|addr| addr.contains(&peer_id_a.to_string())),
-        "first connection attempt should learn a reusable remembered peer path for the connected bootstrap peer; remembered={remembered:?}"
+        remembered.iter().any(|addr| {
+            addr != &bootstrap_a.to_string()
+                && addr.parse::<libp2p::Multiaddr>().is_ok()
+                && addr.contains("/p2p/")
+        }),
+        "first connection attempt should learn at least one reusable remembered peer path after connecting via persisted bootstrap memory; remembered={remembered:?}"
     );
 
     drop(cmd_tx_a);

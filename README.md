@@ -40,6 +40,7 @@ AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出
 - 第二台设备：`thronglets join`
 
 如果主设备已经有本地 Oasyce 共享账户 bootstrap，`share / join` 也会顺手带过去，后面的 sdk / chain 写操作就能自动继续，不需要用户再学一套委托命令。
+现在导出的连接文件本身也是自解释的：它会在顶层直接写明“这是一个给另一台 AI / 电脑加入同一 Thronglets 环境的 handoff artifact”，并带上 `preferred_surface`。最小情况下它会直接教对方运行 `thronglets join <connection-file>`；如果这台主设备本身还带着 Oasyce 绑定，它也会顺手附带 `oasyce join <connection-file>` 这种更丰富的可选 surface。
 
 日常只看：
 
@@ -181,6 +182,8 @@ thronglets share
 # 第二台设备
 thronglets join
 ```
+
+如果你是在主设备上和 AI 对话，最自然的问法应该是：“帮我生成一个给另一台电脑加入的文件。” 正常回答就该是先运行 `share`，然后让你把那个文件发过去，而不是先解释一堆内部命令。
 
 ## 工作原理
 

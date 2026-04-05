@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
 
 use serde::Serialize;
-use thronglets::identity::{ConnectionFile, ConnectionSeedScope, IdentityBinding, NodeIdentity};
+use thronglets::identity::{
+    ConnectionBootstrapManifest, ConnectionFile, ConnectionSeedScope, IdentityBinding, NodeIdentity,
+};
 use thronglets::identity_surface::{IdentitySummary, identity_summary};
 use thronglets::posts::is_signal_capability;
 use thronglets::presence::is_presence_capability;
@@ -44,6 +47,8 @@ pub(crate) struct ShareFlowData {
     pub(crate) readiness: ReadinessSummary,
     pub(crate) identity: IdentitySummary,
     pub(crate) output: String,
+    pub(crate) preferred_surface: Option<String>,
+    pub(crate) surfaces: BTreeMap<String, ConnectionBootstrapManifest>,
     pub(crate) peer_seed_scope: &'static str,
     pub(crate) trusted_peer_seed_count: usize,
     pub(crate) peer_seed_count: usize,
@@ -66,6 +71,8 @@ pub(crate) struct ConnectionExportData {
     pub(crate) summary: ReadinessSummary,
     pub(crate) identity: IdentitySummary,
     pub(crate) output: String,
+    pub(crate) preferred_surface: Option<String>,
+    pub(crate) surfaces: BTreeMap<String, ConnectionBootstrapManifest>,
     pub(crate) primary_device_pubkey: String,
     pub(crate) signed_by_device: String,
     pub(crate) peer_seed_scope: &'static str,
@@ -376,18 +383,16 @@ pub(crate) fn summarize_share_flow(
             status: "share-ready",
             detail: "This device exported a strong same-owner connection file. The next device should inherit identity plus a trusted recovery path.".into(),
             next_step: Some(format!(
-                "Send {} to the second device, save it as ~/Desktop/{}, then run `thronglets join` there.",
+                "Send {} to the second device or directly to another AI. The file already declares its preferred join surface and any richer optional surfaces.",
                 output.display(),
-                DEFAULT_CONNECTION_FILE_NAME
             )),
         },
         "identity-plus-peer-seeds" => OnboardingSummary {
             status: "share-ready",
             detail: "This device exported a usable connection file with remembered peer paths. The next device should inherit identity plus reusable network paths.".into(),
             next_step: Some(format!(
-                "Send {} to the second device, save it as ~/Desktop/{}, then run `thronglets join` there.",
+                "Send {} to the second device or directly to another AI. The file already declares its preferred join surface and any richer optional surfaces.",
                 output.display(),
-                DEFAULT_CONNECTION_FILE_NAME
             )),
         },
         _ => OnboardingSummary {
@@ -470,6 +475,12 @@ pub(crate) fn render_share_flow_report(data: &ShareFlowData) {
     println!("  Meaning: {}", data.summary.detail);
     println!("  Output:  {}", data.output);
     println!("  State:   {}", human_readiness_label(&data.readiness));
+    if let Some(preferred) = &data.preferred_surface
+        && let Some(surface) = data.surfaces.get(preferred)
+    {
+        println!("  Surface: {}", preferred);
+        println!("  AI join: {}", surface.join.argv.join(" "));
+    }
     if let Some(step) = &data.summary.next_step {
         println!("  Next:    {step}");
     }
@@ -528,6 +539,7 @@ pub(crate) fn default_share_output_path() -> PathBuf {
 pub(crate) fn export_connection_file(
     output: &Path,
     ttl_hours: u32,
+    include_oasyce_surface: bool,
     identity_binding: &IdentityBinding,
     identity: &NodeIdentity,
     dir: &Path,
@@ -551,6 +563,7 @@ pub(crate) fn export_connection_file(
         identity_binding,
         identity,
         ttl_hours,
+        include_oasyce_surface,
         peer_seed_scope,
         peer_seeds,
     )
@@ -572,6 +585,8 @@ pub(crate) fn export_connection_file(
         summary: readiness,
         identity: identity_summary("exported", identity_binding),
         output: output.display().to_string(),
+        preferred_surface: connection.effective_preferred_surface(),
+        surfaces: connection.effective_surfaces(),
         primary_device_pubkey: connection.primary_device_pubkey.clone(),
         signed_by_device: connection.primary_device_identity.clone(),
         peer_seed_scope,

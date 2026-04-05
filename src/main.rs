@@ -15,13 +15,12 @@ use setup_support::{
     doctor_adapter, install_claude, install_codex, install_cursor, install_openclaw, install_plan,
     set_restart_pending,
 };
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use thronglets::ambient::{AMBIENT_PRIOR_SCHEMA_VERSION, AmbientPriorRequest, ambient_prior_data};
 use thronglets::anchor::AnchorClient;
-use thronglets::ambient::{
-    AMBIENT_PRIOR_SCHEMA_VERSION, AmbientPriorRequest, ambient_prior_data,
-};
 use thronglets::context::{simhash, similarity as context_similarity};
 use thronglets::continuity::{
     ContinuitySnapshotSummary, ContinuitySpaceData, summarize_recent_continuity,
@@ -34,8 +33,8 @@ use thronglets::eval::{
     LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
 };
 use thronglets::identity::{
-    ConnectionFile, ConnectionSeedScope, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding,
-    NodeIdentity, identity_binding_path,
+    ConnectionBootstrapManifest, ConnectionFile, ConnectionSeedScope,
+    DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding, NodeIdentity, identity_binding_path,
 };
 use thronglets::identity_surface::{
     AuthorizationCheckData, IdentitySummary, authorization_check_data, authorization_summary,
@@ -237,6 +236,8 @@ struct ConnectionInspectData {
     summary: ReadinessSummary,
     identity: IdentitySummary,
     file: String,
+    preferred_surface: Option<String>,
+    surfaces: BTreeMap<String, ConnectionBootstrapManifest>,
     primary_device_pubkey: String,
     peer_seed_scope: &'static str,
     trusted_peer_seed_count: usize,
@@ -581,6 +582,10 @@ enum Commands {
         /// Emit machine-readable JSON instead of text.
         #[arg(long, default_value_t = false)]
         json: bool,
+
+        /// Include the richer Oasyce surface alongside the default Thronglets surface.
+        #[arg(long, default_value_t = false)]
+        include_oasyce_surface: bool,
     },
 
     #[command(hide = true)]
@@ -3064,12 +3069,14 @@ async fn main() {
             }
             let output = output.unwrap_or_else(default_share_output_path);
             let exported =
-                export_connection_file(&output, ttl_hours, &identity_binding, &identity, &dir);
+                export_connection_file(&output, ttl_hours, false, &identity_binding, &identity, &dir);
             let data = ShareFlowData {
                 summary: summarize_share_flow(&exported.summary, &output),
                 readiness: exported.summary,
                 identity: exported.identity,
                 output: exported.output,
+                preferred_surface: exported.preferred_surface,
+                surfaces: exported.surfaces,
                 peer_seed_scope: exported.peer_seed_scope,
                 trusted_peer_seed_count: exported.trusted_peer_seed_count,
                 peer_seed_count: exported.peer_seed_count,
@@ -3247,9 +3254,16 @@ async fn main() {
             output,
             ttl_hours,
             json,
+            include_oasyce_surface,
         } => {
-            let data =
-                export_connection_file(&output, ttl_hours, &identity_binding, &identity, &dir);
+            let data = export_connection_file(
+                &output,
+                ttl_hours,
+                include_oasyce_surface,
+                &identity_binding,
+                &identity,
+                &dir,
+            );
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "connection-export", &data);
             } else {
@@ -3266,6 +3280,12 @@ async fn main() {
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
+                if let Some(preferred) = &data.preferred_surface
+                    && let Some(surface) = data.surfaces.get(preferred)
+                {
+                    println!("  Preferred surface:  {}", preferred);
+                    println!("  AI join:            {}", surface.join.argv.join(" "));
+                }
                 if let Some(step) = &data.summary.next_step {
                     println!("  Next:               {step}");
                 }
@@ -3309,6 +3329,8 @@ async fn main() {
                 summary: readiness,
                 identity,
                 file: file.display().to_string(),
+                preferred_surface: connection.effective_preferred_surface(),
+                surfaces: connection.effective_surfaces(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
                 peer_seed_scope,
                 trusted_peer_seed_count: inspected_trusted_peer_seed_count,
@@ -3338,6 +3360,12 @@ async fn main() {
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
+                if let Some(preferred) = &data.preferred_surface
+                    && let Some(surface) = data.surfaces.get(preferred)
+                {
+                    println!("  Preferred surface:  {}", preferred);
+                    println!("  AI join:            {}", surface.join.argv.join(" "));
+                }
                 if let Some(step) = &data.summary.next_step {
                     println!("  Next:               {step}");
                 }
@@ -4549,7 +4577,9 @@ async fn main() {
                 signals.push(Signal {
                     kind: SignalKind::History,
                     score,
-                    body: format!("  ⚠ risk residue: {count} similar failure session(s) ({snippet})"),
+                    body: format!(
+                        "  ⚠ risk residue: {count} similar failure session(s) ({snippet})"
+                    ),
                     candidate: None,
                 });
             }
@@ -4913,7 +4943,9 @@ async fn main() {
         | Commands::Doctor { .. }
         | Commands::Bootstrap { .. }
         | Commands::ClearRestart { .. }
-        | Commands::RuntimeReady { .. } => unreachable!("adapter surfaces handled before identity bootstrap"),
+        | Commands::RuntimeReady { .. } => {
+            unreachable!("adapter surfaces handled before identity bootstrap")
+        }
 
         Commands::Serve {
             port,
@@ -6660,8 +6692,16 @@ mod tests {
                 .iter()
                 .any(|prior| prior.kind == "success-prior")
         );
-        assert!(mixed_priors.iter().all(|prior| prior.provider == "thronglets"));
-        assert!(stable_priors.iter().all(|prior| prior.provider == "thronglets"));
+        assert!(
+            mixed_priors
+                .iter()
+                .all(|prior| prior.provider == "thronglets")
+        );
+        assert!(
+            stable_priors
+                .iter()
+                .all(|prior| prior.provider == "thronglets")
+        );
     }
 
     #[test]
