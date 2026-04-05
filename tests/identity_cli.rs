@@ -303,7 +303,11 @@ fn share_json_defaults_to_desktop_connection_file_for_primary_device() {
     assert_eq!(shared["data"]["preferred_surface"], "thronglets");
     assert_eq!(
         shared["data"]["surfaces"]["thronglets"]["install"]["package"],
-        "thronglets>=0.7.3"
+        "thronglets>=0.7.4"
+    );
+    assert_eq!(
+        shared["data"]["surfaces"]["thronglets"]["install"]["repository"],
+        "https://github.com/Shangri-la-0428/Thronglets"
     );
     assert_eq!(
         shared["data"]["surfaces"]["thronglets"]["join"]["argv"][0],
@@ -408,7 +412,11 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     assert_eq!(exported["data"]["preferred_surface"], "thronglets");
     assert_eq!(
         exported["data"]["surfaces"]["thronglets"]["install"]["package"],
-        "thronglets>=0.7.3"
+        "thronglets>=0.7.4"
+    );
+    assert_eq!(
+        exported["data"]["surfaces"]["thronglets"]["install"]["repository"],
+        "https://github.com/Shangri-la-0428/Thronglets"
     );
     assert!(exported["data"]["surfaces"].get("oasyce").is_none());
     assert_eq!(
@@ -522,11 +530,19 @@ fn connection_export_and_join_carry_oasyce_delegate_policy_bootstrap() {
     assert_eq!(exported_file["preferred_surface"], "oasyce");
     assert_eq!(
         exported_file["surfaces"]["thronglets"]["install"]["package"],
-        "thronglets>=0.7.3"
+        "thronglets>=0.7.4"
+    );
+    assert_eq!(
+        exported_file["surfaces"]["thronglets"]["install"]["repository"],
+        "https://github.com/Shangri-la-0428/Thronglets"
     );
     assert_eq!(
         exported_file["surfaces"]["oasyce"]["install"]["package"],
-        "oasyce-sdk>=0.10.5"
+        "oasyce-sdk>=0.10.6"
+    );
+    assert_eq!(
+        exported_file["surfaces"]["oasyce"]["install"]["repository"],
+        "https://github.com/Shangri-la-0428/oasyce-sdk"
     );
     assert_eq!(
         exported_file["surfaces"]["oasyce"]["join"]["argv"][0],
