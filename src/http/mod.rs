@@ -837,13 +837,15 @@ mod tests {
                 "Host: localhost\r\n",
                 "Content-Type: application/json\r\n",
                 "\r\n",
-                "{\"text\":\"restart thronglets service after ssh timeout\",\"limit\":3}"
+                "{\"text\":\"restart thronglets service after ssh timeout\",\"goal\":\"repair\",\"limit\":3}"
             ),
         ));
         assert_eq!(response["summary"]["status"], "ready");
+        assert_eq!(response["summary"]["goal"], "repair");
         let priors = response["priors"].as_array().unwrap();
         assert!(!priors.is_empty());
         assert_eq!(priors[0]["kind"], "failure-residue");
+        assert_eq!(priors[0]["goal"], "repair");
         assert!(
             priors[0]["summary"]
                 .as_str()

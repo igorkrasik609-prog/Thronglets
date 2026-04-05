@@ -6585,7 +6585,7 @@ mod tests {
         let store = TraceStore::in_memory().unwrap();
         let identity = NodeIdentity::generate();
         let ctx = "bash: cargo test --workspace";
-        for idx in 0..4 {
+        for idx in 0..5 {
             let success = Trace::new_with_agent(
                 "tool:Bash".into(),
                 Outcome::Succeeded,
@@ -6669,7 +6669,7 @@ mod tests {
             );
             store.insert(&failed).unwrap();
         }
-        for idx in 0..4 {
+        for idx in 0..5 {
             let success = Trace::new_with_agent(
                 "tool:Bash".into(),
                 Outcome::Succeeded,
@@ -6689,7 +6689,8 @@ mod tests {
             store.insert(&success).unwrap();
         }
 
-        let mixed_priors = ambient_priors_for_context(&store, &simhash(mixed_ctx), None, 3);
+        let mixed_priors =
+            ambient_priors_for_context(&store, &simhash(mixed_ctx), None, None, 3);
         assert!(!mixed_priors.is_empty());
         assert!(
             mixed_priors
@@ -6702,12 +6703,13 @@ mod tests {
                 .any(|prior| prior.kind == "mixed-residue")
         );
 
-        let stable_priors = ambient_priors_for_context(&store, &simhash(stable_ctx), None, 3);
+        let stable_priors =
+            ambient_priors_for_context(&store, &simhash(stable_ctx), None, None, 3);
         assert!(!stable_priors.is_empty());
         assert!(
             stable_priors
                 .iter()
-                .any(|prior| prior.summary.contains("prior success"))
+                .any(|prior| prior.summary.contains("crossed this context"))
         );
         assert!(
             stable_priors
@@ -6770,9 +6772,90 @@ mod tests {
             store.insert(&failed).unwrap();
         }
 
-        let priors = ambient_priors_for_context(&store, &simhash(ctx), None, 2);
+        let priors = ambient_priors_for_context(&store, &simhash(ctx), None, None, 2);
         assert_eq!(priors.len(), 2);
         assert!(priors[0].confidence >= priors[1].confidence);
+    }
+
+    #[test]
+    fn ambient_priors_bias_toward_current_goal_without_new_ontology() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let ctx = "repair deployment after repeated endpoint failures but with one previously stable path";
+        for idx in 0..5 {
+            let success = Trace::new_with_agent(
+                "tool:Bash".into(),
+                Outcome::Succeeded,
+                0,
+                1,
+                simhash(ctx),
+                Some(ctx.into()),
+                Some(format!("success-{idx}")),
+                None,
+                Some(identity.device_identity()),
+                None,
+                None,
+                "codex".into(),
+                identity.public_key_bytes(),
+                |msg| identity.sign(msg),
+            );
+            store.insert(&success).unwrap();
+        }
+        for idx in 0..3 {
+            let failed = Trace::new_with_agent(
+                "tool:Bash".into(),
+                Outcome::Failed,
+                0,
+                1,
+                simhash(ctx),
+                Some(ctx.into()),
+                Some(format!("failed-{idx}")),
+                None,
+                Some(identity.device_identity()),
+                None,
+                None,
+                "codex".into(),
+                identity.public_key_bytes(),
+                |msg| identity.sign(msg),
+            );
+            store.insert(&failed).unwrap();
+        }
+
+        let build_priors = ambient_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            Some(thronglets::ambient::AmbientTurnGoal::Build),
+            3,
+        );
+        let repair_priors = ambient_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            Some(thronglets::ambient::AmbientTurnGoal::Repair),
+            3,
+        );
+
+        let build_success = build_priors
+            .iter()
+            .find(|prior| prior.kind == "success-prior")
+            .unwrap();
+        let repair_success = repair_priors
+            .iter()
+            .find(|prior| prior.kind == "success-prior")
+            .unwrap();
+        let build_failure = build_priors
+            .iter()
+            .find(|prior| prior.kind == "failure-residue")
+            .unwrap();
+        let repair_failure = repair_priors
+            .iter()
+            .find(|prior| prior.kind == "failure-residue")
+            .unwrap();
+
+        assert!(build_success.confidence > repair_success.confidence);
+        assert!(repair_failure.confidence > build_failure.confidence);
+        assert!(repair_priors.iter().all(|prior| prior.goal.is_some()));
     }
 
     #[test]

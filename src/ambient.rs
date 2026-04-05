@@ -6,11 +6,34 @@ use crate::storage::TraceStore;
 
 pub const AMBIENT_PRIOR_SCHEMA_VERSION: &str = "thronglets.ambient.v1";
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmbientTurnGoal {
+    Explore,
+    Build,
+    Repair,
+    Settle,
+}
+
+impl AmbientTurnGoal {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "explore" => Some(Self::Explore),
+            "build" => Some(Self::Build),
+            "repair" => Some(Self::Repair),
+            "settle" => Some(Self::Settle),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AmbientPriorRequest {
     pub text: String,
     #[serde(default)]
     pub space: Option<String>,
+    #[serde(default)]
+    pub goal: Option<AmbientTurnGoal>,
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -21,6 +44,8 @@ pub struct AmbientPriorProjection {
     pub summary: String,
     pub confidence: f32,
     pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal: Option<AmbientTurnGoal>,
     pub refs: Vec<String>,
 }
 
@@ -30,6 +55,8 @@ pub struct AmbientPriorSummary {
     pub emitted: usize,
     pub context_hash: String,
     pub space: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal: Option<AmbientTurnGoal>,
 }
 
 #[derive(Serialize)]
@@ -50,10 +77,11 @@ pub fn ambient_prior_data(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let limit = request.limit.unwrap_or(PREHOOK_MAX_HINTS).clamp(1, PREHOOK_MAX_HINTS);
+    let goal = request.goal;
     let priors = if text.is_empty() {
         Vec::new()
     } else {
-        ambient_priors_for_context(store, &context_hash, space, limit)
+        ambient_priors_for_context(store, &context_hash, space, goal, limit)
     };
 
     AmbientPriorData {
@@ -62,6 +90,7 @@ pub fn ambient_prior_data(
             emitted: priors.len(),
             context_hash: hex_encode(&context_hash),
             space: space.map(str::to_string),
+            goal,
         },
         priors,
     }
@@ -71,6 +100,7 @@ pub fn ambient_priors_for_context(
     store: &TraceStore,
     context_hash: &[u8; 16],
     space: Option<&str>,
+    goal: Option<AmbientTurnGoal>,
     limit: usize,
 ) -> Vec<AmbientPriorProjection> {
     let mut priors = Vec::new();
@@ -100,6 +130,7 @@ pub fn ambient_priors_for_context(
             ),
             confidence,
             provider: "thronglets".into(),
+            goal,
             refs,
         });
     }
@@ -133,6 +164,7 @@ pub fn ambient_priors_for_context(
             ),
             confidence,
             provider: "thronglets".into(),
+            goal,
             refs,
         });
     }
@@ -157,10 +189,12 @@ pub fn ambient_priors_for_context(
             summary: format!("{scope}: {convergent} similar session(s) crossed this context"),
             confidence,
             provider: "thronglets".into(),
+            goal,
             refs,
         });
     }
 
+    apply_goal_bias(&mut priors, goal);
     priors.sort_by(|a, b| {
         b.confidence
             .partial_cmp(&a.confidence)
@@ -172,4 +206,29 @@ pub fn ambient_priors_for_context(
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn apply_goal_bias(priors: &mut [AmbientPriorProjection], goal: Option<AmbientTurnGoal>) {
+    let Some(goal) = goal else {
+        return;
+    };
+
+    for prior in priors.iter_mut() {
+        let factor = match (goal, prior.kind) {
+            (AmbientTurnGoal::Explore, "failure-residue") => 0.92,
+            (AmbientTurnGoal::Explore, "mixed-residue") => 0.96,
+            (AmbientTurnGoal::Explore, "success-prior") => 0.88,
+            (AmbientTurnGoal::Build, "failure-residue") => 0.96,
+            (AmbientTurnGoal::Build, "mixed-residue") => 0.98,
+            (AmbientTurnGoal::Build, "success-prior") => 1.10,
+            (AmbientTurnGoal::Repair, "failure-residue") => 1.12,
+            (AmbientTurnGoal::Repair, "mixed-residue") => 1.08,
+            (AmbientTurnGoal::Repair, "success-prior") => 0.90,
+            (AmbientTurnGoal::Settle, "failure-residue") => 1.04,
+            (AmbientTurnGoal::Settle, "mixed-residue") => 1.10,
+            (AmbientTurnGoal::Settle, "success-prior") => 1.06,
+            _ => 1.0,
+        };
+        prior.confidence = (prior.confidence * factor).clamp(0.0, 0.98);
+    }
 }
