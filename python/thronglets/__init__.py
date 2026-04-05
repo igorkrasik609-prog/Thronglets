@@ -9,7 +9,7 @@ from pathlib import Path
 
 import os
 
-__version__ = "0.7.4"
+__version__ = "0.7.5"
 
 VERSION = os.environ.get("THRONGLETS_INSTALL_VERSION", __version__)
 REPO = os.environ.get("THRONGLETS_INSTALL_REPO", "Shangri-la-0428/Thronglets")

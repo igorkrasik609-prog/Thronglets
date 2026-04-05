@@ -1,5 +1,7 @@
 use serde_json::Value as JsonValue;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
 
@@ -208,6 +210,17 @@ fn package_installers_read_version_from_a_single_source() {
     assert!(!npm_bin.contains("THRONGLETS_REPO_ROOT"));
     assert!(!npm_bin.contains("findRepoRoot"));
     assert!(!npm_bin.contains("cargo, [\"run\", \"--quiet\", \"--manifest-path\""));
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(repo_root().join("npm/bin/thronglets.js"))
+            .expect("npm bin metadata")
+            .permissions()
+            .mode();
+        assert!(
+            mode & 0o111 != 0,
+            "npm/bin/thronglets.js should keep an executable bit so npm global installs expose a runnable CLI"
+        );
+    }
 
     let python_installer = read("python/thronglets/__init__.py");
     assert!(python_installer.contains("THRONGLETS_INSTALL_VERSION"));
