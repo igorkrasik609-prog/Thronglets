@@ -1226,7 +1226,7 @@ mod tests {
             file.surfaces
                 .get("thronglets")
                 .map(|surface| surface.install.package.as_str()),
-            Some("thronglets>=0.7.3")
+            Some("thronglets>=0.7.4")
         );
         assert!(!file.surfaces.contains_key("oasyce"));
     }
