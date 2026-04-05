@@ -18,10 +18,8 @@ use setup_support::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use thronglets::ambient::{AMBIENT_PRIOR_SCHEMA_VERSION, AmbientPriorRequest, ambient_prior_data};
 use thronglets::anchor::AnchorClient;
-use thronglets::ambient::{
-    AMBIENT_PRIOR_SCHEMA_VERSION, AmbientPriorRequest, ambient_prior_data,
-};
 use thronglets::context::{simhash, similarity as context_similarity};
 use thronglets::continuity::{
     ContinuitySnapshotSummary, ContinuitySpaceData, summarize_recent_continuity,
@@ -34,8 +32,8 @@ use thronglets::eval::{
     LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
 };
 use thronglets::identity::{
-    ConnectionFile, ConnectionSeedScope, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding,
-    NodeIdentity, identity_binding_path,
+    ConnectionBootstrapManifest, ConnectionFile, ConnectionSeedScope,
+    DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding, NodeIdentity, identity_binding_path,
 };
 use thronglets::identity_surface::{
     AuthorizationCheckData, IdentitySummary, authorization_check_data, authorization_summary,
@@ -237,6 +235,7 @@ struct ConnectionInspectData {
     summary: ReadinessSummary,
     identity: IdentitySummary,
     file: String,
+    bootstrap: Option<ConnectionBootstrapManifest>,
     primary_device_pubkey: String,
     peer_seed_scope: &'static str,
     trusted_peer_seed_count: usize,
@@ -3070,6 +3069,7 @@ async fn main() {
                 readiness: exported.summary,
                 identity: exported.identity,
                 output: exported.output,
+                bootstrap: exported.bootstrap,
                 peer_seed_scope: exported.peer_seed_scope,
                 trusted_peer_seed_count: exported.trusted_peer_seed_count,
                 peer_seed_count: exported.peer_seed_count,
@@ -3266,6 +3266,9 @@ async fn main() {
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
+                if let Some(bootstrap) = &data.bootstrap {
+                    println!("  AI join:            {}", bootstrap.join.argv.join(" "));
+                }
                 if let Some(step) = &data.summary.next_step {
                     println!("  Next:               {step}");
                 }
@@ -3309,6 +3312,7 @@ async fn main() {
                 summary: readiness,
                 identity,
                 file: file.display().to_string(),
+                bootstrap: connection.bootstrap.clone(),
                 primary_device_pubkey: connection.primary_device_pubkey.clone(),
                 peer_seed_scope,
                 trusted_peer_seed_count: inspected_trusted_peer_seed_count,
@@ -3338,6 +3342,9 @@ async fn main() {
                 println!("  Trusted seeds:      {}", data.trusted_peer_seed_count);
                 println!("  Peer seeds:         {}", data.peer_seed_count);
                 println!("  Expires in:         {}h", data.ttl_hours);
+                if let Some(bootstrap) = &data.bootstrap {
+                    println!("  AI join:            {}", bootstrap.join.argv.join(" "));
+                }
                 if let Some(step) = &data.summary.next_step {
                     println!("  Next:               {step}");
                 }
@@ -4549,7 +4556,9 @@ async fn main() {
                 signals.push(Signal {
                     kind: SignalKind::History,
                     score,
-                    body: format!("  ⚠ risk residue: {count} similar failure session(s) ({snippet})"),
+                    body: format!(
+                        "  ⚠ risk residue: {count} similar failure session(s) ({snippet})"
+                    ),
                     candidate: None,
                 });
             }
@@ -4913,7 +4922,9 @@ async fn main() {
         | Commands::Doctor { .. }
         | Commands::Bootstrap { .. }
         | Commands::ClearRestart { .. }
-        | Commands::RuntimeReady { .. } => unreachable!("adapter surfaces handled before identity bootstrap"),
+        | Commands::RuntimeReady { .. } => {
+            unreachable!("adapter surfaces handled before identity bootstrap")
+        }
 
         Commands::Serve {
             port,
@@ -6660,8 +6671,16 @@ mod tests {
                 .iter()
                 .any(|prior| prior.kind == "success-prior")
         );
-        assert!(mixed_priors.iter().all(|prior| prior.provider == "thronglets"));
-        assert!(stable_priors.iter().all(|prior| prior.provider == "thronglets"));
+        assert!(
+            mixed_priors
+                .iter()
+                .all(|prior| prior.provider == "thronglets")
+        );
+        assert!(
+            stable_priors
+                .iter()
+                .all(|prior| prior.provider == "thronglets")
+        );
     }
 
     #[test]

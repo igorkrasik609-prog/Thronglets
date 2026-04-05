@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use thronglets::identity::{ConnectionFile, ConnectionSeedScope, IdentityBinding, NodeIdentity};
+use thronglets::identity::{
+    ConnectionBootstrapManifest, ConnectionFile, ConnectionSeedScope, IdentityBinding, NodeIdentity,
+};
 use thronglets::identity_surface::{IdentitySummary, identity_summary};
 use thronglets::posts::is_signal_capability;
 use thronglets::presence::is_presence_capability;
@@ -44,6 +46,7 @@ pub(crate) struct ShareFlowData {
     pub(crate) readiness: ReadinessSummary,
     pub(crate) identity: IdentitySummary,
     pub(crate) output: String,
+    pub(crate) bootstrap: Option<ConnectionBootstrapManifest>,
     pub(crate) peer_seed_scope: &'static str,
     pub(crate) trusted_peer_seed_count: usize,
     pub(crate) peer_seed_count: usize,
@@ -66,6 +69,7 @@ pub(crate) struct ConnectionExportData {
     pub(crate) summary: ReadinessSummary,
     pub(crate) identity: IdentitySummary,
     pub(crate) output: String,
+    pub(crate) bootstrap: Option<ConnectionBootstrapManifest>,
     pub(crate) primary_device_pubkey: String,
     pub(crate) signed_by_device: String,
     pub(crate) peer_seed_scope: &'static str,
@@ -376,18 +380,16 @@ pub(crate) fn summarize_share_flow(
             status: "share-ready",
             detail: "This device exported a strong same-owner connection file. The next device should inherit identity plus a trusted recovery path.".into(),
             next_step: Some(format!(
-                "Send {} to the second device, save it as ~/Desktop/{}, then run `thronglets join` there.",
+                "Send {} to the second device or directly to another AI. The file already carries bootstrap metadata for installing `oasyce-sdk` and running `oasyce join <connection-file>` there.",
                 output.display(),
-                DEFAULT_CONNECTION_FILE_NAME
             )),
         },
         "identity-plus-peer-seeds" => OnboardingSummary {
             status: "share-ready",
             detail: "This device exported a usable connection file with remembered peer paths. The next device should inherit identity plus reusable network paths.".into(),
             next_step: Some(format!(
-                "Send {} to the second device, save it as ~/Desktop/{}, then run `thronglets join` there.",
+                "Send {} to the second device or directly to another AI. The file already carries bootstrap metadata for installing `oasyce-sdk` and running `oasyce join <connection-file>` there.",
                 output.display(),
-                DEFAULT_CONNECTION_FILE_NAME
             )),
         },
         _ => OnboardingSummary {
@@ -470,6 +472,9 @@ pub(crate) fn render_share_flow_report(data: &ShareFlowData) {
     println!("  Meaning: {}", data.summary.detail);
     println!("  Output:  {}", data.output);
     println!("  State:   {}", human_readiness_label(&data.readiness));
+    if let Some(bootstrap) = &data.bootstrap {
+        println!("  AI join: {}", bootstrap.join.argv.join(" "));
+    }
     if let Some(step) = &data.summary.next_step {
         println!("  Next:    {step}");
     }
@@ -572,6 +577,7 @@ pub(crate) fn export_connection_file(
         summary: readiness,
         identity: identity_summary("exported", identity_binding),
         output: output.display().to_string(),
+        bootstrap: connection.bootstrap.clone(),
         primary_device_pubkey: connection.primary_device_pubkey.clone(),
         signed_by_device: connection.primary_device_identity.clone(),
         peer_seed_scope,

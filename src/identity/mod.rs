@@ -17,8 +17,11 @@ use std::path::Path;
 const IDENTITY_BINDING_SCHEMA_VERSION: &str = "thronglets.identity.v1";
 const CONNECTION_FILE_SCHEMA_VERSION: &str = "thronglets.connection.v1";
 const CONNECTION_FILE_SIGNING_DOMAIN: &[u8] = b"thronglets.connection.v1";
+const CONNECTION_BOOTSTRAP_SCHEMA_VERSION: &str = "oasyce.bootstrap.v1";
 const OASYCE_LOCAL_BINDING_SCHEMA_VERSION: &str = "oasyce.identity.v1";
 const OASYCE_DELEGATE_POLICY_SCHEMA_VERSION: &str = "oasyce.delegate_policy.v1";
+const OASYCE_BOOTSTRAP_MIN_VERSION: &str = "0.10.4";
+const CONNECTION_FILE_ARG_PLACEHOLDER: &str = "<connection-file>";
 pub const DEFAULT_CONNECTION_FILE_TTL_HOURS: u32 = 24;
 
 /// A node's identity: ed25519 keypair + derived addresses.
@@ -62,9 +65,33 @@ pub struct ConnectionFile {
     pub peer_seed_scope: ConnectionSeedScope,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peer_seeds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<ConnectionBootstrapManifest>,
     pub exported_at: u64,
     pub expires_at: u64,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionBootstrapManifest {
+    pub schema_version: String,
+    pub install: BootstrapInstallHint,
+    pub join: BootstrapCommandHint,
+    pub verify: BootstrapCommandHint,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BootstrapInstallHint {
+    pub ecosystem: String,
+    pub package: String,
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BootstrapCommandHint {
+    pub argv: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,6 +147,78 @@ impl OasyceDelegatePolicy {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "delegate policy allowed_msgs cannot be empty",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ConnectionBootstrapManifest {
+    pub fn default_oasyce_join() -> Self {
+        Self {
+            schema_version: CONNECTION_BOOTSTRAP_SCHEMA_VERSION.into(),
+            install: BootstrapInstallHint {
+                ecosystem: "python".into(),
+                package: format!("oasyce-sdk>={OASYCE_BOOTSTRAP_MIN_VERSION}"),
+                argv: vec![
+                    "python3".into(),
+                    "-m".into(),
+                    "pip".into(),
+                    "install".into(),
+                    "--user".into(),
+                    "-U".into(),
+                    format!("oasyce-sdk>={OASYCE_BOOTSTRAP_MIN_VERSION}"),
+                ],
+            },
+            join: BootstrapCommandHint {
+                argv: vec![
+                    "oasyce".into(),
+                    "join".into(),
+                    CONNECTION_FILE_ARG_PLACEHOLDER.into(),
+                ],
+            },
+            verify: BootstrapCommandHint {
+                argv: vec!["oasyce".into(), "status".into()],
+            },
+            activates: vec!["thronglets".into(), "psyche".into(), "chain".into()],
+        }
+    }
+
+    fn validate(&self) -> std::io::Result<()> {
+        if self.schema_version != CONNECTION_BOOTSTRAP_SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported connection bootstrap schema_version",
+            ));
+        }
+        if self.install.ecosystem.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bootstrap install ecosystem cannot be empty",
+            ));
+        }
+        if self.install.package.trim().is_empty() || self.install.argv.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bootstrap install hint cannot be empty",
+            ));
+        }
+        if self.join.argv.is_empty()
+            || !self
+                .join
+                .argv
+                .iter()
+                .any(|arg| arg == CONNECTION_FILE_ARG_PLACEHOLDER)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bootstrap join hint must include a connection-file placeholder",
+            ));
+        }
+        if self.verify.argv.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bootstrap verify hint cannot be empty",
             ));
         }
         Ok(())
@@ -454,6 +553,7 @@ impl ConnectionFile {
             primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
             peer_seed_scope,
             peer_seeds,
+            bootstrap: Some(ConnectionBootstrapManifest::default_oasyce_join()),
             exported_at,
             expires_at: exported_at.saturating_add(ttl_hours as u64 * 60 * 60 * 1000),
             signature: String::new(),
@@ -491,6 +591,9 @@ impl ConnectionFile {
                     "connection file delegate policy principal must match owner_account",
                 ));
             }
+        }
+        if let Some(bootstrap) = &file.bootstrap {
+            bootstrap.validate()?;
         }
         file.verify()?;
         if file.is_expired_at(now_ms()) {
@@ -583,6 +686,11 @@ impl ConnectionFile {
             .as_ref()
             .map(|policy| serde_json::to_string(policy).expect("delegate policy should serialize"));
         push_optional_bytes(&mut buf, delegate_policy_json.as_deref());
+        if let Some(bootstrap) = self.bootstrap.as_ref() {
+            let bootstrap_json =
+                serde_json::to_string(bootstrap).expect("bootstrap manifest should serialize");
+            push_optional_bytes(&mut buf, Some(bootstrap_json.as_str()));
+        }
         buf.extend_from_slice(&self.exported_at.to_le_bytes());
         buf.extend_from_slice(&self.expires_at.to_le_bytes());
         buf
@@ -845,6 +953,21 @@ mod tests {
         );
         assert_eq!(loaded.peer_seed_scope, ConnectionSeedScope::Trusted);
         assert_eq!(loaded.peer_seeds.len(), 1);
+        assert_eq!(
+            loaded
+                .bootstrap
+                .as_ref()
+                .map(|bootstrap| bootstrap.schema_version.as_str()),
+            Some(CONNECTION_BOOTSTRAP_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            loaded
+                .bootstrap
+                .as_ref()
+                .and_then(|bootstrap| bootstrap.join.argv.get(2))
+                .map(String::as_str),
+            Some(CONNECTION_FILE_ARG_PLACEHOLDER)
+        );
         assert!(loaded.expires_at > loaded.exported_at);
     }
 
@@ -920,6 +1043,36 @@ mod tests {
         .unwrap();
         assert_eq!(file.owner_account, None);
         assert_eq!(file.primary_device_identity, node.device_identity());
+        assert_eq!(
+            file.bootstrap
+                .as_ref()
+                .map(|bootstrap| bootstrap.install.package.as_str()),
+            Some("oasyce-sdk>=0.10.4")
+        );
+    }
+
+    #[test]
+    fn legacy_connection_file_without_bootstrap_still_loads() {
+        let dir = TempDir::new().unwrap();
+        let node = NodeIdentity::generate();
+        let binding = IdentityBinding::new(node.device_identity())
+            .bind_owner_account("oasyce1owner".into())
+            .unwrap();
+        let mut file = ConnectionFile::from_binding(
+            &binding,
+            &node,
+            DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            ConnectionSeedScope::Remembered,
+            vec![],
+        )
+        .unwrap();
+        file.bootstrap = None;
+        file.sign_with(&node);
+        let path = dir.path().join("legacy.connection.json");
+        file.save(&path).unwrap();
+
+        let loaded = ConnectionFile::load(&path).unwrap();
+        assert!(loaded.bootstrap.is_none());
     }
 
     #[test]

@@ -301,6 +301,16 @@ fn share_json_defaults_to_desktop_connection_file_for_primary_device() {
     assert_eq!(shared["data"]["summary"]["status"], "share-limited");
     assert_eq!(shared["data"]["readiness"]["status"], "identity-only");
     assert_eq!(
+        shared["data"]["bootstrap"]["install"]["package"],
+        "oasyce-sdk>=0.10.4"
+    );
+    assert_eq!(shared["data"]["bootstrap"]["join"]["argv"][0], "oasyce");
+    assert_eq!(shared["data"]["bootstrap"]["join"]["argv"][1], "join");
+    assert_eq!(
+        shared["data"]["bootstrap"]["join"]["argv"][2],
+        "<connection-file>"
+    );
+    assert_eq!(
         shared["data"]["output"],
         home.join("Desktop")
             .join("thronglets.connection.json")
@@ -384,6 +394,15 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     assert_eq!(exported["data"]["peer_seed_count"], 0);
     assert_eq!(exported["data"]["ttl_hours"], 24);
     assert!(exported["data"]["expires_at"].as_u64().unwrap() > 0);
+    assert_eq!(
+        exported["data"]["bootstrap"]["install"]["package"],
+        "oasyce-sdk>=0.10.4"
+    );
+    assert_eq!(exported["data"]["bootstrap"]["join"]["argv"][0], "oasyce");
+    assert_eq!(
+        exported["data"]["bootstrap"]["join"]["argv"][2],
+        "<connection-file>"
+    );
 
     let joined = run_bin(
         &[
@@ -482,6 +501,11 @@ fn connection_export_and_join_carry_oasyce_delegate_policy_bootstrap() {
 
     let exported_file: Value =
         serde_json::from_slice(&std::fs::read(&connection_file).unwrap()).unwrap();
+    assert_eq!(
+        exported_file["bootstrap"]["install"]["package"],
+        "oasyce-sdk>=0.10.4"
+    );
+    assert_eq!(exported_file["bootstrap"]["join"]["argv"][0], "oasyce");
     assert_eq!(
         exported_file["oasyce_delegate_policy"]["principal"],
         "oasyce1owner"
