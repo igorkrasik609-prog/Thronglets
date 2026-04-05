@@ -16,9 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::ambient::{
-    AmbientPriorRequest, ambient_prior_data,
-};
+use crate::ambient::{AmbientPriorRequest, ambient_prior_data};
 use crate::anchor::AnchorClient;
 use crate::context::{simhash, similarity};
 use crate::continuity::{
@@ -378,6 +376,11 @@ fn tool_definitions() -> Value {
                         "space": {
                             "type": "string",
                             "description": "Optional substrate space filter"
+                        },
+                        "goal": {
+                            "type": "string",
+                            "enum": ["explore", "build", "repair", "settle"],
+                            "description": "Optional single current goal for this runtime turn"
                         },
                         "limit": {
                             "type": "integer",
@@ -1520,12 +1523,17 @@ fn handle_ambient_priors(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRes
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let goal = args
+        .get("goal")
+        .and_then(|v| v.as_str())
+        .and_then(crate::ambient::AmbientTurnGoal::parse);
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
     let response_json = ambient_prior_data(
         &ctx.store,
         &AmbientPriorRequest {
             text: text.to_string(),
             space: space.map(str::to_string),
+            goal,
             limit: Some(limit),
         },
     );
@@ -2065,6 +2073,7 @@ mod tests {
                 "name": "ambient_priors",
                 "arguments": {
                     "text": "restart thronglets service after ssh timeout",
+                    "goal": "repair",
                     "limit": 3
                 }
             }),
@@ -2079,9 +2088,11 @@ mod tests {
         let parsed: Value =
             serde_json::from_str(&text).expect("ambient prior response should be valid JSON");
         assert_eq!(parsed["summary"]["status"], "ready");
+        assert_eq!(parsed["summary"]["goal"], "repair");
         let priors = parsed["priors"].as_array().unwrap();
         assert!(!priors.is_empty());
         assert_eq!(priors[0]["kind"], "failure-residue");
+        assert_eq!(priors[0]["goal"], "repair");
         assert!(
             priors[0]["summary"]
                 .as_str()

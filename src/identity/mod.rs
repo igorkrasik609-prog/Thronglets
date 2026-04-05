@@ -1274,8 +1274,14 @@ mod tests {
         file.save(&path).unwrap();
 
         let loaded = ConnectionFile::load(&path).unwrap();
-        assert_eq!(loaded.artifact_type.as_deref(), Some(LEGACY_CONNECTION_FILE_ARTIFACT_TYPE));
-        assert_eq!(loaded.effective_preferred_surface().as_deref(), Some("oasyce"));
+        assert_eq!(
+            loaded.artifact_type.as_deref(),
+            Some(LEGACY_CONNECTION_FILE_ARTIFACT_TYPE)
+        );
+        assert_eq!(
+            loaded.effective_preferred_surface().as_deref(),
+            Some("oasyce")
+        );
         assert!(loaded.effective_surfaces().contains_key("oasyce"));
     }
 

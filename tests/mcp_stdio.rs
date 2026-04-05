@@ -106,7 +106,10 @@ async fn mcp_full_protocol_handshake() {
     .await;
 
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert!(tools.len() >= 9, "expected at least 9 tools after ambient prior surface expansion");
+    assert!(
+        tools.len() >= 9,
+        "expected at least 9 tools after ambient prior surface expansion"
+    );
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(tool_names.contains(&"trace_record"));
     assert!(tool_names.contains(&"substrate_query"));
