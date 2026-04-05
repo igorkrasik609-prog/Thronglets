@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.7.5 — 2026-04-06
+
+- fix the npm wrapper packaging surface by shipping an executable `bin/thronglets.js`, so `npm install -g thronglets` produces a runnable public CLI
+- handoff install hints now require `thronglets>=0.7.5`, matching the repaired npm join surface
+
 ## v0.7.4 — 2026-04-06
 
 - handoff artifacts now include canonical repository locators for `thronglets` and `oasyce-sdk`, so receiving AIs can treat git links as discovery surfaces without defaulting to source checkouts
