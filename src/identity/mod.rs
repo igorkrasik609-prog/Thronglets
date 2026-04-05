@@ -25,8 +25,8 @@ const CONNECTION_FILE_ARTIFACT_PURPOSE: &str =
     "Send this file to another AI or machine to join the same Thronglets-based environment.";
 const OASYCE_LOCAL_BINDING_SCHEMA_VERSION: &str = "oasyce.identity.v1";
 const OASYCE_DELEGATE_POLICY_SCHEMA_VERSION: &str = "oasyce.delegate_policy.v1";
-const OASYCE_BOOTSTRAP_MIN_VERSION: &str = "0.10.5";
-const THRONGLETS_BOOTSTRAP_MIN_VERSION: &str = "0.7.3";
+const OASYCE_BOOTSTRAP_MIN_VERSION: &str = "0.10.6";
+const THRONGLETS_BOOTSTRAP_MIN_VERSION: &str = "0.7.4";
 const THRONGLETS_REPOSITORY_URL: &str = "https://github.com/Shangri-la-0428/Thronglets";
 const OASYCE_SDK_REPOSITORY_URL: &str = "https://github.com/Shangri-la-0428/oasyce-sdk";
 const LEGACY_CONNECTION_FILE_ARTIFACT_TYPE: &str = "oasyce.join-handoff";

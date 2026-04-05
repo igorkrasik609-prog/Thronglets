@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.7.4 — 2026-04-06
+
+- handoff artifacts now include canonical repository locators for `thronglets` and `oasyce-sdk`, so receiving AIs can treat git links as discovery surfaces without defaulting to source checkouts
+- handoff install hints now require `oasyce-sdk>=0.10.6` and `thronglets>=0.7.4`, matching the current signed `identity.v2` join path
+
 ## v0.7.0 — 2026-04-02
 
 - **Overlay effect signals** — `field.overlay(&context_hash, "capability")` now projects pheromone field state into a semantic-stable `FieldOverlay` struct with four dimensions: `familiarity` (how well the field knows this capability in this context), `consensus` (agreement across observations, inverse variance), `momentum` (activity trend, positive = recently active), and `coupling` (Hebbian connectedness to other capabilities); this is a pure read — no side effects, no field mutation — paralleling Psyche's `PsycheOverlay` pattern where internal state becomes a broadcast signal any external system can consume without coupling to any specific consumer
