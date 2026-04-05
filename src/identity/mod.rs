@@ -27,6 +27,8 @@ const OASYCE_LOCAL_BINDING_SCHEMA_VERSION: &str = "oasyce.identity.v1";
 const OASYCE_DELEGATE_POLICY_SCHEMA_VERSION: &str = "oasyce.delegate_policy.v1";
 const OASYCE_BOOTSTRAP_MIN_VERSION: &str = "0.10.5";
 const THRONGLETS_BOOTSTRAP_MIN_VERSION: &str = "0.7.3";
+const THRONGLETS_REPOSITORY_URL: &str = "https://github.com/Shangri-la-0428/Thronglets";
+const OASYCE_SDK_REPOSITORY_URL: &str = "https://github.com/Shangri-la-0428/oasyce-sdk";
 const LEGACY_CONNECTION_FILE_ARTIFACT_TYPE: &str = "oasyce.join-handoff";
 const CONNECTION_FILE_ARG_PLACEHOLDER: &str = "<connection-file>";
 pub const DEFAULT_CONNECTION_FILE_TTL_HOURS: u32 = 24;
@@ -102,6 +104,8 @@ pub struct BootstrapInstallHint {
     pub ecosystem: String,
     pub package: String,
     pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,6 +185,7 @@ impl ConnectionBootstrapManifest {
                     "-g".into(),
                     format!("thronglets@>={THRONGLETS_BOOTSTRAP_MIN_VERSION}"),
                 ],
+                repository: Some(THRONGLETS_REPOSITORY_URL.into()),
             },
             join: BootstrapCommandHint {
                 argv: vec![
@@ -211,6 +216,7 @@ impl ConnectionBootstrapManifest {
                     "-U".into(),
                     format!("oasyce-sdk>={OASYCE_BOOTSTRAP_MIN_VERSION}"),
                 ],
+                repository: Some(OASYCE_SDK_REPOSITORY_URL.into()),
             },
             join: BootstrapCommandHint {
                 argv: vec![
@@ -245,6 +251,14 @@ impl ConnectionBootstrapManifest {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "bootstrap install hint cannot be empty",
+            ));
+        }
+        if let Some(repository) = &self.install.repository
+            && repository.trim().is_empty()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bootstrap install repository cannot be empty",
             ));
         }
         if self.join.argv.is_empty()
