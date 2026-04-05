@@ -300,17 +300,27 @@ fn share_json_defaults_to_desktop_connection_file_for_primary_device() {
     assert_eq!(shared["command"], "share");
     assert_eq!(shared["data"]["summary"]["status"], "share-limited");
     assert_eq!(shared["data"]["readiness"]["status"], "identity-only");
+    assert_eq!(shared["data"]["preferred_surface"], "thronglets");
     assert_eq!(
-        shared["data"]["bootstrap"]["install"]["package"],
-        "oasyce-sdk>=0.10.4"
+        shared["data"]["surfaces"]["thronglets"]["install"]["package"],
+        "thronglets>=0.7.3"
     );
-    assert_eq!(shared["data"]["bootstrap"]["join"]["argv"][0], "oasyce");
-    assert_eq!(shared["data"]["bootstrap"]["join"]["argv"][1], "join");
     assert_eq!(
-        shared["data"]["bootstrap"]["join"]["argv"][2],
+        shared["data"]["surfaces"]["thronglets"]["join"]["argv"][0],
+        "thronglets"
+    );
+    assert_eq!(
+        shared["data"]["surfaces"]["thronglets"]["join"]["argv"][1],
+        "join"
+    );
+    assert_eq!(
+        shared["data"]["surfaces"]["thronglets"]["join"]["argv"][2],
         "<connection-file>"
     );
-    assert_eq!(shared["data"]["bootstrap"]["verify"]["argv"][0], "oasyce");
+    assert_eq!(
+        shared["data"]["surfaces"]["thronglets"]["verify"]["argv"][0],
+        "thronglets"
+    );
     assert_eq!(
         shared["data"]["output"],
         home.join("Desktop")
@@ -395,13 +405,14 @@ fn connection_join_json_preserves_secondary_device_and_owner_binding() {
     assert_eq!(exported["data"]["peer_seed_count"], 0);
     assert_eq!(exported["data"]["ttl_hours"], 24);
     assert!(exported["data"]["expires_at"].as_u64().unwrap() > 0);
+    assert_eq!(exported["data"]["preferred_surface"], "thronglets");
     assert_eq!(
-        exported["data"]["bootstrap"]["install"]["package"],
-        "oasyce-sdk>=0.10.4"
+        exported["data"]["surfaces"]["thronglets"]["install"]["package"],
+        "thronglets>=0.7.3"
     );
-    assert_eq!(exported["data"]["bootstrap"]["join"]["argv"][0], "oasyce");
+    assert!(exported["data"]["surfaces"].get("oasyce").is_none());
     assert_eq!(
-        exported["data"]["bootstrap"]["join"]["argv"][2],
+        exported["data"]["surfaces"]["thronglets"]["join"]["argv"][2],
         "<connection-file>"
     );
 
@@ -494,6 +505,7 @@ fn connection_export_and_join_carry_oasyce_delegate_policy_bootstrap() {
             "connection-export",
             "--output",
             connection_file.to_str().unwrap(),
+            "--include-oasyce-surface",
             "--json",
         ],
         &primary_home,
@@ -502,16 +514,21 @@ fn connection_export_and_join_carry_oasyce_delegate_policy_bootstrap() {
 
     let exported_file: Value =
         serde_json::from_slice(&std::fs::read(&connection_file).unwrap()).unwrap();
-    assert_eq!(exported_file["artifact_type"], "oasyce.join-handoff");
+    assert_eq!(exported_file["artifact_type"], "thronglets.join-handoff");
     assert_eq!(
         exported_file["artifact_purpose"],
-        "Send this file to another AI or machine to join the existing Oasyce environment."
+        "Send this file to another AI or machine to join the same Thronglets-based environment."
+    );
+    assert_eq!(exported_file["preferred_surface"], "oasyce");
+    assert_eq!(
+        exported_file["surfaces"]["thronglets"]["install"]["package"],
+        "thronglets>=0.7.3"
     );
     assert_eq!(
-        exported_file["bootstrap"]["install"]["package"],
+        exported_file["surfaces"]["oasyce"]["install"]["package"],
         "oasyce-sdk>=0.10.4"
     );
-    assert_eq!(exported_file["bootstrap"]["join"]["argv"][0], "oasyce");
+    assert_eq!(exported_file["surfaces"]["oasyce"]["join"]["argv"][0], "oasyce");
     assert_eq!(
         exported_file["oasyce_delegate_policy"]["principal"],
         "oasyce1owner"

@@ -342,6 +342,7 @@ async fn secondary_node_recovers_via_signed_connection_file_without_bootstrap() 
         &binding_a,
         &id_a,
         DEFAULT_CONNECTION_FILE_TTL_HOURS,
+        false,
         ConnectionSeedScope::Trusted,
         vec![trusted_a.to_string()],
     )

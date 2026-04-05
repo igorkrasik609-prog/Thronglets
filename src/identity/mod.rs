@@ -11,19 +11,23 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 const IDENTITY_BINDING_SCHEMA_VERSION: &str = "thronglets.identity.v1";
 const CONNECTION_FILE_SCHEMA_VERSION: &str = "thronglets.connection.v1";
 const CONNECTION_FILE_SIGNING_DOMAIN: &[u8] = b"thronglets.connection.v1";
-const CONNECTION_BOOTSTRAP_SCHEMA_VERSION: &str = "oasyce.bootstrap.v1";
-const CONNECTION_FILE_ARTIFACT_TYPE: &str = "oasyce.join-handoff";
+const CONNECTION_BOOTSTRAP_SCHEMA_VERSION: &str = "thronglets.surface.v1";
+const LEGACY_CONNECTION_BOOTSTRAP_SCHEMA_VERSION: &str = "oasyce.bootstrap.v1";
+const CONNECTION_FILE_ARTIFACT_TYPE: &str = "thronglets.join-handoff";
 const CONNECTION_FILE_ARTIFACT_PURPOSE: &str =
-    "Send this file to another AI or machine to join the existing Oasyce environment.";
+    "Send this file to another AI or machine to join the same Thronglets-based environment.";
 const OASYCE_LOCAL_BINDING_SCHEMA_VERSION: &str = "oasyce.identity.v1";
 const OASYCE_DELEGATE_POLICY_SCHEMA_VERSION: &str = "oasyce.delegate_policy.v1";
 const OASYCE_BOOTSTRAP_MIN_VERSION: &str = "0.10.4";
+const THRONGLETS_BOOTSTRAP_MIN_VERSION: &str = "0.7.3";
+const LEGACY_CONNECTION_FILE_ARTIFACT_TYPE: &str = "oasyce.join-handoff";
 const CONNECTION_FILE_ARG_PLACEHOLDER: &str = "<connection-file>";
 pub const DEFAULT_CONNECTION_FILE_TTL_HOURS: u32 = 24;
 
@@ -63,6 +67,8 @@ pub struct ConnectionFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_purpose: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_surface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_account: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oasyce_delegate_policy: Option<OasyceDelegatePolicy>,
@@ -72,6 +78,8 @@ pub struct ConnectionFile {
     pub peer_seed_scope: ConnectionSeedScope,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peer_seeds: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub surfaces: BTreeMap<String, ConnectionBootstrapManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<ConnectionBootstrapManifest>,
     pub exported_at: u64,
@@ -161,6 +169,33 @@ impl OasyceDelegatePolicy {
 }
 
 impl ConnectionBootstrapManifest {
+    pub fn default_thronglets_join() -> Self {
+        Self {
+            schema_version: CONNECTION_BOOTSTRAP_SCHEMA_VERSION.into(),
+            install: BootstrapInstallHint {
+                ecosystem: "npm".into(),
+                package: format!("thronglets>={THRONGLETS_BOOTSTRAP_MIN_VERSION}"),
+                argv: vec![
+                    "npm".into(),
+                    "install".into(),
+                    "-g".into(),
+                    format!("thronglets@>={THRONGLETS_BOOTSTRAP_MIN_VERSION}"),
+                ],
+            },
+            join: BootstrapCommandHint {
+                argv: vec![
+                    "thronglets".into(),
+                    "join".into(),
+                    CONNECTION_FILE_ARG_PLACEHOLDER.into(),
+                ],
+            },
+            verify: BootstrapCommandHint {
+                argv: vec!["thronglets".into(), "status".into()],
+            },
+            activates: vec!["thronglets".into()],
+        }
+    }
+
     pub fn default_oasyce_join() -> Self {
         Self {
             schema_version: CONNECTION_BOOTSTRAP_SCHEMA_VERSION.into(),
@@ -192,7 +227,9 @@ impl ConnectionBootstrapManifest {
     }
 
     fn validate(&self) -> std::io::Result<()> {
-        if self.schema_version != CONNECTION_BOOTSTRAP_SCHEMA_VERSION {
+        if self.schema_version != CONNECTION_BOOTSTRAP_SCHEMA_VERSION
+            && self.schema_version != LEGACY_CONNECTION_BOOTSTRAP_SCHEMA_VERSION
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported connection bootstrap schema_version",
@@ -544,25 +581,65 @@ impl IdentityBinding {
 }
 
 impl ConnectionFile {
+    pub fn effective_surfaces(&self) -> BTreeMap<String, ConnectionBootstrapManifest> {
+        if !self.surfaces.is_empty() {
+            return self.surfaces.clone();
+        }
+        let mut surfaces = BTreeMap::new();
+        if let Some(bootstrap) = self.bootstrap.as_ref() {
+            surfaces.insert("oasyce".into(), bootstrap.clone());
+        }
+        surfaces
+    }
+
+    pub fn effective_preferred_surface(&self) -> Option<String> {
+        if let Some(preferred) = self.preferred_surface.as_ref() {
+            return Some(preferred.clone());
+        }
+        if self.bootstrap.is_some() {
+            return Some("oasyce".into());
+        }
+        self.surfaces.keys().next().cloned()
+    }
+
     pub fn from_binding(
         binding: &IdentityBinding,
         node_identity: &NodeIdentity,
         ttl_hours: u32,
+        include_oasyce_surface: bool,
         peer_seed_scope: ConnectionSeedScope,
         peer_seeds: Vec<String>,
     ) -> std::io::Result<Self> {
         let exported_at = now_ms();
+        let mut surfaces = BTreeMap::new();
+        surfaces.insert(
+            "thronglets".into(),
+            ConnectionBootstrapManifest::default_thronglets_join(),
+        );
+        if include_oasyce_surface {
+            surfaces.insert(
+                "oasyce".into(),
+                ConnectionBootstrapManifest::default_oasyce_join(),
+            );
+        }
+        let preferred_surface = if surfaces.contains_key("oasyce") {
+            Some("oasyce".into())
+        } else {
+            Some("thronglets".into())
+        };
         let mut file = Self {
             schema_version: CONNECTION_FILE_SCHEMA_VERSION.to_string(),
             artifact_type: Some(CONNECTION_FILE_ARTIFACT_TYPE.into()),
             artifact_purpose: Some(CONNECTION_FILE_ARTIFACT_PURPOSE.into()),
+            preferred_surface,
             owner_account: binding.owner_account.clone(),
             oasyce_delegate_policy: binding.oasyce_delegate_policy.clone(),
             primary_device_identity: binding.device_identity.clone(),
             primary_device_pubkey: hex::encode(&node_identity.public_key_bytes()),
             peer_seed_scope,
             peer_seeds,
-            bootstrap: Some(ConnectionBootstrapManifest::default_oasyce_join()),
+            surfaces,
+            bootstrap: None,
             exported_at,
             expires_at: exported_at.saturating_add(ttl_hours as u64 * 60 * 60 * 1000),
             signature: String::new(),
@@ -576,7 +653,9 @@ impl ConnectionFile {
         let file: Self = serde_json::from_slice(&bytes).map_err(invalid_data)?;
         match (&file.artifact_type, &file.artifact_purpose) {
             (Some(artifact_type), Some(purpose)) => {
-                if artifact_type != CONNECTION_FILE_ARTIFACT_TYPE {
+                if artifact_type != CONNECTION_FILE_ARTIFACT_TYPE
+                    && artifact_type != LEGACY_CONNECTION_FILE_ARTIFACT_TYPE
+                {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "unsupported connection file artifact_type",
@@ -596,6 +675,25 @@ impl ConnectionFile {
                     "connection file artifact_type and artifact_purpose must appear together",
                 ));
             }
+        }
+        if let Some(preferred_surface) = &file.preferred_surface {
+            if preferred_surface.trim().is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "preferred_surface cannot be empty",
+                ));
+            }
+            if !file.surfaces.is_empty() && !file.surfaces.contains_key(preferred_surface) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "preferred_surface must exist in surfaces",
+                ));
+            }
+        } else if !file.surfaces.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "preferred_surface is required when surfaces are present",
+            ));
         }
         if file.owner_account.as_deref().is_some_and(str::is_empty) {
             return Err(std::io::Error::new(
@@ -623,6 +721,9 @@ impl ConnectionFile {
                     "connection file delegate policy principal must match owner_account",
                 ));
             }
+        }
+        for surface in file.surfaces.values() {
+            surface.validate()?;
         }
         if let Some(bootstrap) = &file.bootstrap {
             bootstrap.validate()?;
@@ -703,10 +804,11 @@ impl ConnectionFile {
     }
 
     fn signable_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(192);
+        let mut buf = Vec::with_capacity(256);
         buf.extend_from_slice(CONNECTION_FILE_SIGNING_DOMAIN);
         push_optional_bytes(&mut buf, self.artifact_type.as_deref());
         push_optional_bytes(&mut buf, self.artifact_purpose.as_deref());
+        push_optional_bytes(&mut buf, self.preferred_surface.as_deref());
         push_optional_bytes(&mut buf, Some(self.owner_account.as_deref().unwrap_or("")));
         push_optional_bytes(&mut buf, Some(self.primary_device_identity.as_str()));
         push_optional_bytes(&mut buf, Some(self.primary_device_pubkey.as_str()));
@@ -720,6 +822,13 @@ impl ConnectionFile {
             .as_ref()
             .map(|policy| serde_json::to_string(policy).expect("delegate policy should serialize"));
         push_optional_bytes(&mut buf, delegate_policy_json.as_deref());
+        buf.extend_from_slice(&(self.surfaces.len() as u32).to_le_bytes());
+        for (name, surface) in &self.surfaces {
+            push_optional_bytes(&mut buf, Some(name.as_str()));
+            let surface_json =
+                serde_json::to_string(surface).expect("surface manifest should serialize");
+            push_optional_bytes(&mut buf, Some(surface_json.as_str()));
+        }
         if let Some(bootstrap) = self.bootstrap.as_ref() {
             let bootstrap_json =
                 serde_json::to_string(bootstrap).expect("bootstrap manifest should serialize");
@@ -972,6 +1081,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            true,
             ConnectionSeedScope::Trusted,
             vec!["/ip4/10.0.0.1/tcp/4001".into()],
         )
@@ -993,20 +1103,21 @@ mod tests {
             loaded.artifact_purpose.as_deref(),
             Some(CONNECTION_FILE_ARTIFACT_PURPOSE)
         );
+        assert_eq!(loaded.preferred_surface.as_deref(), Some("oasyce"));
         assert_eq!(loaded.peer_seed_scope, ConnectionSeedScope::Trusted);
         assert_eq!(loaded.peer_seeds.len(), 1);
         assert_eq!(
             loaded
-                .bootstrap
-                .as_ref()
-                .map(|bootstrap| bootstrap.schema_version.as_str()),
+                .surfaces
+                .get("thronglets")
+                .map(|surface| surface.schema_version.as_str()),
             Some(CONNECTION_BOOTSTRAP_SCHEMA_VERSION)
         );
         assert_eq!(
             loaded
-                .bootstrap
-                .as_ref()
-                .and_then(|bootstrap| bootstrap.join.argv.get(2))
+                .surfaces
+                .get("oasyce")
+                .and_then(|surface| surface.join.argv.get(2))
                 .map(String::as_str),
             Some(CONNECTION_FILE_ARG_PLACEHOLDER)
         );
@@ -1030,6 +1141,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            true,
             ConnectionSeedScope::Trusted,
             vec!["/ip4/10.0.0.1/tcp/4001".into()],
         )
@@ -1058,6 +1170,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            true,
             ConnectionSeedScope::Remembered,
             vec![],
         )
@@ -1079,6 +1192,7 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            false,
             ConnectionSeedScope::Trusted,
             vec![],
         )
@@ -1092,13 +1206,15 @@ mod tests {
             file.artifact_purpose.as_deref(),
             Some(CONNECTION_FILE_ARTIFACT_PURPOSE)
         );
+        assert_eq!(file.preferred_surface.as_deref(), Some("thronglets"));
         assert_eq!(file.primary_device_identity, node.device_identity());
         assert_eq!(
-            file.bootstrap
-                .as_ref()
-                .map(|bootstrap| bootstrap.install.package.as_str()),
-            Some("oasyce-sdk>=0.10.4")
+            file.surfaces
+                .get("thronglets")
+                .map(|surface| surface.install.package.as_str()),
+            Some("thronglets>=0.7.3")
         );
+        assert!(!file.surfaces.contains_key("oasyce"));
     }
 
     #[test]
@@ -1112,12 +1228,15 @@ mod tests {
             &binding,
             &node,
             DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            false,
             ConnectionSeedScope::Remembered,
             vec![],
         )
         .unwrap();
         file.artifact_type = None;
         file.artifact_purpose = None;
+        file.preferred_surface = None;
+        file.surfaces.clear();
         file.bootstrap = None;
         file.sign_with(&node);
         let path = dir.path().join("legacy.connection.json");
@@ -1125,6 +1244,39 @@ mod tests {
 
         let loaded = ConnectionFile::load(&path).unwrap();
         assert!(loaded.bootstrap.is_none());
+        assert!(loaded.surfaces.is_empty());
+    }
+
+    #[test]
+    fn legacy_oasyce_bootstrap_surface_still_loads() {
+        let dir = TempDir::new().unwrap();
+        let node = NodeIdentity::generate();
+        let binding = IdentityBinding::new(node.device_identity())
+            .bind_owner_account("oasyce1owner".into())
+            .unwrap();
+        let mut file = ConnectionFile::from_binding(
+            &binding,
+            &node,
+            DEFAULT_CONNECTION_FILE_TTL_HOURS,
+            true,
+            ConnectionSeedScope::Remembered,
+            vec![],
+        )
+        .unwrap();
+        file.artifact_type = Some(LEGACY_CONNECTION_FILE_ARTIFACT_TYPE.into());
+        file.preferred_surface = None;
+        file.surfaces.clear();
+        let mut legacy_bootstrap = ConnectionBootstrapManifest::default_oasyce_join();
+        legacy_bootstrap.schema_version = LEGACY_CONNECTION_BOOTSTRAP_SCHEMA_VERSION.into();
+        file.bootstrap = Some(legacy_bootstrap);
+        file.sign_with(&node);
+        let path = dir.path().join("legacy-oasyce-bootstrap.connection.json");
+        file.save(&path).unwrap();
+
+        let loaded = ConnectionFile::load(&path).unwrap();
+        assert_eq!(loaded.artifact_type.as_deref(), Some(LEGACY_CONNECTION_FILE_ARTIFACT_TYPE));
+        assert_eq!(loaded.effective_preferred_surface().as_deref(), Some("oasyce"));
+        assert!(loaded.effective_surfaces().contains_key("oasyce"));
     }
 
     #[test]
