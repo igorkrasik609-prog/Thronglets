@@ -526,7 +526,7 @@ fn connection_export_and_join_carry_oasyce_delegate_policy_bootstrap() {
     );
     assert_eq!(
         exported_file["surfaces"]["oasyce"]["install"]["package"],
-        "oasyce-sdk>=0.10.4"
+        "oasyce-sdk>=0.10.5"
     );
     assert_eq!(exported_file["surfaces"]["oasyce"]["join"]["argv"][0], "oasyce");
     assert_eq!(
