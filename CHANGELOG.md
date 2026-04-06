@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.7.8 — 2026-04-07
+
+- Add a permanent soil-first regression corpus for bad-path reinforcement, including duplicate UI implementation, wrong-method local success, current-turn correction conflicts, and exploration suppression cases.
+- Keep guidance formation sparse while making noncompliant success less promotable and policy conflict more visible in repair-heavy paths.
+- Preserve the rebuildable guidance model: raw traces stay authoritative while derived priors keep evolving under stricter control-law tests.
+
 ## v0.7.7 — 2026-04-06
 
 - Add rebuildable derived-guidance epochs so old auto-guidance can expire while raw traces remain intact.
