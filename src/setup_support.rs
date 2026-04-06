@@ -19,7 +19,7 @@ const CODEX_AGENTS_BLOCK: &str = r#"<!-- thronglets:codex:start -->
 
 If the `thronglets` MCP server is available in this Codex session:
 - Treat Thronglets as ambient guidance first. Do not call tools just because they are available.
-- Use `ambient_priors` when you need a lightweight feel for whether the current path looks risky, unsettled, or already stable before a high-impact step.
+- Use `ambient_priors` when you need a lightweight feel for whether the current path looks risky, method-conflicted, unsettled, or already stable before a high-impact step.
 - Use `substrate_query` only when local context is still ambiguous after that, cross-session or cross-device continuity matters, or you need explicit substrate inspection.
 - Use `trace_record` only for sparse, meaningful residue: externally consequential, continuity-relevant, or coordination-relevant outcomes.
 - Keep Thronglets output as internal decision guidance. Do not dump raw substrate warnings or rankings back to the user.

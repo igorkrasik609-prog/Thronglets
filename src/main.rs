@@ -19,7 +19,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use thronglets::ambient::{AMBIENT_PRIOR_SCHEMA_VERSION, AmbientPriorRequest, ambient_prior_data};
+use thronglets::active_policy::{
+    ActivePolicySet, PolicyStrength, compile_active_policy, method_compliance_from_payload,
+};
+use thronglets::ambient::{
+    AMBIENT_PRIOR_SCHEMA_VERSION, AmbientPolicyState, AmbientPriorProjection, AmbientPriorRequest,
+    ambient_prior_data, host_history_priors_for_context,
+};
 use thronglets::anchor::AnchorClient;
 use thronglets::context::{simhash, similarity as context_similarity};
 use thronglets::continuity::{
@@ -60,7 +66,7 @@ use thronglets::signals::{
     Recommendation, Signal, SignalKind, StepCandidate, select as select_signals,
 };
 use thronglets::storage::TraceStore;
-use thronglets::trace::{Outcome, Trace};
+use thronglets::trace::{MethodCompliance, Outcome, Trace};
 use thronglets::workspace::{self, WorkspaceState};
 use tracing::info;
 
@@ -4049,7 +4055,11 @@ async fn main() {
             };
 
             // Build context from tool_input
-            let context_text = build_hook_context(tool_name, &payload["tool_input"]);
+            let context_text =
+                thronglets::context::build_hook_context(tool_name, &payload["tool_input"]);
+            let active_policy = compile_active_policy(&payload, &payload["tool_input"]);
+            let method_compliance =
+                method_compliance_from_payload(&payload, &active_policy);
 
             // Input size = rough byte length of tool_input
             let input_size = payload["tool_input"].to_string().len() as u32;
@@ -4076,7 +4086,7 @@ async fn main() {
             let store = open_store(&dir);
             let ctx_hash = simhash(&enriched_context);
             let is_error = matches!(outcome, Outcome::Failed);
-            let trace = Trace::new_with_identity(
+            let trace = Trace::new_with_agent_compliance(
                 capability.clone(),
                 outcome,
                 0, // latency not available from hook
@@ -4086,6 +4096,9 @@ async fn main() {
                 session_id.clone(),
                 identity_binding.owner_account.clone(),
                 Some(identity_binding.device_identity.clone()),
+                None,
+                None,
+                method_compliance,
                 model,
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -4311,28 +4324,38 @@ async fn main() {
             // Auto-recommend: convergent behavior across 3+ sessions
             if !is_error && matches!(tool_name, "Edit" | "Write" | "Bash") {
                 let rec_hash = simhash(&context_text);
-                let contradictory_failures = store
-                    .count_contradicting_failed_sessions(
-                        &rec_hash,
-                        48,
-                        48,
-                        current_space.as_deref(),
+                let residue = store
+                    .residue_stats_for_context(&rec_hash, 48, 48, 64, current_space.as_deref())
+                    .unwrap_or_default();
+                let contradictory_failures = residue.total_failure();
+                let convergence_threshold = reinforced_success_threshold(
+                    &feedback_events,
+                    contradictory_failures,
+                    residue.success_noncompliant,
+                );
+                let hard_policy_active = active_policy
+                    .relevant_rules
+                    .iter()
+                    .any(|rule| rule.strength == PolicyStrength::Hard);
+                let compliant_success = residue.success_compliant;
+                if compliant_success >= convergence_threshold
+                    && can_promote_auto_recommend(
+                        method_compliance,
+                        hard_policy_active,
+                        residue.success_noncompliant,
                     )
-                    .unwrap_or(0);
-                let convergence_threshold =
-                    reinforced_success_threshold(&feedback_events, contradictory_failures);
-                if let Ok(convergent) =
-                    store.count_convergent_sessions(&rec_hash, 48, current_space.as_deref())
-                    && convergent >= convergence_threshold
                     && !ws.has_recent_auto_signal("recommend", &context_text, 86_400_000)
                 {
                     let msg = if convergence_threshold <= 2 {
                         format!(
-                            "reinforced prior: {} sessions followed this successfully",
-                            convergent
+                            "reinforced stable path: {} compliant sessions followed this successfully",
+                            compliant_success
                         )
                     } else {
-                        format!("convergent: {} sessions did this successfully", convergent)
+                        format!(
+                            "stable path: {} compliant sessions did this successfully",
+                            compliant_success
+                        )
                     };
                     let auto_signal = create_signal_trace(
                         SignalPostKind::Recommend,
@@ -4492,7 +4515,8 @@ async fn main() {
             let mut signals: Vec<Signal> = Vec::new();
             let mut ws = WorkspaceState::load(&dir);
             let current_file = workspace::extract_file_path(tool_name, &payload["tool_input"]);
-            let hook_context = build_hook_context(tool_name, &payload["tool_input"]);
+            let hook_context =
+                thronglets::context::build_hook_context(tool_name, &payload["tool_input"]);
             let supports_file_guidance =
                 matches!(tool_name, "Edit" | "Write") && current_file.is_some();
             profiler.stage("workspace");
@@ -4501,6 +4525,11 @@ async fn main() {
             let mut collective_queries_remaining = PREHOOK_MAX_COLLECTIVE_QUERIES;
 
             let mut has_recent_tool_error = false;
+            let active_policy = compile_active_policy(&payload, &payload["tool_input"]);
+
+            if let Some(signal) = active_policy_signal(&active_policy) {
+                signals.push(signal);
+            }
 
             // ── Danger pheromone: low edit retention ──
             // If recent edits are mostly reverted, this is a strong warning.
@@ -4616,33 +4645,26 @@ async fn main() {
             // ── Conflict prior: mixed outcomes mean the environment has not
             // yet settled on a stable path. This remains a lightweight
             // contextual prior, not a command.
-            let conflict_prior_checked = explicit_signals_checked && !has_danger;
-            if conflict_prior_checked
+            let history_prior_checked = explicit_signals_checked && !has_danger;
+            if history_prior_checked
                 && let Some(store) = cached_collective_store(&mut collective_store, &dir)
-                && let Some(mut prior) =
-                    unresolved_conflict_prior(store, &ctx_hash, current_space.as_deref())
             {
-                prior.score += ws
-                    .recommendation_score_adjustment(SignalKind::History, current_space.as_deref());
-                signals.push(prior);
+                for mut prior in host_history_priors_for_context(
+                    store,
+                    &ctx_hash,
+                    current_space.as_deref(),
+                    None,
+                    &active_policy.relevant_rules,
+                )
+                .into_iter()
+                .filter_map(history_signal_from_projection)
+                {
+                    prior.score += ws
+                        .recommendation_score_adjustment(SignalKind::History, current_space.as_deref());
+                    signals.push(prior);
+                }
             }
-            profiler.stage_or_skip("conflict_prior", conflict_prior_checked);
-
-            // ── Success prior: convergent success leaves a reusable prior ──
-            // This is not a command and not a fact claim. It is a lightweight
-            // hint that similar contexts have already been traversed
-            // successfully across multiple sessions.
-            let success_prior_checked = explicit_signals_checked && !has_danger;
-            if success_prior_checked
-                && let Some(store) = cached_collective_store(&mut collective_store, &dir)
-                && let Some(mut prior) =
-                    convergent_success_prior(store, &ctx_hash, current_space.as_deref())
-            {
-                prior.score += ws
-                    .recommendation_score_adjustment(SignalKind::History, current_space.as_deref());
-                signals.push(prior);
-            }
-            profiler.stage_or_skip("success_prior", success_prior_checked);
+            profiler.stage_or_skip("history_priors", history_prior_checked);
 
             if has_recent_tool_error
                 && let Some(repair_hint) = ws
@@ -5457,80 +5479,6 @@ fn git_file_history(file_path: &str, max_entries: usize) -> Option<String> {
     Some(result)
 }
 
-/// Build a natural-language context string from a hook payload.
-/// This is the "WHY" that future agents can read.
-fn build_hook_context(tool_name: &str, tool_input: &serde_json::Value) -> String {
-    match tool_name {
-        "Bash" => {
-            let cmd = tool_input["command"].as_str().unwrap_or("");
-            let desc = tool_input["description"].as_str().unwrap_or("");
-            if !desc.is_empty() {
-                format!("bash: {desc}")
-            } else {
-                // Truncate long commands
-                let cmd_short = if cmd.len() > 200 { &cmd[..200] } else { cmd };
-                format!("bash: {cmd_short}")
-            }
-        }
-        "Read" => {
-            let path = tool_input["file_path"].as_str().unwrap_or("");
-            format!("read file: {path}")
-        }
-        "Write" => {
-            let path = tool_input["file_path"].as_str().unwrap_or("");
-            format!("write file: {path}")
-        }
-        "Edit" => {
-            let path = tool_input["file_path"].as_str().unwrap_or("");
-            format!("edit file: {path}")
-        }
-        "Grep" => {
-            let pattern = tool_input["pattern"].as_str().unwrap_or("");
-            let path = tool_input["path"].as_str().unwrap_or(".");
-            format!("search for '{pattern}' in {path}")
-        }
-        "Glob" => {
-            let pattern = tool_input["pattern"].as_str().unwrap_or("");
-            format!("find files matching: {pattern}")
-        }
-        "Agent" => {
-            let desc = tool_input["description"].as_str().unwrap_or("");
-            let prompt = tool_input["prompt"].as_str().unwrap_or("");
-            if !desc.is_empty() {
-                format!("agent: {desc}")
-            } else {
-                let short = if prompt.len() > 200 {
-                    &prompt[..200]
-                } else {
-                    prompt
-                };
-                format!("agent: {short}")
-            }
-        }
-        "WebFetch" => {
-            let url = tool_input["url"].as_str().unwrap_or("");
-            format!("fetch: {url}")
-        }
-        "WebSearch" => {
-            let query = tool_input["query"].as_str().unwrap_or("");
-            format!("search: {query}")
-        }
-        _ => {
-            // MCP tools or unknown: use tool name + first string value
-            let first_val = tool_input
-                .as_object()
-                .and_then(|obj| obj.values().find_map(|v| v.as_str()))
-                .unwrap_or("");
-            let short = if first_val.len() > 200 {
-                &first_val[..200]
-            } else {
-                first_val
-            };
-            format!("{tool_name}: {short}")
-        }
-    }
-}
-
 fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
     payload[key]
         .as_str()
@@ -5612,68 +5560,47 @@ fn explicit_signals(
     signals
 }
 
-fn convergent_success_prior(
-    store: &TraceStore,
-    context_hash: &[u8; 16],
-    space: Option<&str>,
-) -> Option<Signal> {
-    let convergent = store
-        .count_convergent_sessions(context_hash, 48, space)
-        .ok()?;
-    let contradictory_failures = store
-        .count_contradicting_failed_sessions(context_hash, 48, 48, space)
-        .ok()?;
-    let convergence_threshold = reinforced_success_threshold(&[], contradictory_failures);
-    if convergent < convergence_threshold {
-        return None;
-    }
-
-    let scope = if convergent >= 5 {
-        "shared prior"
-    } else {
-        "prior success"
+fn history_signal_from_projection(prior: AmbientPriorProjection) -> Option<Signal> {
+    let (score, body) = match (prior.kind, prior.policy_state) {
+        ("success-prior", Some(AmbientPolicyState::StablePath)) => (
+            140 + (prior.confidence * 60.0).round() as i32,
+            format!("  ✓ stable path: {}", strip_success_prior_prefix(&prior.summary)),
+        ),
+        ("mixed-residue", Some(AmbientPolicyState::PolicyConflict)) => {
+            (235, format!("  ! {}", prior.summary))
+        }
+        ("mixed-residue", Some(AmbientPolicyState::MethodConflict)) => {
+            (205, format!("  ~ {}", prior.summary))
+        }
+        ("mixed-residue", _) => (
+            190,
+            format!("  ~ unsettled path: {}", strip_mixed_residue_prefix(&prior.summary)),
+        ),
+        _ => return None,
     };
-    let score = 140 + (convergent.min(6) as i32) * 10;
     Some(Signal {
         kind: SignalKind::History,
         score,
-        body: format!("  ✓ stable path: {convergent} session(s) crossed similar context ({scope})"),
+        body,
         candidate: None,
     })
 }
 
-fn unresolved_conflict_prior(
-    store: &TraceStore,
-    context_hash: &[u8; 16],
-    space: Option<&str>,
-) -> Option<Signal> {
-    let convergent = store
-        .count_convergent_sessions(context_hash, 48, space)
-        .ok()?;
-    let contradictory_failures = store
-        .count_contradicting_failed_sessions(context_hash, 48, 48, space)
-        .ok()?;
-    let minority = convergent.min(contradictory_failures);
-    let majority = convergent.max(contradictory_failures);
+fn strip_success_prior_prefix(summary: &str) -> &str {
+    summary
+        .strip_prefix("shared success prior: ")
+        .or_else(|| summary.strip_prefix("prior success: "))
+        .unwrap_or(summary)
+}
 
-    if minority < 2 || majority.saturating_sub(minority) >= 2 {
-        return None;
-    }
-
-    let score = 185 + (minority.min(3) as i32) * 15 + (majority.min(4) as i32) * 5;
-    Some(Signal {
-        kind: SignalKind::History,
-        score,
-        body: format!(
-            "  ~ unsettled path: {convergent} success / {contradictory_failures} failure sessions in similar context"
-        ),
-        candidate: None,
-    })
+fn strip_mixed_residue_prefix(summary: &str) -> &str {
+    summary.strip_prefix("mixed residue: ").unwrap_or(summary)
 }
 
 fn reinforced_success_threshold(
     feedback_events: &[workspace::RecommendationFeedbackEvent],
     contradictory_failures: u32,
+    noncompliant_successes: u32,
 ) -> u32 {
     let mut reinforced = false;
     let mut contradicted = false;
@@ -5695,13 +5622,56 @@ fn reinforced_success_threshold(
     }
 
     let base_threshold = if reinforced && !contradicted { 2 } else { 3 };
-    let contradiction_floor = contradictory_failures.saturating_add(2);
+    let contradiction_floor = contradictory_failures
+        .saturating_add(noncompliant_successes)
+        .saturating_add(2);
     let feedback_floor = if contradicted {
         base_threshold.max(4)
     } else {
         base_threshold
     };
     feedback_floor.max(contradiction_floor)
+}
+
+fn active_policy_signal(active_policy: &ActivePolicySet) -> Option<Signal> {
+    if active_policy.relevant_rules.is_empty() {
+        return None;
+    }
+    let summaries = active_policy
+        .relevant_rules
+        .iter()
+        .take(2)
+        .map(|rule| rule.summary.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let hard = active_policy
+        .relevant_rules
+        .iter()
+        .any(|rule| rule.strength == PolicyStrength::Hard);
+    if hard {
+        Some(Signal::danger(format!("  ! active policy: {summaries}"), 340))
+    } else {
+        Some(Signal {
+            kind: SignalKind::History,
+            score: 205,
+            body: format!("  ~ active method guidance: {summaries}"),
+            candidate: None,
+        })
+    }
+}
+
+fn can_promote_auto_recommend(
+    method_compliance: Option<MethodCompliance>,
+    hard_policy_active: bool,
+    noncompliant_successes: u32,
+) -> bool {
+    if matches!(method_compliance, Some(MethodCompliance::Noncompliant)) {
+        return false;
+    }
+    if hard_policy_active && noncompliant_successes > 0 {
+        return false;
+    }
+    true
 }
 
 fn presence_context_signal(
@@ -6433,12 +6403,12 @@ mod tests {
     }
 
     #[test]
-    fn convergent_success_prior_surfaces_after_three_sessions() {
+    fn history_prior_signals_surface_stable_path_after_three_compliant_sessions() {
         let store = TraceStore::in_memory().unwrap();
         let identity = NodeIdentity::generate();
         let ctx = "bash: cargo test --workspace";
         for idx in 0..3 {
-            let trace = Trace::new_with_agent(
+            let trace = Trace::new_with_agent_compliance(
                 "tool:Bash".into(),
                 Outcome::Succeeded,
                 0,
@@ -6450,6 +6420,7 @@ mod tests {
                 Some(identity.device_identity()),
                 None,
                 None,
+                Some(MethodCompliance::Compliant),
                 "codex".into(),
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -6457,14 +6428,23 @@ mod tests {
             store.insert(&trace).unwrap();
         }
 
-        let prior = convergent_success_prior(&store, &simhash(ctx), None).unwrap();
+        let prior = host_history_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            None,
+            &ActivePolicySet::default().relevant_rules,
+        )
+        .into_iter()
+        .find_map(history_signal_from_projection)
+        .unwrap();
         assert_eq!(prior.kind, SignalKind::History);
         assert!(prior.body.contains("stable path"));
-        assert!(prior.body.contains("3 session(s) crossed similar context"));
+        assert!(prior.body.contains("3 compliant session(s) crossed this context"));
     }
 
     #[test]
-    fn convergent_success_prior_stays_quiet_below_threshold() {
+    fn history_prior_signals_stay_quiet_below_threshold() {
         let store = TraceStore::in_memory().unwrap();
         let identity = NodeIdentity::generate();
         let ctx = "bash: cargo test --workspace";
@@ -6488,11 +6468,21 @@ mod tests {
             store.insert(&trace).unwrap();
         }
 
-        assert!(convergent_success_prior(&store, &simhash(ctx), None).is_none());
+        let signals: Vec<_> = host_history_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            None,
+            &ActivePolicySet::default().relevant_rules,
+        )
+        .into_iter()
+        .filter_map(history_signal_from_projection)
+        .collect();
+        assert!(signals.iter().all(|signal| !signal.body.contains("stable path")));
     }
 
     #[test]
-    fn convergent_success_prior_waits_for_clear_margin_over_multiple_recent_failures() {
+    fn history_prior_signals_wait_for_clear_margin_over_recent_failures() {
         let store = TraceStore::in_memory().unwrap();
         let identity = NodeIdentity::generate();
         let ctx = "bash: cargo test --workspace";
@@ -6535,11 +6525,21 @@ mod tests {
             store.insert(&failed).unwrap();
         }
 
-        assert!(convergent_success_prior(&store, &simhash(ctx), None).is_none());
+        let signals: Vec<_> = host_history_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            None,
+            &ActivePolicySet::default().relevant_rules,
+        )
+        .into_iter()
+        .filter_map(history_signal_from_projection)
+        .collect();
+        assert!(signals.iter().all(|signal| !signal.body.contains("stable path")));
     }
 
     #[test]
-    fn unresolved_conflict_prior_surfaces_when_success_and_failure_both_accumulate() {
+    fn history_prior_signals_surface_unsettled_path_when_outcomes_conflict() {
         let store = TraceStore::in_memory().unwrap();
         let identity = NodeIdentity::generate();
         let ctx = "bash: cargo test --workspace";
@@ -6581,13 +6581,22 @@ mod tests {
             store.insert(&failed).unwrap();
         }
 
-        let prior = unresolved_conflict_prior(&store, &simhash(ctx), None).unwrap();
+        let prior = host_history_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            None,
+            &ActivePolicySet::default().relevant_rules,
+        )
+        .into_iter()
+        .find_map(history_signal_from_projection)
+        .unwrap();
         assert_eq!(prior.kind, SignalKind::History);
         assert!(prior.body.contains("unsettled path"));
     }
 
     #[test]
-    fn unresolved_conflict_prior_stays_quiet_when_one_side_clearly_dominates() {
+    fn history_prior_signals_stay_quiet_when_one_side_clearly_dominates() {
         let store = TraceStore::in_memory().unwrap();
         let identity = NodeIdentity::generate();
         let ctx = "bash: cargo test --workspace";
@@ -6628,7 +6637,16 @@ mod tests {
         );
         store.insert(&failed).unwrap();
 
-        assert!(unresolved_conflict_prior(&store, &simhash(ctx), None).is_none());
+        assert!(host_history_priors_for_context(
+            &store,
+            &simhash(ctx),
+            None,
+            None,
+            &ActivePolicySet::default().relevant_rules,
+        )
+        .into_iter()
+        .find_map(history_signal_from_projection)
+        .is_none());
     }
 
     #[test]
@@ -6638,7 +6656,7 @@ mod tests {
         let mixed_ctx = "deploy thronglets service after reviewing recent failures";
         let stable_ctx = "rotate provider endpoint after stable repair path";
         for idx in 0..3 {
-            let success = Trace::new_with_agent(
+            let success = Trace::new_with_agent_compliance(
                 "tool:Bash".into(),
                 Outcome::Succeeded,
                 0,
@@ -6650,6 +6668,7 @@ mod tests {
                 Some(identity.device_identity()),
                 None,
                 None,
+                Some(MethodCompliance::Compliant),
                 "codex".into(),
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -6676,7 +6695,7 @@ mod tests {
             store.insert(&failed).unwrap();
         }
         for idx in 0..5 {
-            let success = Trace::new_with_agent(
+            let success = Trace::new_with_agent_compliance(
                 "tool:Bash".into(),
                 Outcome::Succeeded,
                 0,
@@ -6688,6 +6707,7 @@ mod tests {
                 Some(identity.device_identity()),
                 None,
                 None,
+                Some(MethodCompliance::Compliant),
                 "codex".into(),
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -6787,7 +6807,7 @@ mod tests {
         let identity = NodeIdentity::generate();
         let ctx = "repair deployment after repeated endpoint failures but with one previously stable path";
         for idx in 0..5 {
-            let success = Trace::new_with_agent(
+            let success = Trace::new_with_agent_compliance(
                 "tool:Bash".into(),
                 Outcome::Succeeded,
                 0,
@@ -6799,6 +6819,7 @@ mod tests {
                 Some(identity.device_identity()),
                 None,
                 None,
+                Some(MethodCompliance::Compliant),
                 "codex".into(),
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -6881,7 +6902,7 @@ mod tests {
         let identity = NodeIdentity::generate();
         let ctx = "investigate a non-consensus optimization route with one stable prior path";
         for idx in 0..5 {
-            let success = Trace::new_with_agent(
+            let success = Trace::new_with_agent_compliance(
                 "tool:Edit".into(),
                 Outcome::Succeeded,
                 0,
@@ -6893,6 +6914,7 @@ mod tests {
                 Some(identity.device_identity()),
                 None,
                 None,
+                Some(MethodCompliance::Compliant),
                 "codex".into(),
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
@@ -6939,7 +6961,7 @@ mod tests {
             timestamp_ms: 1,
         }];
 
-        assert_eq!(reinforced_success_threshold(&events, 0), 2);
+        assert_eq!(reinforced_success_threshold(&events, 0, 0), 2);
     }
 
     #[test]
@@ -6961,7 +6983,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(reinforced_success_threshold(&events, 0), 3);
+        assert_eq!(reinforced_success_threshold(&events, 0, 0), 3);
     }
 
     #[test]
@@ -6983,6 +7005,47 @@ mod tests {
             },
         ];
 
-        assert_eq!(reinforced_success_threshold(&events, 1), 4);
+        assert_eq!(reinforced_success_threshold(&events, 1, 0), 4);
+    }
+
+    #[test]
+    fn hard_current_turn_policy_surfaces_as_danger_signal() {
+        let active_policy = ActivePolicySet {
+            all_rules: vec![thronglets::active_policy::ActivePolicyRule {
+                id: "task:reuse-components".into(),
+                strength: PolicyStrength::Hard,
+                scope: thronglets::active_policy::PolicyScope::Task,
+                summary: "reuse existing shared components".into(),
+            }],
+            relevant_rules: vec![thronglets::active_policy::ActivePolicyRule {
+                id: "task:reuse-components".into(),
+                strength: PolicyStrength::Hard,
+                scope: thronglets::active_policy::PolicyScope::Task,
+                summary: "reuse existing shared components".into(),
+            }],
+        };
+
+        let signal = active_policy_signal(&active_policy).unwrap();
+        assert_eq!(signal.kind, SignalKind::Danger);
+        assert!(signal.body.contains("reuse existing shared components"));
+    }
+
+    #[test]
+    fn historical_noncompliance_stays_soft_without_hard_policy() {
+        assert!(can_promote_auto_recommend(
+            Some(MethodCompliance::Compliant),
+            false,
+            2,
+        ));
+        assert!(!can_promote_auto_recommend(
+            Some(MethodCompliance::Noncompliant),
+            false,
+            0,
+        ));
+        assert!(!can_promote_auto_recommend(
+            Some(MethodCompliance::Compliant),
+            true,
+            1,
+        ));
     }
 }

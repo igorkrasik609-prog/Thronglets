@@ -84,6 +84,19 @@ Design constraints:
 - At most 1 collective corroboration lookup on the hot path.
 - Git history is lazy fallback, not a fixed layer on every call.
 
+## When A Path Becomes A Stable Path
+
+Thronglets now separates "worked" from "worked the right way."
+
+- `success + compliant`: only this can gradually harden into a `stable path`
+- `success + noncompliant`: never hardens into recommendation truth; it becomes `mixed residue` or `policy conflict`
+- `failure + compliant`: becomes `failure residue`
+- `failure + noncompliant`: strengthens risk / contradiction residue
+
+An explicit correction in the current turn, like "reuse existing components instead of rewriting them," becomes a hard constraint only for the current task lineage. Historical repetition by itself stays soft residue and does not auto-promote into hard policy.
+
+Under `explore`, consensus may reduce search cost, but it may not define truth. Low-cost, reversible, non-consensus probes must remain viable even when a stable path already exists.
+
 ## The Signal vs Trace Boundary
 
 Thronglets accepts only **externally coordinable evidence**, not **high-frequency inner state**.

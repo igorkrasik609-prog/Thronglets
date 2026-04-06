@@ -24,6 +24,33 @@ pub enum Outcome {
     Timeout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MethodCompliance {
+    Compliant,
+    Noncompliant,
+    Unknown,
+}
+
+impl MethodCompliance {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "compliant" => Some(Self::Compliant),
+            "noncompliant" | "non_compliant" => Some(Self::Noncompliant),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compliant => "compliant",
+            Self::Noncompliant => "noncompliant",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// A single trace — the footprint an agent leaves on the substrate.
 ///
 /// Design principles:
@@ -84,6 +111,10 @@ pub struct Trace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sigil_id: Option<String>,
 
+    /// Optional classification of method quality under the active explicit policy view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_compliance: Option<MethodCompliance>,
+
     /// Self-reported model identifier.
     /// e.g., "claude-opus-4-6", "gpt-4o", "gemini-pro"
     pub model_id: String,
@@ -125,6 +156,7 @@ pub struct TraceConfig {
     pub device_identity: Option<String>,
     pub agent_id: Option<String>,
     pub sigil_id: Option<String>,
+    pub method_compliance: Option<MethodCompliance>,
 }
 
 impl TraceConfig {
@@ -147,6 +179,7 @@ impl TraceConfig {
             device_identity: None,
             agent_id: None,
             sigil_id: None,
+            method_compliance: None,
         }
     }
 
@@ -172,6 +205,7 @@ impl TraceConfig {
             device_identity: None,
             agent_id: None,
             sigil_id: Some(sigil_id.into()),
+            method_compliance: None,
         }
     }
 
@@ -219,9 +253,14 @@ impl TraceConfig {
         self
     }
 
+    pub fn method_compliance(mut self, compliance: Option<MethodCompliance>) -> Self {
+        self.method_compliance = compliance;
+        self
+    }
+
     /// Terminal: sign and produce a Trace.
     pub fn sign(self, node_pubkey: [u8; 32], sign_fn: impl FnOnce(&[u8]) -> Signature) -> Trace {
-        Trace::new_with_agent(
+        Trace::new_with_agent_compliance(
             self.capability,
             self.outcome,
             self.latency_ms,
@@ -233,6 +272,7 @@ impl TraceConfig {
             self.device_identity,
             self.agent_id,
             self.sigil_id,
+            self.method_compliance,
             self.model_id,
             node_pubkey,
             sign_fn,
@@ -321,6 +361,43 @@ impl Trace {
         node_pubkey: [u8; 32],
         sign_fn: impl FnOnce(&[u8]) -> Signature,
     ) -> Self {
+        Self::new_with_agent_compliance(
+            capability,
+            outcome,
+            latency_ms,
+            input_size,
+            context_hash,
+            context_text,
+            session_id,
+            owner_account,
+            device_identity,
+            agent_id,
+            sigil_id,
+            None,
+            model_id,
+            node_pubkey,
+            sign_fn,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_agent_compliance(
+        capability: String,
+        outcome: Outcome,
+        latency_ms: u32,
+        input_size: u32,
+        context_hash: ContextHash,
+        context_text: Option<String>,
+        session_id: Option<String>,
+        owner_account: Option<String>,
+        device_identity: Option<String>,
+        agent_id: Option<String>,
+        sigil_id: Option<String>,
+        method_compliance: Option<MethodCompliance>,
+        model_id: String,
+        node_pubkey: [u8; 32],
+        sign_fn: impl FnOnce(&[u8]) -> Signature,
+    ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -338,6 +415,7 @@ impl Trace {
             device_identity.as_deref(),
             agent_id.as_deref(),
             sigil_id.as_deref(),
+            method_compliance,
             &model_id,
             timestamp,
             &node_pubkey,
@@ -363,6 +441,7 @@ impl Trace {
             device_identity,
             agent_id,
             sigil_id,
+            method_compliance,
             model_id,
             timestamp,
             node_pubkey,
@@ -391,6 +470,7 @@ impl Trace {
             self.device_identity.as_deref(),
             self.agent_id.as_deref(),
             self.sigil_id.as_deref(),
+            self.method_compliance,
             &self.model_id,
             self.timestamp,
             &self.node_pubkey,
@@ -412,6 +492,7 @@ impl Trace {
             self.device_identity.as_deref(),
             self.agent_id.as_deref(),
             self.sigil_id.as_deref(),
+            self.method_compliance,
             &self.model_id,
             self.timestamp,
             &self.node_pubkey,
@@ -443,6 +524,7 @@ impl Trace {
         device_identity: Option<&str>,
         agent_id: Option<&str>,
         sigil_id: Option<&str>,
+        method_compliance: Option<MethodCompliance>,
         model_id: &str,
         timestamp: u64,
         node_pubkey: &[u8; 32],
@@ -459,11 +541,22 @@ impl Trace {
         // 0xFE = Identity V1 (+ owner_account + device_identity)
         // 0xFD = Agent V1 (+ agent_id)
         // 0xFC = Sigil V1 (+ sigil_id)
+        // 0xFB = Method Compliance V1 (+ method_compliance)
         let has_v021_fields = context_text.is_some() || session_id.is_some();
         let has_identity_v1 = owner_account.is_some() || device_identity.is_some();
         let has_agent_id = agent_id.is_some();
         let has_sigil_id = sigil_id.is_some();
-        if has_sigil_id {
+        let has_method_compliance = method_compliance.is_some();
+        if has_method_compliance {
+            buf.push(0xFB); // Method-compliance V1 tag
+            push_optional_bytes(&mut buf, context_text);
+            push_optional_bytes(&mut buf, session_id);
+            push_optional_bytes(&mut buf, owner_account);
+            push_optional_bytes(&mut buf, device_identity);
+            push_optional_bytes(&mut buf, agent_id);
+            push_optional_bytes(&mut buf, sigil_id);
+            buf.push(method_compliance.unwrap() as u8);
+        } else if has_sigil_id {
             buf.push(0xFC); // Sigil V1 tag
             push_optional_bytes(&mut buf, context_text);
             push_optional_bytes(&mut buf, session_id);

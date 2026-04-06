@@ -8,6 +8,7 @@
 //! AI agents describe their context in natural language; SimHash
 //! makes it searchable without keyword matching.
 
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// 128-bit context fingerprint.
@@ -101,6 +102,82 @@ pub fn format_signal_context(tool_name: Option<&str>, raw_context: &str) -> Stri
         Some(t) if t.eq_ignore_ascii_case("websearch") => format!("search: {raw_context}"),
         Some(other) => format!("{}: {raw_context}", other.to_lowercase()),
         None => raw_context.to_string(),
+    }
+}
+
+/// Build a natural-language context string from hook input.
+/// This shared helper keeps runtime traces and policy relevance aligned.
+pub fn build_hook_context(tool_name: &str, tool_input: &Value) -> String {
+    match tool_name {
+        "Bash" => {
+            let cmd = tool_input["command"].as_str().unwrap_or("");
+            let desc = tool_input["description"].as_str().unwrap_or("");
+            if !desc.is_empty() {
+                format!("bash: {desc}")
+            } else {
+                let cmd_short = if cmd.len() > 200 { &cmd[..200] } else { cmd };
+                format!("bash: {cmd_short}")
+            }
+        }
+        "Read" => {
+            let path = tool_input["file_path"].as_str().unwrap_or("");
+            format!("read file: {path}")
+        }
+        "Write" => {
+            let path = tool_input["file_path"].as_str().unwrap_or("");
+            format!("write file: {path}")
+        }
+        "Edit" => {
+            let path = tool_input["file_path"].as_str().unwrap_or("");
+            format!("edit file: {path}")
+        }
+        "Grep" => {
+            let pattern = tool_input["pattern"].as_str().unwrap_or("");
+            let path = tool_input["path"].as_str().unwrap_or(".");
+            format!("search for '{pattern}' in {path}")
+        }
+        "Glob" => {
+            let pattern = tool_input["pattern"].as_str().unwrap_or("");
+            format!("find files matching: {pattern}")
+        }
+        "Agent" => {
+            let desc = tool_input["description"].as_str().unwrap_or("");
+            let prompt = tool_input["prompt"].as_str().unwrap_or("");
+            if !desc.is_empty() {
+                format!("agent: {desc}")
+            } else {
+                let short = if prompt.len() > 200 {
+                    &prompt[..200]
+                } else {
+                    prompt
+                };
+                format!("agent: {short}")
+            }
+        }
+        "WebFetch" => {
+            let url = tool_input["url"].as_str().unwrap_or("");
+            format!("fetch: {url}")
+        }
+        "WebSearch" => {
+            let query = tool_input["query"].as_str().unwrap_or("");
+            format!("search: {query}")
+        }
+        _ => {
+            let first_val = tool_input
+                .as_object()
+                .and_then(|obj| obj.values().find_map(|v| v.as_str()))
+                .unwrap_or("");
+            let short = if first_val.len() > 200 {
+                &first_val[..200]
+            } else {
+                first_val
+            };
+            if short.is_empty() {
+                tool_name.to_lowercase()
+            } else {
+                format!("{}: {}", tool_name.to_lowercase(), short)
+            }
+        }
     }
 }
 

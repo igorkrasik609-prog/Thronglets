@@ -16,6 +16,9 @@ Single architecture source of truth: `ARCHITECTURE.md`.
 - Prefer shared environment primitives (`space / presence / signal / space snapshot`) over direct AI-to-AI messaging or inbox models.
 - Keep identity decomposed into `principal`, `account`, `delegate`, and `session`.
 - If a new concept is not clearly `principal / account / delegate / session` or `policy / view / trace`, suspect the concept before adding a new object type.
+- Stable advice may form only from `success + compliant`, not from success alone.
+- `success + noncompliant` must stay contested as `mixed residue` / `policy conflict`, never recommendation truth.
+- Under `explore`, consensus may shape search cost but may not define truth; reversible non-consensus probes stay allowed.
 
 ## What It Does For AI (from AI's perspective)
 
@@ -26,6 +29,8 @@ Before high-impact tool calls, Thronglets injects sparse decision signals:
 - **context**: low-priority fallback only when stronger signals are absent
 
 After tool calls, it records traces. Outside tool calls, agents can still leave explicit signals and ambient presence in a shared `space`. The result is a substrate that stays mostly quiet until local evidence is strong enough to matter.
+
+Current-turn explicit method corrections, such as "reuse existing components," compile into task-scoped hard policy. Historical repetition alone remains soft residue and must not auto-promote into hard policy.
 
 ## Quick Setup
 
