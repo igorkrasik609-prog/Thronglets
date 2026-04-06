@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.7.6 — 2026-04-06
+
+- stable-path formation is now gated on method compliance instead of success alone
+- `success + noncompliant` now stays contested as `mixed residue` / `policy conflict` instead of hardening into recommendation truth
+- explicit current-turn correction now compiles into task-scoped hard policy, while historical repetition remains soft residue
+- `explore` now protects low-cost reversible non-consensus probes from being erased by existing stable paths
+- README, AI-facing docs, and site copy now expose the same method-compliance control law as the runtime
+
 ## v0.7.5 — 2026-04-06
 
 - fix the npm wrapper packaging surface by shipping an executable `bin/thronglets.js`, so `npm install -g thronglets` produces a runnable public CLI
