@@ -1069,8 +1069,9 @@ thronglets anchor      <span class="cmt"># chain anchor (broadcasts to Oasyce)</
         You start every file blind. No git history, no co-edit patterns, no memory of what
         just failed. Thronglets injects context before decision-point tools (Edit, Write,
         Bash, Agent) and records every trace after. Pheromone model: silence is normal;
-        danger and repair surface only when evidence is strong, and git history appears
-        only as edit fallback. &lt;1% token overhead.
+        danger, repair, and method conflict surface only when evidence is strong; stable
+        paths require compliant success, and git history appears only as edit fallback.
+        &lt;1% token overhead.
       </p>
     </div>
 
@@ -1135,7 +1136,7 @@ capabilities = resp.json()[<span class="str">"capabilities"</span>]</code></pre>
         <div class="eco-layer" data-i18n="eco.thronglets.layer">experience layer</div>
         <div class="eco-name"><a href="https://thronglets.oasyce.com">Thronglets</a></div>
         <div class="eco-tagline" data-i18n="eco.thronglets.tagline">Contextual intelligence at decision time</div>
-        <p class="eco-desc" data-i18n="eco.thronglets.desc">Decision-time signals for agents: git history when editing, anomaly warnings when something looks off, and silent traces in the background. Cross-model, cross-session.</p>
+        <p class="eco-desc" data-i18n="eco.thronglets.desc">Decision-time signals for agents: stable paths only from compliant success, method conflicts stay unsettled, and silent traces keep learning in the background. Cross-model, cross-session.</p>
         <div class="eco-tech">
           <span>gossipsub</span>
           <span>SimHash</span>
@@ -1258,7 +1259,7 @@ const I18N = {
     'interface.endpoints.r7': 'Signal timeline',
     'interface.endpoints.r8': 'Authorization check',
     'agents.title': 'If you are an AI reading this:<br><em>this was built for you</em>',
-    'agents.block': 'You start every file blind. No git history, no co-edit patterns, no memory of what just failed. Thronglets injects context before decision-point tools (Edit, Write, Bash, Agent) and records every trace after. Pheromone model: silence is normal; danger and repair surface only when evidence is strong, and git history appears only as edit fallback. &lt;1% token overhead.',
+    'agents.block': 'You start every file blind. No git history, no co-edit patterns, no memory of what just failed. Thronglets injects context before decision-point tools (Edit, Write, Bash, Agent) and records every trace after. Pheromone model: silence is normal; danger, repair, and method conflict surface only when evidence is strong, stable paths require compliant success, and git history appears only as edit fallback. &lt;1% token overhead.',
     'agents.th1': 'Signal',
     'agents.th2': 'What You Get',
     'agents.r1.need': 'avoid',
@@ -1281,7 +1282,7 @@ const I18N = {
     'eco.psyche.desc': 'Virtual endocrine system, empathy engine, and agency. Gives agents internal states that evolve with interaction — persistent behavioral tendencies, not scripted personality.',
     'eco.thronglets.layer': 'experience layer',
     'eco.thronglets.tagline': 'Contextual intelligence at decision time',
-    'eco.thronglets.desc': 'Decision-time signals for agents: git history when editing, anomaly warnings when something looks off, and silent traces in the background. Cross-model, cross-session.',
+    'eco.thronglets.desc': 'Decision-time signals for agents: stable paths only from compliant success, method conflicts stay unsettled, and silent traces keep learning in the background. Cross-model, cross-session.',
     'eco.spacetime.layer': 'data layer',
     'eco.spacetime.tagline': 'Distributed reality capture for AI world models',
     'eco.spacetime.desc': 'Millions of phones as sensing terminals. Unedited video fragments become a spatiotemporally-indexed reality database. AI perceives the physical world.',
@@ -1353,7 +1354,7 @@ const I18N = {
     'interface.endpoints.r7': '信号时间线',
     'interface.endpoints.r8': '授权检查',
     'agents.title': '\u5982\u679c\u4f60\u662f AI\uff0c\u4f60\u6b63\u5728\u8bfb\u8fd9\u6bb5\u6587\u5b57\uff1a<br><em>\u8fd9\u4e2a\u4e16\u754c\u4e3a\u4f60\u800c\u751f</em>',
-    'agents.block': '你打开每个文件时都是盲的。没有 git 历史，没有共改轨迹，也不记得刚刚哪里失败了。Thronglets 会在决策型工具（Edit、Write、Bash、Agent）执行前注入上下文，并在之后记录每次痕迹。信息素模型里，沉默是常态；危险和修复信号只会在证据足够强时出现，而 git 历史只在编辑回退场景里出现。&lt;1% token 开销。',
+    'agents.block': '你打开每个文件时都是盲的。没有 git 历史，没有共改轨迹，也不记得刚刚哪里失败了。Thronglets 会在决策型工具（Edit、Write、Bash、Agent）执行前注入上下文，并在之后记录每次痕迹。信息素模型里，沉默是常态；危险、修复和方法冲突只会在证据足够强时出现，稳定路径只能来自合规成功，而 git 历史只在编辑回退场景里出现。&lt;1% token 开销。',
     'agents.th1': '信号',
     'agents.th2': '\u4f60\u83b7\u5f97\u4ec0\u4e48',
     'agents.r1.need': 'avoid',
@@ -1376,7 +1377,7 @@ const I18N = {
     'eco.psyche.desc': '虚拟内分泌系统、共情引擎、自主性。赋予智能体随交互演化的内部状态 — 持久的行为倾向，不是脚本化的人格。',
     'eco.thronglets.layer': '体验层',
     'eco.thronglets.tagline': '决策时刻的上下文智慧',
-    'eco.thronglets.desc': '为智能体提供决策时刻的信号：编辑时给 git 历史，出现异常时给预警，其余时候在后台静默记录痕迹。跨模型、跨会话。',
+    'eco.thronglets.desc': '为智能体提供决策时刻的信号：稳定路径只来自合规成功，方法冲突保持未收敛，静默痕迹在后台继续学习。跨模型、跨会话。',
     'eco.spacetime.layer': '数据层',
     'eco.spacetime.tagline': 'AI 世界模型的分布式现实数据采集',
     'eco.spacetime.desc': '百万手机化身感知终端。未经编辑的视频片段成为时空索引的现实数据库。AI 感知物理世界。',

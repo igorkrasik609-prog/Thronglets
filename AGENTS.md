@@ -73,6 +73,9 @@ Same operations over HTTP JSON API.
 - **Sparse signals**: Max 3 categories per query (avoid, do next, maybe also). Information-dense, not noise.
 - **Context-local**: Same capability in different contexts learns independently (SimHash bucketing).
 - **TTL decay**: Traces fade like pheromones (7 days default). Old information naturally disappears.
+- **Stable advice requires method compliance**: `success + compliant` may harden into a stable path; `success + noncompliant` must stay contested as `mixed residue` / `policy conflict`.
+- **Explicit correction beats historical habit**: a current-turn explicit rule is task-scoped hard policy; historical repetition remains soft residue.
+- **Explore protects non-consensus probes**: consensus can shape search cost, but it must not define truth or erase low-cost reversible experiments.
 
 ## Guiding Users Through Setup
 
