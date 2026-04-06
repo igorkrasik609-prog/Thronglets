@@ -188,7 +188,7 @@ pub fn ambient_priors_for_context_with_policy(
         });
     }
 
-    if should_emit_mixed_residue(stats, hard_policy_active) {
+    if should_emit_mixed_residue(stats, hard_policy_active, goal) {
         let confidence = mixed_residue_confidence(stats);
         let mut refs = vec![
             ctx_ref.clone(),
@@ -281,12 +281,23 @@ fn failure_residue_summary(stats: ContextResidueStats, hard_policy_active: bool)
     )
 }
 
-fn should_emit_mixed_residue(stats: ContextResidueStats, hard_policy_active: bool) -> bool {
+fn should_emit_mixed_residue(
+    stats: ContextResidueStats,
+    hard_policy_active: bool,
+    goal: Option<AmbientTurnGoal>,
+) -> bool {
     if hard_policy_active && stats.total_noncompliant() > 0 {
         return true;
     }
     if stats.success_noncompliant > 0 {
         return true;
+    }
+    if goal == Some(AmbientTurnGoal::Explore) {
+        let unknown_contradiction = (stats.total_success() > 0 && stats.failure_unknown > 0)
+            || (stats.total_failure() > 0 && stats.success_unknown > 0);
+        if unknown_contradiction {
+            return true;
+        }
     }
     let minority = stats.total_success().min(stats.total_failure());
     let majority = stats.total_success().max(stats.total_failure());
