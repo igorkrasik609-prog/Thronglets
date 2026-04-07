@@ -152,6 +152,21 @@ The P2P layer includes a full NAT traversal stack so nodes behind home routers c
 - [ ] Explicit BOND/UNBOND lifecycle events (not just implicit via trace TTL)
 - [ ] Multi-party BOND support (>2 Sigils sharing state)
 
+## Architectural Constraints (enforced)
+
+Before modifying lifecycle hooks, core paths, or adding external dependencies, verify:
+
+1. **Device-first**: Does it keep Thronglets fully usable without Oasyce, chain, or any external service?
+2. **Off-chain by default**: Does it keep high-frequency data (traces, signals, presence) off-chain?
+3. **Existing ontology**: Does it fit the existing object model without new identity types or signal kinds?
+4. **Removable**: Can it be removed without breaking the substrate itself?
+5. **Cognitive budget**: Does it reduce user cognitive load, or only move complexity around?
+6. **Shared-environment**: Does it strengthen stigmergic coordination, or drift toward direct messaging?
+
+If any answer is no, **stop and discuss before implementing.** These constraints derive from ARCHITECTURE.md and override implementation enthusiasm.
+
+Chain, Oasyce SDK, and Psyche are optional upgrade layers. They may enhance Thronglets but must never gate basic participation. The substrate's primary network is libp2p, not any blockchain.
+
 ## Build
 
 ```bash
