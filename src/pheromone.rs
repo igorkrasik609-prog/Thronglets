@@ -483,7 +483,7 @@ impl FieldInner {
 /// - Hebbian coupling: co-excited capabilities form associative bonds
 /// - Decay: everything fades without reinforcement
 ///
-/// Single lock. All operations atomic.
+/// RwLock: concurrent readers, exclusive writers.
 pub struct PheromoneField {
     inner: RwLock<FieldInner>,
 }
