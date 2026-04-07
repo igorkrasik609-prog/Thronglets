@@ -4,15 +4,22 @@ use std::time::Instant;
 use crate::responses::ReleaseBaselineCheck;
 use thronglets::active_policy::{ActivePolicySet, PolicyStrength};
 use thronglets::ambient::{AmbientPolicyState, AmbientPriorProjection};
+use thronglets::continuity::{
+    ContinuityEvent, ContinuityTaxonomy, ExternalContinuityInput,
+    ExternalContinuityRecordConfig, record_external_continuity,
+};
 use thronglets::eval::{
     EvalBaselineComparison, EvalCheckStatus, EvalCheckThresholds, EvalConfig,
     LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
 };
-use thronglets::posts::summarize_signal_traces;
+use thronglets::identity::{IdentityBinding, NodeIdentity};
+use thronglets::posts::{
+    SignalPostKind, SignalTraceConfig, create_signal_trace, summarize_signal_traces,
+};
 use thronglets::presence::summarize_recent_presence;
 use thronglets::signals::{Recommendation, Signal, SignalKind, StepCandidate};
 use thronglets::storage::TraceStore;
-use thronglets::trace::MethodCompliance;
+use thronglets::trace::{MethodCompliance, Outcome};
 use thronglets::workspace;
 
 pub(crate) fn git_file_history(file_path: &str, max_entries: usize) -> Option<String> {
@@ -733,4 +740,352 @@ pub(crate) fn print_release_section(name: &str, status: &str, body: &str) {
 
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// ── Psyche → Thronglets bridge ─────────────────────────────────
+//
+// Each substrate is sovereign. Psyche produces sparse exports as
+// a byproduct of processing; Thronglets decides what to ingest.
+// The hook is the natural bridge — it sees every MCP response and
+// can route exports without either substrate knowing the other exists.
+
+/// Ingest `throngletsExports` from a Psyche MCP response into the
+/// Thronglets continuity store and signal layer.
+/// Returns the number of exports successfully ingested.
+pub(crate) fn bridge_psyche_exports(
+    tool_response: &serde_json::Value,
+    store: &TraceStore,
+    identity: &NodeIdentity,
+    binding: &IdentityBinding,
+    session_id: Option<&str>,
+    model: &str,
+    space: Option<&str>,
+) -> usize {
+    let exports = extract_thronglets_exports(tool_response);
+    if exports.is_empty() {
+        return 0;
+    }
+
+    let mut ingested = 0;
+
+    for export in &exports {
+        let kind = export["kind"].as_str().unwrap_or("");
+        let summary = build_export_summary(export);
+
+        if kind == "self-state" {
+            // Self-state → psyche_state signal (ephemeral broadcast, not continuity)
+            let key = export["key"].as_str().unwrap_or("");
+            let context = format!("psyche:self-state:{key}");
+            let signal = create_signal_trace(
+                SignalPostKind::PsycheState,
+                &context,
+                &summary,
+                SignalTraceConfig {
+                    model_id: model.into(),
+                    session_id: session_id.map(String::from),
+                    owner_account: binding.owner_account.clone(),
+                    device_identity: Some(binding.device_identity.clone()),
+                    agent_id: None,
+                    sigil_id: None,
+                    space: space.map(String::from),
+                    ttl_hours: 6,
+                },
+                identity.public_key_bytes(),
+                |msg| identity.sign(msg),
+            );
+            if store.insert(&signal).is_ok() {
+                ingested += 1;
+            }
+        } else if let Some((taxonomy, event)) = map_continuity_event(kind) {
+            // Continuity events → record_external_continuity (local-only, never gossip)
+            let input = ExternalContinuityInput {
+                provider: "thronglets".into(),
+                mode: "optional".into(),
+                version: 1,
+                taxonomy,
+                event,
+                summary,
+                space: space.map(String::from),
+                audit_ref: None,
+            };
+            if record_external_continuity(
+                store,
+                identity,
+                &input,
+                ExternalContinuityRecordConfig {
+                    owner_account: binding.owner_account.clone(),
+                    device_identity: binding.device_identity.clone(),
+                    outcome: Outcome::Succeeded,
+                    model_id: model.into(),
+                    session_id: session_id.map(String::from),
+                },
+            )
+            .is_ok()
+            {
+                ingested += 1;
+            }
+        }
+    }
+
+    ingested
+}
+
+fn extract_thronglets_exports(response: &serde_json::Value) -> Vec<serde_json::Value> {
+    // Direct access — MCP responses may arrive as parsed JSON objects
+    if let Some(arr) = response
+        .get("throngletsExports")
+        .and_then(|v| v.as_array())
+    {
+        return arr.clone();
+    }
+
+    // String response — parse and retry
+    if let Some(s) = response.as_str() {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+            if let Some(arr) = parsed
+                .get("throngletsExports")
+                .and_then(|v| v.as_array())
+            {
+                return arr.clone();
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+fn map_continuity_event(kind: &str) -> Option<(ContinuityTaxonomy, ContinuityEvent)> {
+    match kind {
+        "relation-milestone" => Some((
+            ContinuityTaxonomy::Coordination,
+            ContinuityEvent::RelationMilestone,
+        )),
+        "open-loop-anchor" => Some((
+            ContinuityTaxonomy::Coordination,
+            ContinuityEvent::OpenLoopAnchor,
+        )),
+        "continuity-anchor" => Some((
+            ContinuityTaxonomy::Continuity,
+            ContinuityEvent::ContinuityAnchor,
+        )),
+        "writeback-calibration" => Some((
+            ContinuityTaxonomy::Calibration,
+            ContinuityEvent::WritebackCalibration,
+        )),
+        _ => None,
+    }
+}
+
+fn build_export_summary(export: &serde_json::Value) -> String {
+    match export["kind"].as_str().unwrap_or("") {
+        "self-state" => export["summary"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| {
+                format!(
+                    "O:{:.0} F:{:.0} B:{:.0} R:{:.0}",
+                    export["order"].as_f64().unwrap_or(0.0),
+                    export["flow"].as_f64().unwrap_or(0.0),
+                    export["boundary"].as_f64().unwrap_or(0.0),
+                    export["resonance"].as_f64().unwrap_or(0.0),
+                )
+            }),
+        "relation-milestone" => format!(
+            "phase={} trust={:.1} intimacy={:.1}",
+            export["phase"].as_str().unwrap_or("?"),
+            export["trust"].as_f64().unwrap_or(0.0),
+            export["intimacy"].as_f64().unwrap_or(0.0),
+        ),
+        "open-loop-anchor" => {
+            let loops = join_string_array(&export["loopTypes"]);
+            format!(
+                "loops=[{loops}] tension={:.2} carry={:.2}",
+                export["unfinishedTension"].as_f64().unwrap_or(0.0),
+                export["silentCarry"].as_f64().unwrap_or(0.0),
+            )
+        }
+        "continuity-anchor" => {
+            let loops = join_string_array(&export["activeLoopTypes"]);
+            format!(
+                "mode={} floor={:.2} loops=[{loops}]",
+                export["continuityMode"].as_str().unwrap_or("?"),
+                export["continuityFloor"].as_f64().unwrap_or(0.0),
+            )
+        }
+        "writeback-calibration" => format!(
+            "signal={} effect={} metric={} conf={:.2}",
+            export["signal"].as_str().unwrap_or("?"),
+            export["effect"].as_str().unwrap_or("?"),
+            export["metric"].as_str().unwrap_or("?"),
+            export["confidence"].as_f64().unwrap_or(0.0),
+        ),
+        _ => export.to_string(),
+    }
+}
+
+fn join_string_array(value: &serde_json::Value) -> String {
+    value
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extract_from_json_object() {
+        let response = json!({
+            "throngletsExports": [
+                {"kind": "self-state", "key": "self-state:O50:F80:B50:R70", "summary": "flowing"}
+            ]
+        });
+        let exports = extract_thronglets_exports(&response);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0]["kind"], "self-state");
+    }
+
+    #[test]
+    fn extract_from_json_string() {
+        // MCP responses arrive as JSON strings
+        let inner = json!({
+            "throngletsExports": [
+                {"kind": "relation-milestone", "phase": "familiar", "trust": 50.5, "intimacy": 30.1}
+            ]
+        });
+        let response = serde_json::Value::String(inner.to_string());
+        let exports = extract_thronglets_exports(&response);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0]["kind"], "relation-milestone");
+    }
+
+    #[test]
+    fn extract_empty_when_missing() {
+        assert!(extract_thronglets_exports(&json!({})).is_empty());
+        assert!(extract_thronglets_exports(&json!("no json here")).is_empty());
+        assert!(extract_thronglets_exports(&serde_json::Value::Null).is_empty());
+    }
+
+    #[test]
+    fn extract_null_exports_returns_empty() {
+        let response = json!({"throngletsExports": null});
+        assert!(extract_thronglets_exports(&response).is_empty());
+    }
+
+    #[test]
+    fn map_all_continuity_events() {
+        use thronglets::continuity::{ContinuityEvent, ContinuityTaxonomy};
+        assert_eq!(
+            map_continuity_event("relation-milestone"),
+            Some((ContinuityTaxonomy::Coordination, ContinuityEvent::RelationMilestone))
+        );
+        assert_eq!(
+            map_continuity_event("open-loop-anchor"),
+            Some((ContinuityTaxonomy::Coordination, ContinuityEvent::OpenLoopAnchor))
+        );
+        assert_eq!(
+            map_continuity_event("continuity-anchor"),
+            Some((ContinuityTaxonomy::Continuity, ContinuityEvent::ContinuityAnchor))
+        );
+        assert_eq!(
+            map_continuity_event("writeback-calibration"),
+            Some((ContinuityTaxonomy::Calibration, ContinuityEvent::WritebackCalibration))
+        );
+        assert!(map_continuity_event("self-state").is_none());
+        assert!(map_continuity_event("unknown").is_none());
+    }
+
+    #[test]
+    fn build_self_state_summary_uses_field() {
+        let export = json!({"kind": "self-state", "summary": "flowing, attuned"});
+        assert_eq!(build_export_summary(&export), "flowing, attuned");
+    }
+
+    #[test]
+    fn build_self_state_summary_fallback() {
+        let export = json!({"kind": "self-state", "order": 45.0, "flow": 78.0, "boundary": 47.0, "resonance": 72.0});
+        assert_eq!(build_export_summary(&export), "O:45 F:78 B:47 R:72");
+    }
+
+    #[test]
+    fn build_relation_milestone_summary() {
+        let export = json!({"kind": "relation-milestone", "phase": "familiar", "trust": 50.5, "intimacy": 30.1});
+        assert_eq!(build_export_summary(&export), "phase=familiar trust=50.5 intimacy=30.1");
+    }
+
+    #[test]
+    fn build_open_loop_summary() {
+        let export = json!({
+            "kind": "open-loop-anchor",
+            "loopTypes": ["implicit-promise", "task-dependency"],
+            "unfinishedTension": 0.67,
+            "silentCarry": 0.12
+        });
+        assert_eq!(
+            build_export_summary(&export),
+            "loops=[implicit-promise,task-dependency] tension=0.67 carry=0.12"
+        );
+    }
+
+    #[test]
+    fn build_writeback_summary() {
+        let export = json!({
+            "kind": "writeback-calibration",
+            "signal": "warmth", "effect": "amplified", "metric": "trust", "confidence": 0.85
+        });
+        assert_eq!(
+            build_export_summary(&export),
+            "signal=warmth effect=amplified metric=trust conf=0.85"
+        );
+    }
+
+    #[test]
+    fn bridge_full_integration() {
+        // Simulate a full Psyche MCP response as JSON string (how hooks receive it)
+        let psyche_response = json!({
+            "systemContext": "",
+            "dynamicContext": "...",
+            "throngletsExports": [
+                {
+                    "kind": "self-state",
+                    "subject": "session",
+                    "primitive": "signal",
+                    "key": "self-state:O50:F80:B50:R70",
+                    "strength": 0.5,
+                    "summary": "flowing, attuned",
+                    "order": 50.0, "flow": 80.0, "boundary": 50.0, "resonance": 70.0
+                },
+                {
+                    "kind": "relation-milestone",
+                    "subject": "delegate",
+                    "primitive": "signal",
+                    "key": "milestone:_default:familiar",
+                    "strength": 0.45,
+                    "phase": "familiar", "trust": 50.5, "intimacy": 30.1
+                }
+            ]
+        });
+        let response_str = serde_json::Value::String(psyche_response.to_string());
+        let exports = extract_thronglets_exports(&response_str);
+        assert_eq!(exports.len(), 2);
+
+        // Verify self-state is identified correctly
+        assert_eq!(exports[0]["kind"], "self-state");
+        assert!(map_continuity_event("self-state").is_none()); // → signal path
+
+        // Verify relation-milestone maps to continuity
+        assert_eq!(exports[1]["kind"], "relation-milestone");
+        assert!(map_continuity_event("relation-milestone").is_some()); // → continuity path
+
+        // Both produce valid summaries
+        assert_eq!(build_export_summary(&exports[0]), "flowing, attuned");
+        assert_eq!(build_export_summary(&exports[1]), "phase=familiar trust=50.5 intimacy=30.1");
+    }
 }

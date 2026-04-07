@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Psyche → Thronglets auto-bridge** — PostToolUse hook now automatically ingests `throngletsExports` from Psyche MCP responses. Continuity events (relation-milestone, open-loop-anchor, continuity-anchor, writeback-calibration) go through `record_external_continuity`; self-state goes as `psyche_state` signal. Neither substrate knows the other exists — the hook is the bridge. 11 new tests.
 - **Service layer extraction** — all business logic (trace record, signal post, presence ping, substrate query, signal/presence feed) now lives in `service.rs` as the single source of truth. MCP and HTTP are thin protocol adapters. Bug fixes go in one place.
 - **Fix success_rate data poisoning** — `success_rate` now always comes from the store (ground truth), never from pheromone field valence (EMA-smoothed routing signal). This fixes a critical divergence where the field reported 59% while actual success rate was 100%, causing agent confidence collapse.
 - **Fix hydration temporal inversion** — `hydrate_from_store` now processes traces oldest-first so the EMA correctly weights recent data. Previously newest traces were processed first, making oldest data dominate the field state.

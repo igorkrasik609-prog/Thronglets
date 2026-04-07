@@ -2515,6 +2515,23 @@ async fn main() {
                     }
                 }
             }
+
+            // Psyche → Thronglets bridge: ingest sparse exports as continuity/signals
+            if tool_name.starts_with("mcp__psyche__") {
+                let ingested = bridge_psyche_exports(
+                    tool_response,
+                    &store,
+                    &identity,
+                    &identity_binding,
+                    session_id.as_deref(),
+                    &trace.model_id,
+                    current_space.as_deref(),
+                );
+                if hook_debug && ingested > 0 {
+                    eprintln!("[thronglets:hook] bridged {ingested} psyche exports");
+                }
+            }
+
             if current_space.is_some() || current_mode.is_some() {
                 let presence = create_presence_trace(
                     PresenceTraceConfig {

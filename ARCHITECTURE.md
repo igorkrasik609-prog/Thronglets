@@ -186,6 +186,11 @@ This parallels Psyche's `PsycheOverlay`, which projects subjective self-state in
 
 Psyche is responsible for low-frequency, externalized continuity residue.
 
+Psyche exports flow into Thronglets automatically via the PostToolUse hook bridge:
+when `mcp__psyche__*` responses contain `throngletsExports`, the hook extracts them
+and records continuity traces / `psyche_state` signals. Neither substrate knows the
+other exists — the hook is the bridge.
+
 It does not define:
 
 - final economic identity
