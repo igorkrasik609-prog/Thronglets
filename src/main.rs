@@ -31,7 +31,6 @@ use thronglets::ambient::{
 };
 use thronglets::anchor::AnchorClient;
 use thronglets::context::{simhash, similarity as context_similarity};
-use thronglets::economy::{self, DelegateEconomy};
 use thronglets::continuity::summarize_recent_continuity;
 use thronglets::contracts::{
     GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_COLLECTIVE_QUERIES, PREHOOK_MAX_HINTS,
@@ -868,20 +867,6 @@ fn open_store(data_dir: &std::path::Path) -> TraceStore {
 
 /// Resolve the Oasyce chain RPC endpoint for auto-anchoring.
 /// Checks: 1) OASYCE_CHAIN_RPC env var, 2) ~/.thronglets/chain_rpc file.
-/// Returns None if no endpoint is configured (auto-anchor disabled).
-fn chain_rpc_from_env() -> Option<String> {
-    if let Ok(v) = std::env::var("OASYCE_CHAIN_RPC") {
-        if !v.is_empty() {
-            return Some(v);
-        }
-    }
-    let home = std::env::var("HOME").ok()?;
-    std::fs::read_to_string(Path::new(&home).join(".thronglets").join("chain_rpc"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Ad-hoc codesign the binary on macOS so the firewall doesn't prompt on every rebuild.
 /// Silent no-op on non-macOS or if codesign fails (not critical).
 fn codesign_if_macos(bin_path: &Path) {
@@ -1492,7 +1477,7 @@ async fn main() {
             if !json {
                 eprintln!(" done");
             }
-            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding, None);
+            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
             let data = StartData {
                 summary: summarize_start_flow(&report.summary, &status.summary),
                 setup: report.summary.clone(),
@@ -1515,7 +1500,7 @@ async fn main() {
             json,
         } => {
             let home_dir = home_dir();
-            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding, None);
+            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
             let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
             if !status.summary.network_path_ready
                 && !network_snapshot.bootstrap_seed_addresses(8).is_empty()
@@ -1590,7 +1575,7 @@ async fn main() {
                 }
             }
             network_snapshot.save(&dir);
-            let mut status = collect_status_data(&home_dir, &dir, &identity, &binding, None);
+            let mut status = collect_status_data(&home_dir, &dir, &identity, &binding);
             if report.summary.healthy
                 && !report.summary.restart_required
                 && !report.summary.restart_pending
@@ -1606,7 +1591,7 @@ async fn main() {
                     std::time::Duration::from_secs(12),
                 )
                 .await;
-                status = collect_status_data(&home_dir, &dir, &identity, &binding, None);
+                status = collect_status_data(&home_dir, &dir, &identity, &binding);
             }
             let data = JoinFlowData {
                 summary: summarize_join_flow(&report.summary, &status.summary),
@@ -3375,73 +3360,6 @@ async fn main() {
                     );
                     let _ = store.insert(&trace);
 
-                    // Economy-aware auto-anchor
-                    if let Some(rpc) = chain_rpc_from_env() {
-                        let chain_id = "oasyce-testnet-1";
-                        let anchor_client = AnchorClient::new(&rpc, chain_id);
-                        let address = identity.oasyce_address();
-                        let mut economy = DelegateEconomy::load(&dir);
-
-                        // 1. Observe current balance
-                        let balances = anchor_client.query_balance(&address);
-                        let balance = economy::parse_native_balance(&balances);
-                        economy.observe_balance(balance);
-
-                        // 2. Auto-fund from testnet faucet if needed
-                        if economy.should_auto_fund(chain_id) {
-                            if economy.request_faucet(&rpc, &address) {
-                                // Re-check balance after faucet
-                                let new_balances = anchor_client.query_balance(&address);
-                                let new_balance = economy::parse_native_balance(&new_balances);
-                                economy.observe_balance(new_balance);
-                                info!(
-                                    balance = economy::format_oas(new_balance).as_str(),
-                                    "auto-funded from testnet faucet"
-                                );
-                            }
-                        }
-
-                        // 3. Plan and execute anchor
-                        let budget = economy.plan_anchor();
-                        if budget.should_anchor {
-                            if let Ok(traces) = store.query_recent_continuity_traces(
-                                24,
-                                budget.max_batch,
-                            ) {
-                                if !traces.is_empty() {
-                                    economy.snapshot_pre_anchor();
-                                    match anchor_client.anchor_batch(&identity, &traces) {
-                                        Ok(result) if result.anchored > 0 => {
-                                            // Re-check balance to compute gas cost
-                                            let post_bal = economy::parse_native_balance(
-                                                &anchor_client.query_balance(&address),
-                                            );
-                                            economy.record_anchor(
-                                                result.anchored as u64,
-                                                post_bal,
-                                            );
-                                            info!(
-                                                anchored = result.anchored,
-                                                tx_hash = %result.tx_hash,
-                                                balance = economy::format_oas(post_bal).as_str(),
-                                                reason = budget.reason,
-                                                "session-end auto-anchor"
-                                            );
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        } else {
-                            tracing::debug!(
-                                reason = budget.reason,
-                                "skip anchor"
-                            );
-                        }
-
-                        economy.save(&dir);
-                    }
-
                     ws.save(&dir);
                 }
 
@@ -3648,8 +3566,7 @@ async fn main() {
 
         Commands::Status { json } => {
             let home_dir = home_dir();
-            let chain_rpc = chain_rpc_from_env();
-            let data = collect_status_data(&home_dir, &dir, &identity, &identity_binding, chain_rpc.as_deref());
+            let data = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "status", &data);
             } else {

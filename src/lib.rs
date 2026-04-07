@@ -2,7 +2,6 @@ pub mod active_policy;
 pub mod ambient;
 pub mod anchor;
 pub mod context;
-pub mod economy;
 pub mod continuity;
 pub mod contracts;
 pub mod eval;

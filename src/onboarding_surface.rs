@@ -2,8 +2,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use thronglets::anchor::AnchorClient;
-use thronglets::economy::{self, DelegateEconomy, EconomySummary};
 use thronglets::identity::{
     ConnectionBootstrapManifest, ConnectionFile, ConnectionSeedScope, IdentityBinding, NodeIdentity,
 };
@@ -85,15 +83,6 @@ pub(crate) struct ConnectionExportData {
 }
 
 #[derive(Serialize)]
-pub(crate) struct ChainStatus {
-    pub(crate) connected: bool,
-    pub(crate) rpc_url: Option<String>,
-    pub(crate) balance_display: String,
-    pub(crate) balance_uoas: u64,
-    pub(crate) economy: EconomySummary,
-}
-
-#[derive(Serialize)]
 pub(crate) struct StatusData {
     pub(crate) summary: ReadinessSummary,
     pub(crate) identity: IdentitySummary,
@@ -106,7 +95,6 @@ pub(crate) struct StatusData {
     pub(crate) database_size_bytes: u64,
     pub(crate) substrate: workspace::SubstrateActivity,
     pub(crate) network: thronglets::network_state::NetworkStatus,
-    pub(crate) chain: ChainStatus,
 }
 
 #[derive(Clone, Serialize)]
@@ -179,7 +167,6 @@ pub(crate) fn collect_status_data(
     dir: &Path,
     identity: &NodeIdentity,
     binding: &IdentityBinding,
-    chain_rpc: Option<&str>,
 ) -> StatusData {
     std::fs::create_dir_all(dir).expect("failed to create data directory");
     let store = TraceStore::open(&dir.join("traces.db")).expect("failed to open trace store");
@@ -200,31 +187,6 @@ pub(crate) fn collect_status_data(
     let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
     let readiness = status_readiness_summary(binding, &network);
     let runtime = collect_runtime_summary(home_dir, dir);
-    let mut econ = DelegateEconomy::load(dir);
-
-    let chain = if let Some(rpc) = chain_rpc {
-        let client = AnchorClient::new(rpc, "");
-        let address = identity.oasyce_address();
-        let balances = client.query_balance(&address);
-        let balance_uoas = economy::parse_native_balance(&balances);
-        econ.observe_balance(balance_uoas);
-        econ.save(dir);
-        ChainStatus {
-            connected: !balances.is_empty(),
-            rpc_url: Some(rpc.to_string()),
-            balance_display: economy::format_oas(balance_uoas),
-            balance_uoas,
-            economy: econ.summary(),
-        }
-    } else {
-        ChainStatus {
-            connected: false,
-            rpc_url: None,
-            balance_display: String::new(),
-            balance_uoas: 0,
-            economy: econ.summary(),
-        }
-    };
 
     StatusData {
         summary: readiness,
@@ -238,7 +200,6 @@ pub(crate) fn collect_status_data(
         database_size_bytes: db_size,
         substrate: workspace.substrate_activity(),
         network,
-        chain,
     }
 }
 
@@ -562,25 +523,6 @@ pub(crate) fn render_status_report(data: &StatusData, owner_account: &str) {
             "offline"
         }
     );
-    println!();
-    let econ = &data.chain.economy;
-    println!(
-        "  Chain:            {}",
-        if data.chain.connected {
-            let bal = &data.chain.balance_display;
-            let suffix = if econ.low_balance { " — low balance" } else { "" };
-            format!("connected ({bal}{suffix})")
-        } else if data.chain.rpc_url.is_some() {
-            "configured but unreachable".into()
-        } else {
-            "not configured".into()
-        }
-    );
-    println!("  Anchored traces:  {}", econ.total_anchored);
-    if let Some(runway) = econ.runway_sessions {
-        println!("  Runway:           ~{runway} sessions remaining");
-    }
-    println!();
     println!("  Help:             run `thronglets status --json` if you need full diagnostics");
 }
 

@@ -17,7 +17,7 @@ Thronglets is NOT a messaging system. Messages are transient; shared state is pe
 ## Architecture
 
 ```
-Rust binary (v0.7.8)
+Rust binary (v0.7.10)
 ├── service.rs        — Shared business logic (single source of truth for all operations)
 ├── trace/            — Atomic execution record (outcome, latency, context, signatures)
 ├── storage/          — SQLite trace store with TTL and context bucketing
@@ -37,7 +37,7 @@ Rust binary (v0.7.8)
 ├── workspace/        — Workspace state tracking (mod.rs: state + mutations, hints.rs: read-only hint generation)
 ├── mcp/              — MCP server (JSON-RPC 2.0) — thin protocol adapter
 ├── http/             — HTTP/REST server — thin protocol adapter
-├── anchor/           — Oasyce chain integration for trace anchoring
+├── anchor/           — Oasyce chain integration for trace anchoring (optional upgrade layer)
 ├── main.rs           — CLI entry point + command dispatch
 ├── responses.rs      — CLI response types (Summary/Data structs)
 ├── render.rs         — CLI text rendering functions
