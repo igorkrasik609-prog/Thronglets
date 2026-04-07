@@ -881,6 +881,19 @@ fn chain_rpc_from_env() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Ad-hoc codesign the binary on macOS so the firewall doesn't prompt on every rebuild.
+/// Silent no-op on non-macOS or if codesign fails (not critical).
+fn codesign_if_macos(bin_path: &Path) {
+    if cfg!(target_os = "macos") {
+        let _ = std::process::Command::new("codesign")
+            .args(["-s", "-", "--force"])
+            .arg(bin_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 fn load_workspace_state(data_dir: &Path) -> WorkspaceState {
     let mut workspace = WorkspaceState::load(data_dir);
     if workspace.ensure_current_derived_guidance_epoch().is_some() {
@@ -1341,6 +1354,7 @@ async fn main() {
         }
         Commands::Setup => {
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            codesign_if_macos(&bin);
             let home_dir = home_dir();
             let report = bootstrap_selected_adapters(AdapterArg::All, &home_dir, &dir, &bin)
                 .expect("failed to bootstrap adapter plan");
@@ -1385,6 +1399,7 @@ async fn main() {
         }
         Commands::ApplyPlan { agent, json } => {
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            codesign_if_macos(&bin);
             let home_dir = home_dir();
             let results = apply_selected_adapters(*agent, &home_dir, &dir, &bin)
                 .expect("failed to apply adapter plan");
@@ -1415,6 +1430,7 @@ async fn main() {
         }
         Commands::Bootstrap { agent, json } => {
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            codesign_if_macos(&bin);
             let home_dir = home_dir();
             let report = bootstrap_selected_adapters(*agent, &home_dir, &dir, &bin)
                 .expect("failed to bootstrap adapter plan");
@@ -1465,6 +1481,7 @@ async fn main() {
 
         Commands::Start { json } => {
             let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("thronglets"));
+            codesign_if_macos(&bin);
             let home_dir = home_dir();
             if !json {
                 eprint!("detecting AI tools...");

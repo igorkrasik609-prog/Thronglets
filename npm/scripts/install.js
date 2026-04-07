@@ -75,6 +75,18 @@ async function main() {
   try {
     await download(url, binPath);
     fs.chmodSync(binPath, 0o755);
+
+    // Ad-hoc codesign on macOS so the firewall doesn't prompt on every install
+    if (process.platform === "darwin") {
+      try {
+        require("child_process").execFileSync("codesign", ["-s", "-", "--force", binPath], {
+          stdio: "ignore",
+        });
+      } catch (_) {
+        // Non-critical — codesign may not be available
+      }
+    }
+
     console.log("Thronglets installed successfully.");
   } catch (err) {
     console.error(`Failed to download: ${err.message}`);
