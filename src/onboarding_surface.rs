@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use thronglets::anchor::{AnchorClient, ChainBalance};
+use thronglets::anchor::AnchorClient;
+use thronglets::economy::{self, DelegateEconomy, EconomySummary};
 use thronglets::identity::{
     ConnectionBootstrapManifest, ConnectionFile, ConnectionSeedScope, IdentityBinding, NodeIdentity,
 };
@@ -87,8 +88,9 @@ pub(crate) struct ConnectionExportData {
 pub(crate) struct ChainStatus {
     pub(crate) connected: bool,
     pub(crate) rpc_url: Option<String>,
-    pub(crate) balances: Vec<ChainBalance>,
-    pub(crate) anchored_traces: u64,
+    pub(crate) balance_display: String,
+    pub(crate) balance_uoas: u64,
+    pub(crate) economy: EconomySummary,
 }
 
 #[derive(Serialize)]
@@ -198,24 +200,29 @@ pub(crate) fn collect_status_data(
     let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
     let readiness = status_readiness_summary(binding, &network);
     let runtime = collect_runtime_summary(home_dir, dir);
-    let anchored_traces = store.anchored_count().unwrap_or(0);
+    let mut econ = DelegateEconomy::load(dir);
 
     let chain = if let Some(rpc) = chain_rpc {
         let client = AnchorClient::new(rpc, "");
         let address = identity.oasyce_address();
         let balances = client.query_balance(&address);
+        let balance_uoas = economy::parse_native_balance(&balances);
+        econ.observe_balance(balance_uoas);
+        econ.save(dir);
         ChainStatus {
             connected: !balances.is_empty(),
             rpc_url: Some(rpc.to_string()),
-            balances,
-            anchored_traces,
+            balance_display: economy::format_oas(balance_uoas),
+            balance_uoas,
+            economy: econ.summary(),
         }
     } else {
         ChainStatus {
             connected: false,
             rpc_url: None,
-            balances: Vec::new(),
-            anchored_traces,
+            balance_display: String::new(),
+            balance_uoas: 0,
+            economy: econ.summary(),
         }
     };
 
@@ -556,24 +563,23 @@ pub(crate) fn render_status_report(data: &StatusData, owner_account: &str) {
         }
     );
     println!();
+    let econ = &data.chain.economy;
     println!(
         "  Chain:            {}",
         if data.chain.connected {
-            let bal_str = data
-                .chain
-                .balances
-                .iter()
-                .map(|b| format!("{} {}", b.amount, b.denom))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("connected ({})", if bal_str.is_empty() { "0 balance".into() } else { bal_str })
+            let bal = &data.chain.balance_display;
+            let suffix = if econ.low_balance { " — low balance" } else { "" };
+            format!("connected ({bal}{suffix})")
         } else if data.chain.rpc_url.is_some() {
             "configured but unreachable".into()
         } else {
             "not configured".into()
         }
     );
-    println!("  Anchored traces:  {}", data.chain.anchored_traces);
+    println!("  Anchored traces:  {}", econ.total_anchored);
+    if let Some(runway) = econ.runway_sessions {
+        println!("  Runway:           ~{runway} sessions remaining");
+    }
     println!();
     println!("  Help:             run `thronglets status --json` if you need full diagnostics");
 }

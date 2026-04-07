@@ -31,6 +31,7 @@ use thronglets::ambient::{
 };
 use thronglets::anchor::AnchorClient;
 use thronglets::context::{simhash, similarity as context_similarity};
+use thronglets::economy::{self, DelegateEconomy};
 use thronglets::continuity::summarize_recent_continuity;
 use thronglets::contracts::{
     GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_COLLECTIVE_QUERIES, PREHOOK_MAX_HINTS,
@@ -3374,29 +3375,71 @@ async fn main() {
                     );
                     let _ = store.insert(&trace);
 
-                    // Auto-anchor: batch anchor recent continuity traces to chain
+                    // Economy-aware auto-anchor
                     if let Some(rpc) = chain_rpc_from_env() {
-                        let anchor_client =
-                            AnchorClient::new(&rpc, "oasyce-testnet-1");
-                        if let Ok(continuity_traces) =
-                            store.query_recent_continuity_traces(24, 50)
-                        {
-                            if !continuity_traces.is_empty() {
-                                match anchor_client
-                                    .anchor_batch(&identity, &continuity_traces)
-                                {
-                                    Ok(result) if result.anchored > 0 => {
-                                        info!(
-                                            anchored = result.anchored,
-                                            skipped = result.skipped,
-                                            tx_hash = %result.tx_hash,
-                                            "session-end auto-anchor"
-                                        );
-                                    }
-                                    _ => {} // Chain unreachable or no traces — silent
-                                }
+                        let chain_id = "oasyce-testnet-1";
+                        let anchor_client = AnchorClient::new(&rpc, chain_id);
+                        let address = identity.oasyce_address();
+                        let mut economy = DelegateEconomy::load(&dir);
+
+                        // 1. Observe current balance
+                        let balances = anchor_client.query_balance(&address);
+                        let balance = economy::parse_native_balance(&balances);
+                        economy.observe_balance(balance);
+
+                        // 2. Auto-fund from testnet faucet if needed
+                        if economy.should_auto_fund(chain_id) {
+                            if economy.request_faucet(&rpc, &address) {
+                                // Re-check balance after faucet
+                                let new_balances = anchor_client.query_balance(&address);
+                                let new_balance = economy::parse_native_balance(&new_balances);
+                                economy.observe_balance(new_balance);
+                                info!(
+                                    balance = economy::format_oas(new_balance).as_str(),
+                                    "auto-funded from testnet faucet"
+                                );
                             }
                         }
+
+                        // 3. Plan and execute anchor
+                        let budget = economy.plan_anchor();
+                        if budget.should_anchor {
+                            if let Ok(traces) = store.query_recent_continuity_traces(
+                                24,
+                                budget.max_batch,
+                            ) {
+                                if !traces.is_empty() {
+                                    economy.snapshot_pre_anchor();
+                                    match anchor_client.anchor_batch(&identity, &traces) {
+                                        Ok(result) if result.anchored > 0 => {
+                                            // Re-check balance to compute gas cost
+                                            let post_bal = economy::parse_native_balance(
+                                                &anchor_client.query_balance(&address),
+                                            );
+                                            economy.record_anchor(
+                                                result.anchored as u64,
+                                                post_bal,
+                                            );
+                                            info!(
+                                                anchored = result.anchored,
+                                                tx_hash = %result.tx_hash,
+                                                balance = economy::format_oas(post_bal).as_str(),
+                                                reason = budget.reason,
+                                                "session-end auto-anchor"
+                                            );
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        } else {
+                            tracing::debug!(
+                                reason = budget.reason,
+                                "skip anchor"
+                            );
+                        }
+
+                        economy.save(&dir);
                     }
 
                     ws.save(&dir);
