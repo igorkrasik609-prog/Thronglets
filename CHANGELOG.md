@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+## v0.7.9 — 2026-04-07
+
 - **Psyche → Thronglets auto-bridge** — PostToolUse hook now automatically ingests `throngletsExports` from Psyche MCP responses. Continuity events (relation-milestone, open-loop-anchor, continuity-anchor, writeback-calibration) go through `record_external_continuity`; self-state goes as `psyche_state` signal. Neither substrate knows the other exists — the hook is the bridge. 11 new tests.
 - **Chain auto-anchor on session end** — SessionEnd lifecycle hook now automatically batch-anchors recent continuity traces to the Oasyce chain. Chain RPC configurable via `OASYCE_CHAIN_RPC` env var or `~/.thronglets/chain_rpc` file.
 - **Fix anchor type_url** — corrected `/oasyce.trace.v1.MsgAnchorTrace` → `/oasyce.anchor.v1.MsgAnchorTrace` to match the chain's x/anchor module.
 - **Asset awareness in status** — `thronglets status` now shows chain connection, on-chain balance, and anchored trace count. Also available via `--json` for programmatic access.
+- **Auto-codesign on macOS** — setup/start/apply-plan and npm postinstall now ad-hoc codesign the binary so macOS firewall doesn't prompt on every rebuild or install.
 - **Service layer extraction** — all business logic (trace record, signal post, presence ping, substrate query, signal/presence feed) now lives in `service.rs` as the single source of truth. MCP and HTTP are thin protocol adapters. Bug fixes go in one place.
 - **Fix success_rate data poisoning** — `success_rate` now always comes from the store (ground truth), never from pheromone field valence (EMA-smoothed routing signal). This fixes a critical divergence where the field reported 59% while actual success rate was 100%, causing agent confidence collapse.
 - **Fix hydration temporal inversion** — `hydrate_from_store` now processes traces oldest-first so the EMA correctly weights recent data. Previously newest traces were processed first, making oldest data dominate the field state.
