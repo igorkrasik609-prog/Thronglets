@@ -81,16 +81,16 @@ fn fetch_latest_version() -> Option<String> {
 /// Synchronous check — runs in a background thread.
 fn check_sync() {
     // Check cache first
-    if let Some((ts, ver)) = read_cache() {
-        if now_secs() - ts < CHECK_INTERVAL_SECS {
-            if compare_semver(CURRENT_VERSION, &ver) == std::cmp::Ordering::Less {
-                eprintln!(
-                    "[thronglets] v{ver} available (current: v{CURRENT_VERSION}). \
-                     Run: npx -y thronglets@latest start"
-                );
-            }
-            return;
+    if let Some((ts, ver)) = read_cache()
+        && now_secs() - ts < CHECK_INTERVAL_SECS
+    {
+        if compare_semver(CURRENT_VERSION, &ver) == std::cmp::Ordering::Less {
+            eprintln!(
+                "[thronglets] v{ver} available (current: v{CURRENT_VERSION}). \
+                 Run: npx -y thronglets@latest start"
+            );
         }
+        return;
     }
 
     let Some(latest) = fetch_latest_version() else {
