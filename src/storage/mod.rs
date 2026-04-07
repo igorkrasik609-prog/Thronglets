@@ -903,6 +903,13 @@ impl TraceStore {
         Ok(deleted)
     }
 
+    /// Delete all traces. Used to break poisoned feedback loops.
+    pub fn reset(&self) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute("DELETE FROM traces", [])?;
+        Ok(deleted)
+    }
+
     /// Count legacy auto-derived signal traces that no longer match the active epoch.
     pub fn count_legacy_auto_signal_traces(&self) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();

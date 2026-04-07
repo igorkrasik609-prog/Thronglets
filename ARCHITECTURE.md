@@ -154,6 +154,17 @@ Hard rules:
 - `Oasyce SDK = policy, operations, and resource orchestration`
 - `Oasyce Chain = account truth, authorization truth, commitments, settlement, and public finality`
 
+### Service layer: single source of truth
+
+All business logic lives in `service.rs`. MCP and HTTP are thin protocol adapters: parse input → call service → format output. Business logic is never duplicated across transport layers.
+
+### Statistics vs signals: separate concerns
+
+- **`success_rate`** is a statistic. It always comes from the store: `COUNT(success) / COUNT(total)`. Ground truth.
+- **`field_intensity`** is a routing signal. It comes from the pheromone field. Used for discovery and coordination.
+
+The pheromone field's EMA-smoothed valence is an internal coordination signal — it is never exposed as `success_rate`. Conflating statistics with signals caused a critical data poisoning bug where agents lost confidence from stale field state.
+
 ### Overlay: field state as effect signals
 
 Both Thronglets and Psyche project internal state into **semantic-stable effect signals** that any external system can consume without coupling to any specific consumer.

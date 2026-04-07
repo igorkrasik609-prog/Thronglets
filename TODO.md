@@ -461,12 +461,13 @@ Thronglets 现在的主线已经明确（当前 release: `v0.5.5`）：
 当前状态：
 - `Run` / `Mcp` 的重复网络 orchestration 已抽到 `src/network_runtime.rs`
 - same-owner trusted-path promotion 和 network event handling 已经不再保留两套实现
+- **已完成：HTTP/MCP 业务逻辑统一** — 新增 `service.rs` 作为唯一业务逻辑层，MCP 和 HTTP 降级为纯协议适配器（MCP -626 行，HTTP -304 行）
+- **已完成：success_rate 和 field valence 解耦** — 统计从 store 取，场只提供路由信号
 
 下一步：
 - 把 `main.rs` 继续按 `CLI surface / command application / renderers` 拆开
 - 把 `workspace` 按 `state / learning / hint selection` 拆开
 - 把 `setup_support` 按 runtime 适配器拆成更小模块
-- 给 `storage` 增加更薄的 typed trace classifier，减少 product semantics 直接泄漏进 capability string 查询
 
 约束：
 - 不新增身份对象

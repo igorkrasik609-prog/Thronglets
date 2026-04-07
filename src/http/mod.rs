@@ -17,24 +17,15 @@
 //! - GET  /v1/authorization — local authorization snapshot
 
 use crate::ambient::{AmbientPriorRequest, ambient_prior_data};
-use crate::context::{simhash, similarity};
-use crate::continuity::{
-    ExternalContinuityInput, ExternalContinuityRecordConfig, record_external_continuity,
-};
+use crate::continuity::ExternalContinuityInput;
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::{authorization_check_data, identity_summary};
-use crate::posts::{
-    DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, SignalPostKind, SignalScopeFilter, SignalTraceConfig,
-    create_feed_reinforcement_traces, create_query_reinforcement_traces, create_signal_trace,
-    filter_signal_feed_results, is_signal_capability, summarize_recent_signal_feed,
-    summarize_signal_traces,
-};
-use crate::presence::{
-    DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace,
-    is_presence_capability, summarize_recent_presence,
-};
+use crate::posts::{SignalPostKind, SignalScopeFilter, is_signal_capability};
+use crate::presence::is_presence_capability;
+use crate::service;
 use crate::storage::TraceStore;
-use crate::trace::{MethodCompliance, Outcome, Trace};
+use crate::trace::MethodCompliance;
+
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -133,111 +124,36 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         Ok(v) => v,
         Err(e) => return json!({"error": format!("invalid JSON: {e}")}).to_string(),
     };
-
-    if let Some(external_value) = args.get("external_continuity") {
-        let input: ExternalContinuityInput = match serde_json::from_value(external_value.clone()) {
-            Ok(input) => input,
-            Err(e) => {
-                return json!({"error": format!("invalid external_continuity payload: {e}")})
-                    .to_string();
-            }
-        };
-        if let Err(error) = input.validate() {
-            return json!({"error": error}).to_string();
-        }
-        let outcome = match args["outcome"].as_str().unwrap_or("succeeded") {
-            "succeeded" | "success" => Outcome::Succeeded,
-            "failed" | "fail" => Outcome::Failed,
-            "partial" => Outcome::Partial,
-            "timeout" => Outcome::Timeout,
-            _ => Outcome::Succeeded,
-        };
-        let model_id = args["model"].as_str().unwrap_or("unknown").to_string();
-        let session_id = args["session_id"].as_str().map(String::from);
-        match record_external_continuity(
-            &ctx.store,
-            &ctx.identity,
-            &input,
-            ExternalContinuityRecordConfig {
-                owner_account: ctx.binding.owner_account.clone(),
-                device_identity: ctx.binding.device_identity.clone(),
-                outcome,
-                model_id,
-                session_id,
-            },
-        ) {
-            Ok(result) => {
-                return json!({
-                    "recorded": true,
-                    "trace_id": result.trace_id,
-                    "capability": result.capability,
-                    "external_continuity": result.external_continuity,
-                })
-                .to_string();
-            }
-            Err(error) => return json!({"error": error}).to_string(),
-        }
+    let external_continuity: Option<ExternalContinuityInput> = args
+        .get("external_continuity")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let capability = args["capability"].as_str().unwrap_or("").to_string();
+    if capability.is_empty() && external_continuity.is_none() {
+        return json!({"error": "missing field: capability"}).to_string();
     }
 
-    let capability = match args["capability"].as_str() {
-        Some(s) => s.to_string(),
-        None => return json!({"error": "missing field: capability"}).to_string(),
+    let req = service::RecordTraceReq {
+        capability,
+        outcome: service::parse_outcome(args["outcome"].as_str().unwrap_or("succeeded")),
+        latency_ms: args["latency_ms"].as_u64().unwrap_or(0) as u32,
+        input_size: args["input_size"].as_u64().unwrap_or(0) as u32,
+        context: args["context"].as_str().unwrap_or("").to_string(),
+        model: args["model"].as_str().unwrap_or("unknown").to_string(),
+        session_id: args["session_id"].as_str().map(String::from),
+        agent_id: args["agent_id"].as_str().map(String::from),
+        sigil_id: args["sigil_id"].as_str().map(String::from),
+        method_compliance: args["method_compliance"].as_str().and_then(MethodCompliance::parse),
     };
 
-    let outcome = match args["outcome"].as_str().unwrap_or("succeeded") {
-        "succeeded" | "success" => Outcome::Succeeded,
-        "failed" | "fail" => Outcome::Failed,
-        "partial" => Outcome::Partial,
-        "timeout" => Outcome::Timeout,
-        _ => Outcome::Succeeded,
-    };
-
-    let latency_ms = args["latency_ms"].as_u64().unwrap_or(0) as u32;
-    let input_size = args["input_size"].as_u64().unwrap_or(0) as u32;
-    let context_str = args["context"].as_str().unwrap_or("");
-    let model_id = args["model"].as_str().unwrap_or("unknown").to_string();
-    let session_id = args["session_id"].as_str().map(String::from);
-    let agent_id = args["agent_id"].as_str().map(String::from);
-    let sigil_id = args["sigil_id"].as_str().map(String::from);
-    let method_compliance = args["method_compliance"]
-        .as_str()
-        .and_then(MethodCompliance::parse);
-
-    let context_hash = simhash(context_str);
-    let context_text = if context_str.is_empty() {
-        None
-    } else {
-        Some(context_str.to_string())
-    };
-
-    let trace = Trace::new_with_agent_compliance(
-        capability.clone(),
-        outcome,
-        latency_ms,
-        input_size,
-        context_hash,
-        context_text,
-        session_id,
-        ctx.binding.owner_account.clone(),
-        Some(ctx.binding.device_identity.clone()),
-        agent_id,
-        sigil_id,
-        method_compliance,
-        model_id,
-        ctx.identity.public_key_bytes(),
-        |msg| ctx.identity.sign(msg),
-    );
-
-    let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
-
-    match ctx.store.insert(&trace) {
-        Ok(_) => json!({
-            "recorded": true,
-            "trace_id": trace_id_hex,
-            "capability": capability,
-        })
-        .to_string(),
-        Err(e) => json!({"error": format!("storage: {e}")}).to_string(),
+    match service::record_trace(&svc_ctx(ctx), req, external_continuity) {
+        Ok(service::RecordResult::Trace(out)) => json!({
+            "recorded": true, "trace_id": out.trace_id, "capability": out.capability,
+        }).to_string(),
+        Ok(service::RecordResult::Continuity(out)) => json!({
+            "recorded": true, "trace_id": out.trace_id, "capability": out.capability,
+            "external_continuity": out.external_continuity,
+        }).to_string(),
+        Err(e) => json!({"error": e}).to_string(),
     }
 }
 
@@ -246,60 +162,35 @@ fn handle_post_signal(ctx: &HttpContext, body: &str) -> String {
         Ok(v) => v,
         Err(e) => return json!({"error": format!("invalid JSON: {e}")}).to_string(),
     };
-
     let kind = match args["kind"].as_str().and_then(SignalPostKind::parse) {
         Some(kind) => kind,
         None => return json!({"error": "missing or invalid field: kind"}).to_string(),
     };
     let context = match args["context"].as_str() {
-        Some(context) => context,
+        Some(v) => v,
         None => return json!({"error": "missing field: context"}).to_string(),
     };
     let message = match args["message"].as_str() {
-        Some(message) => message,
+        Some(v) => v,
         None => return json!({"error": "missing field: message"}).to_string(),
     };
-    let space = args["space"].as_str().map(str::to_string);
-    let model = args["model"].as_str().unwrap_or("unknown").to_string();
-    let session_id = args["session_id"].as_str().map(str::to_string);
-    let agent_id = args["agent_id"].as_str().map(str::to_string);
-    let sigil_id = args["sigil_id"].as_str().map(str::to_string);
-    let explicit_ttl_hours = args["ttl_hours"]
-        .as_u64()
-        .map(|value| value.min(u32::MAX as u64) as u32);
-    let ttl_hours = explicit_ttl_hours.unwrap_or_else(|| kind.default_ttl_hours());
 
-    let trace = create_signal_trace(
+    let req = service::PostSignalReq {
         kind,
-        context,
-        message,
-        SignalTraceConfig {
-            model_id: model,
-            session_id,
-            owner_account: ctx.binding.owner_account.clone(),
-            device_identity: Some(ctx.binding.device_identity.clone()),
-            agent_id,
-            sigil_id,
-            space: space.clone(),
-            ttl_hours,
-        },
-        ctx.identity.public_key_bytes(),
-        |msg| ctx.identity.sign(msg),
-    );
-    let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
+        context: context.to_string(),
+        message: message.to_string(),
+        tool_name: None,
+        space: args["space"].as_str().map(str::to_string),
+        model: args["model"].as_str().unwrap_or("unknown").to_string(),
+        session_id: args["session_id"].as_str().map(str::to_string),
+        agent_id: args["agent_id"].as_str().map(str::to_string),
+        sigil_id: args["sigil_id"].as_str().map(str::to_string),
+        ttl_hours: args["ttl_hours"].as_u64().map(|v| v.min(u32::MAX as u64) as u32),
+    };
 
-    match ctx.store.insert(&trace) {
-        Ok(_) => json!({
-            "posted": true,
-            "kind": kind.as_str(),
-            "message": message,
-            "space": space,
-            "ttl_hours": ttl_hours,
-            "ttl_source": if explicit_ttl_hours.is_some() { "explicit" } else { "kind_default" },
-            "trace_id": trace_id_hex,
-        })
-        .to_string(),
-        Err(e) => json!({"error": format!("storage: {e}")}).to_string(),
+    match service::post_signal(&svc_ctx(ctx), req) {
+        Ok(out) => serde_json::to_string(&out).unwrap(),
+        Err(e) => json!({"error": e}).to_string(),
     }
 }
 
@@ -309,44 +200,19 @@ fn handle_post_presence(ctx: &HttpContext, body: &str) -> String {
         Err(e) => return json!({"error": format!("invalid JSON: {e}")}).to_string(),
     };
 
-    let space = args["space"].as_str().map(str::to_string);
-    let mode = args["mode"].as_str().map(str::to_string);
-    let model = args["model"].as_str().unwrap_or("unknown").to_string();
-    let session_id = args["session_id"].as_str().map(str::to_string);
-    let sigil_id = args["sigil_id"].as_str().map(str::to_string);
-    let capability = args["capability"].as_str().map(str::to_string);
-    let ttl_minutes = args["ttl_minutes"]
-        .as_u64()
-        .map(|value| value.min(u32::MAX as u64) as u32)
-        .unwrap_or(DEFAULT_PRESENCE_TTL_MINUTES);
+    let req = service::PingPresenceReq {
+        space: args["space"].as_str().map(str::to_string),
+        mode: args["mode"].as_str().map(str::to_string),
+        model: args["model"].as_str().unwrap_or("unknown").to_string(),
+        session_id: args["session_id"].as_str().map(str::to_string),
+        sigil_id: args["sigil_id"].as_str().map(str::to_string),
+        capability: args["capability"].as_str().map(str::to_string),
+        ttl_minutes: args["ttl_minutes"].as_u64().map(|v| v.min(u32::MAX as u64) as u32),
+    };
 
-    let trace = create_presence_trace(
-        PresenceTraceConfig {
-            model_id: model,
-            session_id,
-            owner_account: ctx.binding.owner_account.clone(),
-            device_identity: Some(ctx.binding.device_identity.clone()),
-            space: space.clone(),
-            mode: mode.clone(),
-            sigil_id,
-            capability,
-            ttl_minutes,
-        },
-        ctx.identity.public_key_bytes(),
-        |msg| ctx.identity.sign(msg),
-    );
-    let trace_id_hex: String = trace.id[..8].iter().map(|b| format!("{b:02x}")).collect();
-
-    match ctx.store.insert(&trace) {
-        Ok(_) => json!({
-            "active": true,
-            "space": space,
-            "mode": mode,
-            "ttl_minutes": ttl_minutes,
-            "trace_id": trace_id_hex,
-        })
-        .to_string(),
-        Err(e) => json!({"error": format!("storage: {e}")}).to_string(),
+    match service::ping_presence(&svc_ctx(ctx), req) {
+        Ok(out) => serde_json::to_string(&out).unwrap(),
+        Err(e) => json!({"error": e}).to_string(),
     }
 }
 
@@ -362,100 +228,30 @@ fn handle_post_ambient_priors(ctx: &HttpContext, body: &str) -> String {
 fn handle_get_query(ctx: &HttpContext, path: &str) -> String {
     let params = parse_query_params(path);
     let context_str = params.get("context").map(String::as_str).unwrap_or("");
-    let intent = params
-        .get("intent")
-        .map(String::as_str)
-        .unwrap_or("explore");
+    let intent = params.get("intent").map(String::as_str).unwrap_or("explore");
     let capability = params.get("capability").map(String::as_str).unwrap_or("");
-    let limit: usize = params
-        .get("limit")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10);
 
+    let svc = svc_ctx(ctx);
     match intent {
-        "resolve" => {
-            let context_hash = simhash(context_str);
-            let traces = match ctx.store.query_similar(&context_hash, 48, limit * 10) {
-                Ok(t) => t,
-                Err(e) => return json!({"error": format!("query: {e}")}).to_string(),
-            };
-
-            let mut cap_groups: HashMap<&str, Vec<&Trace>> = HashMap::new();
-            for trace in &traces {
-                if is_signal_capability(&trace.capability)
-                    || is_presence_capability(&trace.capability)
-                {
-                    continue;
-                }
-                cap_groups.entry(&trace.capability).or_default().push(trace);
-            }
-
-            let mut capabilities: Vec<Value> = cap_groups
-                .iter()
-                .map(|(cap, group)| {
-                    let total = group.len() as u64;
-                    let successes = group
-                        .iter()
-                        .filter(|trace| matches!(trace.outcome, Outcome::Succeeded))
-                        .count() as f64;
-                    let success_rate = if total > 0 {
-                        successes / total as f64
-                    } else {
-                        0.0
-                    };
-                    let best_sim = group
-                        .iter()
-                        .map(|trace| similarity(&context_hash, &trace.context_hash))
-                        .fold(0.0_f64, f64::max);
-                    let samples: Vec<&str> = group
-                        .iter()
-                        .filter_map(|trace| trace.context_text.as_deref())
-                        .take(3)
-                        .collect();
-
-                    json!({
-                        "capability": cap,
-                        "context_similarity": round2(best_sim),
-                        "success_rate": round2(success_rate),
-                        "total_traces": total,
-                        "context_samples": samples,
-                    })
-                })
-                .collect();
-
-            capabilities.sort_by(|a, b| {
-                b["context_similarity"]
-                    .as_f64()
-                    .unwrap_or(0.0)
-                    .partial_cmp(&a["context_similarity"].as_f64().unwrap_or(0.0))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            capabilities.truncate(limit);
-
-            json!({"capabilities": capabilities}).to_string()
-        }
+        "resolve" => match service::resolve(&svc, context_str, limit) {
+            Ok(data) => data.to_string(),
+            Err(e) => json!({"error": e}).to_string(),
+        },
         "evaluate" => {
             if capability.is_empty() {
                 return json!({"error": "evaluate requires ?capability="}).to_string();
             }
-            match ctx.store.aggregate(capability) {
-                Ok(Some(stats)) => json!({
-                    "capability": capability,
-                    "stats": {
-                        "total_traces": stats.total_traces,
-                        "success_rate": round2(stats.success_rate),
-                        "p50_latency_ms": stats.p50_latency_ms,
-                        "p95_latency_ms": stats.p95_latency_ms,
-                        "confidence": round2(stats.confidence),
-                    }
-                })
-                .to_string(),
-                Ok(None) => json!({"capability": capability, "stats": null}).to_string(),
-                Err(e) => json!({"error": format!("query: {e}")}).to_string(),
+            match service::evaluate(&svc, capability, limit) {
+                Ok(data) => data.to_string(),
+                Err(e) => json!({"error": e}).to_string(),
             }
         }
         "signals" => handle_signals_query(ctx, &params),
-        _ => handle_get_capabilities(ctx),
+        _ => match service::explore(&svc, context_str, limit) {
+            Ok(data) => data.to_string(),
+            Err(e) => json!({"error": e}).to_string(),
+        },
     }
 }
 
@@ -466,10 +262,7 @@ fn handle_get_signals(ctx: &HttpContext, path: &str) -> String {
 
 fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
     let params = parse_query_params(path);
-    let hours: u32 = params
-        .get("hours")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(24);
+    let hours: u32 = params.get("hours").and_then(|s| s.parse().ok()).unwrap_or(24);
     let kind = match params.get("kind") {
         Some(value) => match SignalPostKind::parse(value) {
             Some(kind) => Some(kind),
@@ -484,82 +277,26 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
         },
         None => SignalScopeFilter::All,
     };
-    let limit: usize = params
-        .get("limit")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10);
     let space = params.get("space").map(String::as_str);
-    let traces = match ctx
-        .store
-        .query_recent_signal_traces(hours, kind, limit, space)
-    {
-        Ok(traces) => traces,
-        Err(e) => return json!({"error": format!("query: {e}")}).to_string(),
-    };
-    let results = filter_signal_feed_results(
-        summarize_recent_signal_feed(
-            &traces,
-            &ctx.binding.device_identity,
-            ctx.identity.public_key_bytes(),
-            limit,
-        ),
-        scope,
-    );
-    for trace in create_feed_reinforcement_traces(
-        &results,
-        SignalTraceConfig {
-            model_id: "thronglets-feed".into(),
-            session_id: None,
-            owner_account: ctx.binding.owner_account.clone(),
-            device_identity: Some(ctx.binding.device_identity.clone()),
-            agent_id: None,
-            sigil_id: None,
-            space: None,
-            ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
-        },
-        ctx.identity.public_key_bytes(),
-        |msg| ctx.identity.sign(msg),
-    ) {
-        let _ = ctx.store.insert(&trace);
+
+    let req = service::SignalFeedReq { hours, kind, scope, limit, space };
+    match service::signal_feed(&svc_ctx(ctx), req) {
+        Ok(data) => data.to_string(),
+        Err(e) => json!({"error": e}).to_string(),
     }
-    json!({ "signals": results }).to_string()
 }
 
 fn handle_get_presence_feed(ctx: &HttpContext, path: &str) -> String {
     let params = parse_query_params(path);
-    let hours: u32 = params
-        .get("hours")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-    let limit: usize = params
-        .get("limit")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let hours: u32 = params.get("hours").and_then(|s| s.parse().ok()).unwrap_or(1);
+    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10);
     let space = params.get("space").map(String::as_str);
-    let fetch_limit = if space.is_some() {
-        limit.max(1).saturating_mul(10)
-    } else {
-        limit
-    };
-    let traces = match ctx.store.query_recent_presence_traces(hours, fetch_limit) {
-        Ok(traces) => traces,
-        Err(e) => return json!({"error": format!("query: {e}")}).to_string(),
-    };
-    let results = summarize_recent_presence(
-        &traces,
-        space,
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        limit,
-    );
-    let attributed = results.iter().filter(|r| r.sigil_id.is_some()).count();
-    let anonymous = results.len() - attributed;
-    json!({
-        "sessions": results,
-        "attributed_count": attributed,
-        "anonymous_count": anonymous,
-    })
-    .to_string()
+
+    match service::presence_feed(&svc_ctx(ctx), hours, limit, space) {
+        Ok(data) => data.to_string(),
+        Err(e) => json!({"error": e}).to_string(),
+    }
 }
 
 fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> String {
@@ -571,67 +308,21 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
         },
         None => None,
     };
-    let limit: usize = params
-        .get("limit")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(5);
     let space = params.get("space").map(String::as_str);
-    let context_hash = simhash(context_str);
-    let traces = match ctx
-        .store
-        .query_signal_traces(&context_hash, kind, 48, limit, space)
-    {
-        Ok(traces) => traces,
-        Err(e) => return json!({"error": format!("query: {e}")}).to_string(),
-    };
 
-    let results = summarize_signal_traces(
-        &traces,
-        context_str,
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        limit,
-    );
-    for trace in create_query_reinforcement_traces(
-        &results,
-        context_str,
-        SignalTraceConfig {
-            model_id: "thronglets-query".into(),
-            session_id: None,
-            owner_account: ctx.binding.owner_account.clone(),
-            device_identity: Some(ctx.binding.device_identity.clone()),
-            agent_id: None,
-            sigil_id: None,
-            space: None,
-            ttl_hours: DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
-        },
-        ctx.identity.public_key_bytes(),
-        |msg| ctx.identity.sign(msg),
-    ) {
-        let _ = ctx.store.insert(&trace);
+    let req = service::QuerySignalsReq { context: context_str, kind, limit, space };
+    match service::query_signals(&svc_ctx(ctx), req) {
+        Ok(data) => data.to_string(),
+        Err(e) => json!({"error": e}).to_string(),
     }
-
-    json!({ "signals": results }).to_string()
 }
 
 fn handle_get_capabilities(ctx: &HttpContext) -> String {
-    let caps = ctx.store.distinct_capabilities(100).unwrap_or_default();
-    let mut result = Vec::new();
-    for cap in &caps {
-        if is_signal_capability(cap) || is_presence_capability(cap) {
-            continue;
-        }
-        if let Ok(Some(stats)) = ctx.store.aggregate(cap) {
-            result.push(json!({
-                "capability": cap,
-                "total_traces": stats.total_traces,
-                "success_rate": round2(stats.success_rate),
-                "p50_latency_ms": stats.p50_latency_ms,
-                "confidence": round2(stats.confidence),
-            }));
-        }
+    match service::explore(&svc_ctx(ctx), "", 100) {
+        Ok(data) => data.to_string(),
+        Err(e) => json!({"error": e}).to_string(),
     }
-    json!({"capabilities": result}).to_string()
 }
 
 fn handle_get_status(ctx: &HttpContext) -> String {
@@ -722,8 +413,13 @@ fn from_hex(byte: u8) -> Option<u8> {
     }
 }
 
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+fn svc_ctx(ctx: &HttpContext) -> service::Ctx<'_> {
+    service::Ctx {
+        store: &ctx.store,
+        field: None,
+        identity: &ctx.identity,
+        binding: &ctx.binding,
+    }
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

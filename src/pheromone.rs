@@ -963,6 +963,13 @@ impl PheromoneField {
     /// Historical traces have original timestamps (spread across hours/days),
     /// so they'd never be within the 60s coupling window anyway.
     /// O(traces) instead of O(traces × nodes).
+    /// Clear all field state (nodes + edges). Used for data reset.
+    pub fn clear(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.nodes.clear();
+        inner.edges.clear();
+    }
+
     pub fn hydrate_from_store(&self, store: &crate::storage::TraceStore) {
         let caps = match store.distinct_capabilities(500) {
             Ok(c) => c,
@@ -976,10 +983,14 @@ impl PheromoneField {
             {
                 continue;
             }
-            let traces = match store.query_capability(cap, 200) {
+            let mut traces = match store.query_capability(cap, 200) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
+            // query_capability returns DESC (newest first).
+            // EMA gives most weight to last-processed observation.
+            // Reverse so newest traces dominate the final valence.
+            traces.reverse();
             // Lock per capability batch — no coupling overhead
             {
                 let mut inner = self.inner.lock().unwrap();

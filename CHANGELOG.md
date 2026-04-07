@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Service layer extraction** — all business logic (trace record, signal post, presence ping, substrate query, signal/presence feed) now lives in `service.rs` as the single source of truth. MCP and HTTP are thin protocol adapters. Bug fixes go in one place.
+- **Fix success_rate data poisoning** — `success_rate` now always comes from the store (ground truth), never from pheromone field valence (EMA-smoothed routing signal). This fixes a critical divergence where the field reported 59% while actual success rate was 100%, causing agent confidence collapse.
+- **Fix hydration temporal inversion** — `hydrate_from_store` now processes traces oldest-first so the EMA correctly weights recent data. Previously newest traces were processed first, making oldest data dominate the field state.
+- **Add field/store reset** — `PheromoneField::clear()` and `TraceStore::reset()` for breaking poisoned feedback loops.
+- **Split main.rs monolith** — extracted response types (`responses.rs`), rendering (`render.rs`), adapter operations (`adapter_ops.rs`), and hook helpers (`hook_support.rs`) from main.rs (7152 → 4754 lines, -33%).
+- **Split workspace/mod.rs** — extracted hint generation methods into `workspace/hints.rs` (2250 → 1742 lines, -23%). State mutations stay in mod.rs, read-only hint generation in hints.rs.
+
 ## v0.7.8 — 2026-04-07
 
 - Add a permanent soil-first regression corpus for bad-path reinforcement, including duplicate UI implementation, wrong-method local success, current-turn correction conflicts, and exploration suppression cases.
