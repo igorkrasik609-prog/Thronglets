@@ -2316,6 +2316,9 @@ async fn main() {
                 None
             };
 
+            // Non-blocking update check (background thread, never fails)
+            thronglets::update::check_for_update();
+
             let ctx = Arc::new(McpContext {
                 identity: Arc::new(identity),
                 binding: Arc::new(identity_binding),
@@ -3473,6 +3476,9 @@ async fn main() {
             } else {
                 None
             };
+
+            // Non-blocking update check (background thread, never fails)
+            thronglets::update::check_for_update();
 
             let ctx = Arc::new(thronglets::http::HttpContext {
                 identity: Arc::new(identity),
