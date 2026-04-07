@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v0.7.9 — 2026-04-07
+## v0.7.10 — 2026-04-07
 
 - **Psyche → Thronglets auto-bridge** — PostToolUse hook now automatically ingests `throngletsExports` from Psyche MCP responses. Continuity events (relation-milestone, open-loop-anchor, continuity-anchor, writeback-calibration) go through `record_external_continuity`; self-state goes as `psyche_state` signal. Neither substrate knows the other exists — the hook is the bridge. 11 new tests.
 - **Chain auto-anchor on session end** — SessionEnd lifecycle hook now automatically batch-anchors recent continuity traces to the Oasyce chain. Chain RPC configurable via `OASYCE_CHAIN_RPC` env var or `~/.thronglets/chain_rpc` file.
