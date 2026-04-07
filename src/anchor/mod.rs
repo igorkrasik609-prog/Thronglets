@@ -230,7 +230,7 @@ impl AnchorClient {
         let b64 = base64::engine::general_purpose::STANDARD;
 
         MsgAnchorTrace {
-            type_url: "/oasyce.trace.v1.MsgAnchorTrace".to_string(),
+            type_url: "/oasyce.anchor.v1.MsgAnchorTrace".to_string(),
             sender: sender.to_string(),
             trace_id: hex_encode(&trace.id),
             capability: trace.capability.clone(),
@@ -252,6 +252,51 @@ impl AnchorClient {
             "extension_options": [],
             "non_critical_extension_options": []
         })
+    }
+}
+
+/// Chain account balance (simplified — only the native denom).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainBalance {
+    pub denom: String,
+    pub amount: String,
+}
+
+impl AnchorClient {
+    /// Query the on-chain balance for a given address.
+    ///
+    /// Returns balances from the Cosmos bank module REST endpoint.
+    /// Returns an empty vec if the chain is unreachable.
+    pub fn query_balance(&self, address: &str) -> Vec<ChainBalance> {
+        let url = format!(
+            "{}/cosmos/bank/v1beta1/balances/{}",
+            self.rpc_url, address
+        );
+        let resp = match reqwest::blocking::Client::new()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+        {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let body: serde_json::Value = match resp.json() {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+        body.pointer("/balances")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|b| {
+                        Some(ChainBalance {
+                            denom: b["denom"].as_str()?.to_string(),
+                            amount: b["amount"].as_str()?.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

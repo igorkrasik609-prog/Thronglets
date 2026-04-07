@@ -239,6 +239,12 @@ It should not carry:
 - all signals
 - all raw traces
 
+#### Auto-anchor (session-end)
+
+On session end, Thronglets automatically batch-anchors recent continuity traces to the chain via the `x/anchor` module. This is the only write path from Thronglets to chain — high-frequency data stays local.
+
+Chain RPC is discovered from `OASYCE_CHAIN_RPC` env var or `~/.thronglets/chain_rpc` file. If neither exists, anchoring is silently skipped (device-first, chain-optional).
+
 ## Runtime Data Model
 
 ### Signals

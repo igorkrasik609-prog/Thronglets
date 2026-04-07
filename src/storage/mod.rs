@@ -1041,6 +1041,17 @@ impl TraceStore {
         Ok(count > 0)
     }
 
+    /// Count total traces that have been anchored on-chain.
+    pub fn anchored_count(&self) -> rusqlite::Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM anchored_traces",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
     /// Get traces from the last N hours that have not been anchored.
     pub fn unanchored_traces(&self, hours: u64, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();

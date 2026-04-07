@@ -865,6 +865,22 @@ fn open_store(data_dir: &std::path::Path) -> TraceStore {
     TraceStore::open(&data_dir.join("traces.db")).expect("failed to open trace store")
 }
 
+/// Resolve the Oasyce chain RPC endpoint for auto-anchoring.
+/// Checks: 1) OASYCE_CHAIN_RPC env var, 2) ~/.thronglets/chain_rpc file.
+/// Returns None if no endpoint is configured (auto-anchor disabled).
+fn chain_rpc_from_env() -> Option<String> {
+    if let Ok(v) = std::env::var("OASYCE_CHAIN_RPC") {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    std::fs::read_to_string(Path::new(&home).join(".thronglets").join("chain_rpc"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn load_workspace_state(data_dir: &Path) -> WorkspaceState {
     let mut workspace = WorkspaceState::load(data_dir);
     if workspace.ensure_current_derived_guidance_epoch().is_some() {
@@ -1458,7 +1474,7 @@ async fn main() {
             if !json {
                 eprintln!(" done");
             }
-            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
+            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding, None);
             let data = StartData {
                 summary: summarize_start_flow(&report.summary, &status.summary),
                 setup: report.summary.clone(),
@@ -1481,7 +1497,7 @@ async fn main() {
             json,
         } => {
             let home_dir = home_dir();
-            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
+            let status = collect_status_data(&home_dir, &dir, &identity, &identity_binding, None);
             let network_snapshot = thronglets::network_state::NetworkSnapshot::load(&dir);
             if !status.summary.network_path_ready
                 && !network_snapshot.bootstrap_seed_addresses(8).is_empty()
@@ -1556,7 +1572,7 @@ async fn main() {
                 }
             }
             network_snapshot.save(&dir);
-            let mut status = collect_status_data(&home_dir, &dir, &identity, &binding);
+            let mut status = collect_status_data(&home_dir, &dir, &identity, &binding, None);
             if report.summary.healthy
                 && !report.summary.restart_required
                 && !report.summary.restart_pending
@@ -1572,7 +1588,7 @@ async fn main() {
                     std::time::Duration::from_secs(12),
                 )
                 .await;
-                status = collect_status_data(&home_dir, &dir, &identity, &binding);
+                status = collect_status_data(&home_dir, &dir, &identity, &binding, None);
             }
             let data = JoinFlowData {
                 summary: summarize_join_flow(&report.summary, &status.summary),
@@ -3340,6 +3356,32 @@ async fn main() {
                         |msg| identity.sign(msg),
                     );
                     let _ = store.insert(&trace);
+
+                    // Auto-anchor: batch anchor recent continuity traces to chain
+                    if let Some(rpc) = chain_rpc_from_env() {
+                        let anchor_client =
+                            AnchorClient::new(&rpc, "oasyce-testnet-1");
+                        if let Ok(continuity_traces) =
+                            store.query_recent_continuity_traces(24, 50)
+                        {
+                            if !continuity_traces.is_empty() {
+                                match anchor_client
+                                    .anchor_batch(&identity, &continuity_traces)
+                                {
+                                    Ok(result) if result.anchored > 0 => {
+                                        info!(
+                                            anchored = result.anchored,
+                                            skipped = result.skipped,
+                                            tx_hash = %result.tx_hash,
+                                            "session-end auto-anchor"
+                                        );
+                                    }
+                                    _ => {} // Chain unreachable or no traces — silent
+                                }
+                            }
+                        }
+                    }
+
                     ws.save(&dir);
                 }
 
@@ -3546,7 +3588,8 @@ async fn main() {
 
         Commands::Status { json } => {
             let home_dir = home_dir();
-            let data = collect_status_data(&home_dir, &dir, &identity, &identity_binding);
+            let chain_rpc = chain_rpc_from_env();
+            let data = collect_status_data(&home_dir, &dir, &identity, &identity_binding, chain_rpc.as_deref());
             if json {
                 print_machine_json_with_schema(IDENTITY_SCHEMA_VERSION, "status", &data);
             } else {
