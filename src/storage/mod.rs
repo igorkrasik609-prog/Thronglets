@@ -59,6 +59,11 @@ impl TraceStore {
     /// Open or create a trace store at the given path.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // Prevent indefinite blocking when another process holds the DB lock.
+        // Prehook hot path must not stall tool calls.
+        conn.busy_timeout(std::time::Duration::from_millis(100))?;
+        // WAL mode allows concurrent readers while writing.
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         // Create core tables (columns match v0.2.1 schema for fresh installs)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS traces (

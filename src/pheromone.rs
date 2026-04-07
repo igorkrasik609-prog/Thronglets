@@ -25,7 +25,7 @@ use crate::context::ContextHash;
 use crate::storage::context_bucket;
 use crate::trace::{Outcome, Trace};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 // ── Constants ──────────────────────────────────────────────────
 
@@ -485,13 +485,13 @@ impl FieldInner {
 ///
 /// Single lock. All operations atomic.
 pub struct PheromoneField {
-    inner: Mutex<FieldInner>,
+    inner: RwLock<FieldInner>,
 }
 
 impl PheromoneField {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(FieldInner::new()),
+            inner: RwLock::new(FieldInner::new()),
         }
     }
 
@@ -501,7 +501,7 @@ impl PheromoneField {
     /// Also detects Hebbian co-excitations: scans nodes' last_excited
     /// to find capabilities within the coupling window. O(capabilities).
     pub fn excite(&self, trace: &Trace) -> FieldDelta {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         let delta = inner.excite_node(trace);
 
         // Hebbian: detect co-excitations from field state.
@@ -554,7 +554,7 @@ impl PheromoneField {
         let bucket_hi = (target_bucket + bucket_radius).min(65535);
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
 
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
 
         // Phase 1: collect all live points in the bucket range, grouped by capability
         let mut cap_map: HashMap<String, FieldScan> = HashMap::new();
@@ -654,7 +654,7 @@ impl PheromoneField {
     /// Replaces: aggregate(capability).
     pub fn aggregate(&self, capability: &str) -> Option<FieldScan> {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
 
         let mut total_intensity = 0.0;
         let mut weighted_valence = 0.0;
@@ -698,7 +698,7 @@ impl PheromoneField {
     /// Prune dead field points and edges. Returns number of pruned points.
     pub fn prune(&self) -> usize {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         inner.edges.retain(|_, e| !e.is_dead(now_ms));
         let before = inner.nodes.len();
         inner.nodes.retain(|_, p| !p.is_dead(now_ms));
@@ -715,7 +715,7 @@ impl PheromoneField {
     /// Single lock for the entire tick — atomic self-evolution.
     pub fn tick(&self) -> TickResult {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
 
         let diffused = inner.diffuse(now_ms);
 
@@ -737,12 +737,12 @@ impl PheromoneField {
 
     /// Number of Hebbian edges (for diagnostics).
     pub fn coupling_count(&self) -> usize {
-        self.inner.lock().unwrap().edges.len()
+        self.inner.read().unwrap().edges.len()
     }
 
     /// Number of live field points (for diagnostics).
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().nodes.len()
+        self.inner.read().unwrap().nodes.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -752,7 +752,7 @@ impl PheromoneField {
     /// Snapshot the entire field for P2P sync or persistence.
     pub fn snapshot(&self) -> FieldSnapshot {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
 
         let points = inner
             .nodes
@@ -788,7 +788,7 @@ impl PheromoneField {
 
     /// Restore field from a snapshot (e.g., on startup from disk).
     pub fn restore(&self, snapshot: &FieldSnapshot) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
 
         for entry in &snapshot.points {
             let key = FieldKey {
@@ -831,7 +831,7 @@ impl PheromoneField {
             capability: delta.capability.clone(),
             bucket: delta.bucket,
         };
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         let point = inner
             .nodes
             .entry(key)
@@ -848,7 +848,7 @@ impl PheromoneField {
     /// List all capabilities with their total intensity (for explore intent).
     pub fn capabilities(&self, limit: usize) -> Vec<FieldScan> {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
 
         let mut cap_map: HashMap<&str, (f64, f64, f64, u64, u32)> = HashMap::new();
 
@@ -897,7 +897,7 @@ impl PheromoneField {
     /// Returns zero overlay if capability/context not found in field.
     pub fn overlay(&self, context_hash: &ContextHash, capability: &str) -> FieldOverlay {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
         let bucket = context_bucket(context_hash);
         let key = FieldKey {
             capability: capability.to_string(),
@@ -965,7 +965,7 @@ impl PheromoneField {
     /// O(traces) instead of O(traces × nodes).
     /// Clear all field state (nodes + edges). Used for data reset.
     pub fn clear(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         inner.nodes.clear();
         inner.edges.clear();
     }
@@ -993,7 +993,7 @@ impl PheromoneField {
             traces.reverse();
             // Lock per capability batch — no coupling overhead
             {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.write().unwrap();
                 for trace in &traces {
                     inner.excite_node(trace);
                     count += 1;
@@ -1134,7 +1134,7 @@ mod tests {
 
         // Simulate time passing
         {
-            let mut inner = field.inner.lock().unwrap();
+            let mut inner = field.inner.write().unwrap();
             for point in inner.nodes.values_mut() {
                 point.last_excited -= 72 * 3_600_000;
             }
@@ -1153,7 +1153,7 @@ mod tests {
         assert_eq!(field.len(), 1);
 
         {
-            let mut inner = field.inner.lock().unwrap();
+            let mut inner = field.inner.write().unwrap();
             for point in inner.nodes.values_mut() {
                 point.last_excited -= 30 * 24 * 3_600_000;
             }
@@ -1197,7 +1197,7 @@ mod tests {
             field.len()
         );
 
-        let inner = field.inner.lock().unwrap();
+        let inner = field.inner.read().unwrap();
         let mut intensities: Vec<f64> = inner.nodes.values().map(|p| p.intensity).collect();
         intensities.sort_by(|a, b| b.partial_cmp(a).unwrap());
         assert!(
@@ -1218,14 +1218,14 @@ mod tests {
         field.excite(&t);
 
         let total_before: f64 = {
-            let inner = field.inner.lock().unwrap();
+            let inner = field.inner.read().unwrap();
             inner.nodes.values().map(|p| p.intensity).sum()
         };
 
         field.tick();
 
         let total_after: f64 = {
-            let inner = field.inner.lock().unwrap();
+            let inner = field.inner.read().unwrap();
             inner.nodes.values().map(|p| p.intensity).sum()
         };
 
@@ -1250,7 +1250,7 @@ mod tests {
             "co-excitation should create a coupling"
         );
 
-        let inner = field.inner.lock().unwrap();
+        let inner = field.inner.read().unwrap();
         let key = EdgeKey::new("cap/alpha", "cap/beta");
         let edge = inner.edges.get(&key).expect("edge should exist");
         assert!(
@@ -1328,7 +1328,7 @@ mod tests {
         assert_eq!(field.coupling_count(), 1);
 
         {
-            let mut inner = field.inner.lock().unwrap();
+            let mut inner = field.inner.write().unwrap();
             for e in inner.edges.values_mut() {
                 e.last_reinforced -= 365 * 24 * 3_600_000;
             }
@@ -1453,7 +1453,7 @@ mod tests {
 
         // Age the point by one half-life
         {
-            let mut inner = field.inner.lock().unwrap();
+            let mut inner = field.inner.write().unwrap();
             for p in inner.nodes.values_mut() {
                 p.last_excited -= (HALF_LIFE_HOURS * 3_600_000.0) as u64;
             }
