@@ -840,15 +840,13 @@ fn extract_thronglets_exports(response: &serde_json::Value) -> Vec<serde_json::V
     }
 
     // String response — parse and retry
-    if let Some(s) = response.as_str() {
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
-            if let Some(arr) = parsed
-                .get("throngletsExports")
-                .and_then(|v| v.as_array())
-            {
-                return arr.clone();
-            }
-        }
+    if let Some(s) = response.as_str()
+        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
+        && let Some(arr) = parsed
+            .get("throngletsExports")
+            .and_then(|v| v.as_array())
+    {
+        return arr.clone();
     }
 
     Vec::new()
