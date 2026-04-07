@@ -17,7 +17,7 @@ Thronglets is NOT a messaging system. Messages are transient; shared state is pe
 ## Architecture
 
 ```
-Rust binary (v0.7.10)
+Rust binary (v0.7.11)
 ├── service.rs        — Shared business logic (single source of truth for all operations)
 ├── trace/            — Atomic execution record (outcome, latency, context, signatures)
 ├── storage/          — SQLite trace store with TTL and context bucketing

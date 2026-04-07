@@ -20,4 +20,5 @@ pub mod service;
 pub mod signals;
 pub mod storage;
 pub mod trace;
+pub mod update;
 pub mod workspace;

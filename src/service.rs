@@ -11,10 +11,10 @@ use crate::continuity::{
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::pheromone::PheromoneField;
 use crate::posts::{
-    SignalPostKind, SignalScopeFilter, SignalTraceConfig, create_feed_reinforcement_traces,
-    create_query_reinforcement_traces, create_signal_trace, filter_signal_feed_results,
-    is_signal_capability, summarize_recent_signal_feed, summarize_signal_traces,
-    DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
+    SignalPostKind, SignalScopeFilter, SignalTraceConfig, create_auto_signal_trace,
+    create_feed_reinforcement_traces, create_query_reinforcement_traces, create_signal_trace,
+    filter_signal_feed_results, is_signal_capability, summarize_recent_signal_feed,
+    summarize_signal_traces, DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
 };
 use crate::presence::{
     PresenceTraceConfig, create_presence_trace, is_presence_capability, summarize_recent_presence,
@@ -154,11 +154,85 @@ pub fn record_trace(
         field.excite(&trace);
     }
 
+    // ── Outcome reflexivity: auto-avoid on repeated failures ──
+    if trace.outcome == Outcome::Failed && !is_signal_capability(&trace.capability) {
+        outcome_reflexivity(ctx, &trace);
+    }
+
     Ok(RecordResult::Trace(RecordTraceOut {
         trace_id: tid,
         capability: trace.capability.clone(),
         trace,
     }))
+}
+
+// ── Outcome Reflexivity ─────────────────────────────────────
+//
+// When a trace fails, check if the same context has been failing
+// repeatedly. If so, auto-generate an avoid signal.
+// The avoid is low-power (auto-derived, needs corroboration to promote).
+
+/// Minimum traces in context window before checking failure rate.
+const REFLEXIVITY_MIN_TRACES: u32 = 3;
+/// Failure rate threshold to trigger auto-avoid.
+const REFLEXIVITY_FAILURE_THRESHOLD: f64 = 0.5;
+/// TTL for auto-generated avoid signals (short — gives room for recovery).
+const REFLEXIVITY_AVOID_TTL_HOURS: u32 = 12;
+
+fn outcome_reflexivity(ctx: &Ctx, failed_trace: &Trace) {
+    let stats = match ctx.store.residue_stats_for_context(
+        &failed_trace.context_hash,
+        8,    // Hamming distance
+        1,    // last 1 hour
+        20,   // up to 20 traces
+        None, // all spaces
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let total = stats.total_success() + stats.total_failure();
+    if total < REFLEXIVITY_MIN_TRACES {
+        return;
+    }
+
+    let failure_rate = stats.total_failure() as f64 / total as f64;
+    if failure_rate < REFLEXIVITY_FAILURE_THRESHOLD {
+        return;
+    }
+
+    let context = failed_trace
+        .context_text
+        .as_deref()
+        .unwrap_or(&failed_trace.capability);
+    let message = format!(
+        "auto: repeated failures ({}/{} in context, {:.0}% failure rate)",
+        stats.total_failure(),
+        total,
+        failure_rate * 100.0,
+    );
+
+    let (owner, device) = sign_config(ctx);
+    let signal = create_auto_signal_trace(
+        SignalPostKind::Avoid,
+        context,
+        &message,
+        SignalTraceConfig {
+            model_id: String::new(), // overridden by create_auto_signal_trace
+            session_id: failed_trace.session_id.clone(),
+            owner_account: owner,
+            device_identity: device,
+            agent_id: None,
+            sigil_id: failed_trace.sigil_id.clone(),
+            space: None,
+            ttl_hours: REFLEXIVITY_AVOID_TTL_HOURS,
+        },
+        ctx.identity.public_key_bytes(),
+        |msg| ctx.identity.sign(msg),
+    );
+
+    // Best-effort insert — don't fail the original trace recording
+    let _ = ctx.store.insert(&signal);
 }
 
 // ── Signal Post ──────────────────────────────────────────────

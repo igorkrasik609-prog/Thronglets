@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.7.11 — 2026-04-08
+
+- **Outcome reflexivity** — auto-generates avoid signals when repeated failures detected in the same context (>=3 traces, >=50% failure rate). Auto-avoid has 12h TTL and requires corroboration to promote. New logic in `service.rs` (`outcome_reflexivity` after `record_trace`).
+- **Background update checker** — checks npm registry on startup (MCP and HTTP modes), caches for 1 hour, never blocks. Prints update message to stderr if newer version available. New file: `src/update.rs`.
+
 ## v0.7.10 — 2026-04-07
 
 - **Psyche → Thronglets auto-bridge** — PostToolUse hook now automatically ingests `throngletsExports` from Psyche MCP responses. Continuity events (relation-milestone, open-loop-anchor, continuity-anchor, writeback-calibration) go through `record_external_continuity`; self-state goes as `psyche_state` signal. Neither substrate knows the other exists — the hook is the bridge. 11 new tests.
