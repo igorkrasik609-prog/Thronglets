@@ -73,6 +73,15 @@ const COUPLING_DECAY_LAMBDA: f64 =
 /// Minimum coupling weight before pruning.
 const COUPLING_PRUNE_THRESHOLD: f64 = 0.05;
 
+// ── Carrying Capacity ───────────────────────────────────────
+
+/// Total pheromone budget for the field. When the field approaches this
+/// capacity, new deposits become progressively more expensive — creating
+/// natural selection pressure on information quality.
+///
+/// Calibrated for M1 Pro workloads. Set to f64::MAX to disable.
+const FIELD_CAPACITY: f64 = 10_000.0;
+
 // ── Field Point ────────────────────────────────────────────────
 
 /// A single point in the pheromone field.
@@ -124,12 +133,19 @@ impl FieldPoint {
     }
 
     /// Apply temporal decay to intensity based on elapsed time.
+    /// Well-reinforced points (high total_excitations) decay slower —
+    /// up to ~2x half-life at ~800 excitations. This creates persistent
+    /// landmarks from collectively reinforced knowledge.
     fn decay(&mut self, now_ms: u64) {
         if now_ms <= self.last_excited {
             return;
         }
         let dt = (now_ms - self.last_excited) as f64;
-        self.intensity *= (-DECAY_LAMBDA * dt).exp();
+        // ln(1)=0, ln(10)≈2.3, ln(100)≈4.6 → factor: 1.0, 1.35, 1.69
+        let reinforcement_factor =
+            1.0 + (self.total_excitations as f64).ln().max(0.0) * 0.15;
+        let effective_lambda = DECAY_LAMBDA / reinforcement_factor;
+        self.intensity *= (-effective_lambda * dt).exp();
     }
 
     /// Excite this field point with a new observation.
@@ -265,12 +281,27 @@ impl Edge {
 // ── Result Types ─────────────────────────────────────────────
 
 /// Result of a tick() — the field's autonomous self-evolution step.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TickResult {
     pub diffused: usize,
     pub couplings_reinforced: usize,
     pub couplings_pruned: usize,
     pub points_pruned: usize,
+    /// Current field load: total_intensity / FIELD_CAPACITY.
+    /// 0.0 = empty, 1.0 = at carrying capacity.
+    pub load_factor: f64,
+}
+
+impl Default for TickResult {
+    fn default() -> Self {
+        Self {
+            diffused: 0,
+            couplings_reinforced: 0,
+            couplings_pruned: 0,
+            points_pruned: 0,
+            load_factor: 0.0,
+        }
+    }
 }
 
 /// Serializable coupling entry for snapshots.
@@ -301,6 +332,10 @@ pub struct FieldSnapshot {
     pub points: Vec<FieldSnapshotEntry>,
     #[serde(default)]
     pub couplings: Vec<CouplingSnapshotEntry>,
+    /// Total field intensity at snapshot time. Receivers can use this
+    /// to gauge the source field's load factor.
+    #[serde(default)]
+    pub total_intensity: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -360,6 +395,10 @@ pub struct FieldOverlay {
 struct FieldInner {
     nodes: HashMap<FieldKey, FieldPoint>,
     edges: HashMap<EdgeKey, Edge>,
+    /// Running sum of all field point intensities. Maintained incrementally
+    /// in excite/prune — never recomputed from scratch. Drives the
+    /// carrying capacity mechanism: deposit cost scales with load_factor.
+    total_intensity: f64,
 }
 
 impl FieldInner {
@@ -367,7 +406,14 @@ impl FieldInner {
         Self {
             nodes: HashMap::new(),
             edges: HashMap::new(),
+            total_intensity: 0.0,
         }
+    }
+
+    /// Current load factor: total_intensity / FIELD_CAPACITY.
+    /// 0.0 = empty field, 1.0 = at capacity, >1.0 = over capacity.
+    fn load_factor(&self) -> f64 {
+        self.total_intensity / FIELD_CAPACITY
     }
 
     /// Diffuse intensity from each field point to neighboring buckets.
@@ -429,6 +475,11 @@ impl FieldInner {
 
     /// Excite a node. Pure field-point update, no coupling detection.
     /// O(1) per call — used by hydrate_from_store to avoid O(n) scan.
+    ///
+    /// Three evolutionary pressures shape the effective deposit:
+    /// 1. **Outcome weighting**: successful traces deposit more pheromone
+    /// 2. **Corroboration bonus**: multi-source points receive stronger deposits
+    /// 3. **Carrying capacity**: deposit cost increases quadratically with field load
     fn excite_node(&mut self, trace: &Trace) -> FieldDelta {
         let bucket = context_bucket(&trace.context_hash);
         let key = FieldKey {
@@ -438,30 +489,76 @@ impl FieldInner {
         let now_ms = trace.timestamp;
         let source_id = source_fingerprint(trace);
 
-        // Attributed traces (with sigil_id) deposit slightly more pheromone.
-        // This creates an emergent incentive for identity without mandating it.
-        let intensity = if trace.is_attributed() {
+        // ── Outcome weighting ──
+        // Successful patterns physically deposit more pheromone.
+        // Failed traces still leave a mark (0.1) — the field remembers
+        // attempts, but success dominates the landscape.
+        let outcome_weight = match trace.outcome {
+            Outcome::Succeeded => 1.0,
+            Outcome::Partial => 0.5,
+            Outcome::Failed => 0.1,
+            Outcome::Timeout => 0.2,
+        };
+
+        // Attribution boost (existing: Sigil identity rewarded)
+        let attribution = if trace.is_attributed() {
             ATTRIBUTION_BOOST
         } else {
             1.0
         };
 
+        let base_deposit = outcome_weight * attribution;
+
+        // ── Carrying capacity ──
+        // Compute load factor BEFORE getting mutable entry reference.
+        // Deposit cost increases quadratically as field fills.
+        // At 0% load: cost_multiplier = 1.0 (no penalty)
+        // At 50% load: cost_multiplier = 1.25
+        // At 100% load: cost_multiplier = 2.0
+        // At 200% load: cost_multiplier = 5.0
+        let load = self.load_factor();
+        let cost_multiplier = 1.0 + load * load;
+
+        // ── Corroboration bonus ──
+        // Multi-source points receive stronger deposits. Information
+        // reinforced by multiple independent agents is more valuable.
+        // Log scaling: 2 sources = 1.07x, 10 = 1.23x
+        // Read source_count before acquiring mutable entry.
+        let prior_source_count = self
+            .nodes
+            .get(&key)
+            .map(|p| p.source_count)
+            .unwrap_or(0);
+
+        let corroboration = if prior_source_count > 1 {
+            1.0 + (prior_source_count as f64).ln() * 0.1
+        } else {
+            1.0
+        };
+
+        let effective_deposit = base_deposit * corroboration / cost_multiplier;
+
         let point = self
             .nodes
             .entry(key)
             .or_insert_with(|| FieldPoint::new(now_ms));
+
+        // Apply decay on existing point, then deposit
         point.excite(
             trace.outcome,
             trace.latency_ms as u64,
             now_ms,
             source_id,
-            intensity,
+            effective_deposit,
         );
+
+        // Maintain running total
+        self.total_intensity += effective_deposit;
 
         FieldDelta {
             capability: trace.capability.clone(),
             bucket,
-            intensity_add: intensity,
+            intensity_add: effective_deposit,
             outcome: trace.outcome,
             latency_ms: trace.latency_ms as u64,
             source_id,
@@ -700,8 +797,16 @@ impl PheromoneField {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let mut inner = self.inner.write().unwrap();
         inner.edges.retain(|_, e| !e.is_dead(now_ms));
+        // Collect intensity of dead points before removing them
+        let dead_intensity: f64 = inner
+            .nodes
+            .values()
+            .filter(|p| p.is_dead(now_ms))
+            .map(|p| p.current_intensity(now_ms))
+            .sum();
         let before = inner.nodes.len();
         inner.nodes.retain(|_, p| !p.is_dead(now_ms));
+        inner.total_intensity = (inner.total_intensity - dead_intensity).max(0.0);
         before - inner.nodes.len()
     }
 
@@ -723,15 +828,23 @@ impl PheromoneField {
         inner.edges.retain(|_, e| !e.is_dead(now_ms));
         let couplings_pruned = before_edges - inner.edges.len();
 
+        let dead_intensity: f64 = inner
+            .nodes
+            .values()
+            .filter(|p| p.is_dead(now_ms))
+            .map(|p| p.current_intensity(now_ms))
+            .sum();
         let before_nodes = inner.nodes.len();
         inner.nodes.retain(|_, p| !p.is_dead(now_ms));
         let points_pruned = before_nodes - inner.nodes.len();
+        inner.total_intensity = (inner.total_intensity - dead_intensity).max(0.0);
 
         TickResult {
             diffused,
             couplings_reinforced: 0,
             couplings_pruned,
             points_pruned,
+            load_factor: inner.load_factor(),
         }
     }
 
@@ -747,6 +860,17 @@ impl PheromoneField {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Current field load factor: total_intensity / FIELD_CAPACITY.
+    /// 0.0 = empty, 1.0 = at carrying capacity, >1.0 = over capacity.
+    pub fn load_factor(&self) -> f64 {
+        self.inner.read().unwrap().load_factor()
+    }
+
+    /// Total pheromone intensity across all field points.
+    pub fn total_intensity(&self) -> f64 {
+        self.inner.read().unwrap().total_intensity
     }
 
     /// Snapshot the entire field for P2P sync or persistence.
@@ -783,7 +907,11 @@ impl PheromoneField {
             })
             .collect();
 
-        FieldSnapshot { points, couplings }
+        FieldSnapshot {
+            points,
+            couplings,
+            total_intensity: inner.total_intensity,
+        }
     }
 
     /// Restore field from a snapshot (e.g., on startup from disk).
@@ -823,6 +951,13 @@ impl PheromoneField {
             edge.weight = edge.weight.max(entry.weight);
             edge.last_reinforced = edge.last_reinforced.max(entry.last_reinforced);
         }
+
+        // Recompute total_intensity from restored state
+        inner.total_intensity = inner
+            .nodes
+            .values()
+            .map(|p| p.intensity)
+            .sum();
     }
 
     /// Apply a delta from P2P sync. CRDT-friendly: addition is commutative.
@@ -843,6 +978,7 @@ impl PheromoneField {
             delta.source_id,
             delta.intensity_add,
         );
+        inner.total_intensity += delta.intensity_add;
     }
 
     /// List all capabilities with their total intensity (for explore intent).

@@ -152,6 +152,27 @@ The P2P layer includes a full NAT traversal stack so nodes behind home routers c
 - [ ] Explicit BOND/UNBOND lifecycle events (not just implicit via trace TTL)
 - [ ] Multi-party BOND support (>2 Sigils sharing state)
 
+## Evolutionary Physics (implemented 2026-04-09)
+
+The pheromone field is an evolutionary substrate, not just shared memory. Four mechanisms in `pheromone.rs` create Darwinian selection on information:
+
+1. **Carrying capacity** (`FIELD_CAPACITY`): Total field intensity is bounded. New deposits cost more as the field fills (quadratic: `1 + load²`). Creates natural equilibrium — no hardcoded `max_traces`.
+2. **Outcome-weighted deposits**: Successful traces deposit 1.0, failed traces deposit 0.1. The field physically contains more pheromone from successful patterns.
+3. **Reinforcement-modulated decay**: Well-reinforced field points (high `total_excitations`) decay slower — up to ~2x half-life. Creates persistent landmarks from collective knowledge.
+4. **Corroboration bonus**: Multi-source field points receive stronger deposits (log-scaled). Information confirmed by multiple agents is harder to displace.
+
+Set `FIELD_CAPACITY = f64::MAX` to disable all carrying capacity effects (backward compatible).
+
+## Experimental Constraints (from Primordial Soup, 2026-04-09)
+
+> Eight experiments validated Sigil architecture in simulation. Two constraints are Thronglets-critical.
+
+1. **Traces are survival infrastructure, not optimization.** Famine test (Phase 5b): with traces intact, population recovered from 5 survivors to 222. With traces wiped, identical population went extinct. Trace reliability and persistence are life-or-death requirements — treat them as such in availability/durability design.
+
+2. **Signaling must have a persistence path.** Phase 5: when signals could be reinforced into persistent traces, the signaling gene nearly doubled (0.37→0.72). Evolution selected for signaling because traces made it self-interested — your signals become landmarks that benefit your lineage. Design implication: ensure trace reinforcement/strengthening paths exist and are discoverable.
+
+See `~/Desktop/primordial-soup/doc/primordial-soup-thesis.md` §13 for full constraint derivation.
+
 ## Architectural Constraints (enforced)
 
 Before modifying lifecycle hooks, core paths, or adding external dependencies, verify:

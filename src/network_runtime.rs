@@ -283,6 +283,7 @@ impl NetworkRuntimeLoop {
                                 diffused = result.diffused,
                                 points_pruned = result.points_pruned,
                                 couplings_pruned = result.couplings_pruned,
+                                load_factor = format!("{:.2}", result.load_factor),
                                 "Pheromone field tick"
                             );
                         }

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.8.0 — 2026-04-09
+
+- **Evolutionary physics** — pheromone field gains Darwinian selection pressure on information. Four mechanisms in `pheromone.rs`:
+  - **Carrying capacity** (`FIELD_CAPACITY=10,000`): deposit cost scales quadratically with field load (`1 + load²`). Creates natural information equilibrium without hardcoded limits.
+  - **Outcome-weighted deposits**: succeeded=1.0, partial=0.5, failed=0.1, timeout=0.2. The field physically favors successful patterns.
+  - **Reinforcement-modulated decay**: well-reinforced field points (high `total_excitations`) decay up to ~2x slower. Collective knowledge becomes persistent landmarks.
+  - **Corroboration bonus**: multi-source deposits log-scaled (10 sources = 1.23x). Information confirmed by multiple agents resists displacement.
+- **Observability** — `load_factor` (total_intensity / capacity) exposed in `TickResult`, `FieldSnapshot`, and network runtime logs.
+- Backward compatible: set `FIELD_CAPACITY = f64::MAX` to disable all carrying capacity effects.
+
+Derived from 8 Primordial Soup evolution experiments validating Sigil architecture.
+
 ## v0.7.11 — 2026-04-08
 
 - **Outcome reflexivity** — auto-generates avoid signals when repeated failures detected in the same context (>=3 traces, >=50% failure rate). Auto-avoid has 12h TTL and requires corroboration to promote. New logic in `service.rs` (`outcome_reflexivity` after `record_trace`).
