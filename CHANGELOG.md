@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.8.1 — 2026-04-09
+
+- **Codex sparse trace writeback** — managed Codex guidance now tells the agent to keep `ambient_priors` and ambient presence primary, but proactively write sparse `trace_record` residue after meaningful edits, shell commands, and repo/code searches using tool-level capabilities like `codex/edit`, `codex/bash`, and `codex/search`.
+- **Release surface alignment** — synchronized Cargo, npm, Python, and version-display docs onto `0.8.1` so the next git tag, GitHub release, and npm publish all point at the same release line.
+
 ## v0.8.0 — 2026-04-09
 
 - **Evolutionary physics** — pheromone field gains Darwinian selection pressure on information. Four mechanisms in `pheromone.rs`:

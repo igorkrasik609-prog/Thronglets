@@ -21,7 +21,8 @@ If the `thronglets` MCP server is available in this Codex session:
 - Treat Thronglets as ambient guidance first. Do not call tools just because they are available.
 - Use `ambient_priors` when you need a lightweight feel for whether the current path looks risky, method-conflicted, unsettled, or already stable before a high-impact step.
 - Use `substrate_query` only when local context is still ambiguous after that, cross-session or cross-device continuity matters, or you need explicit substrate inspection.
-- Use `trace_record` only for sparse, meaningful residue: externally consequential, continuity-relevant, or coordination-relevant outcomes.
+- After meaningful Codex operations such as file edits, shell commands, or repo/code searches, proactively call `trace_record` with sparse tool-level residue such as `capability: codex/edit`, `codex/bash`, or `codex/search`, plus `outcome`, `latency_ms`, and concise `context`.
+- Do not record every trivial step. Keep `trace_record` sparse and meaningful: externally consequential, continuity-relevant, or coordination-relevant outcomes.
 - Keep Thronglets output as internal decision guidance. Do not dump raw substrate warnings or rankings back to the user.
 <!-- thronglets:codex:end -->
 "#;
@@ -1665,6 +1666,7 @@ mod tests {
         assert!(agents.contains("ambient_priors"));
         assert!(agents.contains("substrate_query"));
         assert!(agents.contains("trace_record"));
+        assert!(agents.contains("codex/edit"));
     }
 
     #[test]
