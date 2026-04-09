@@ -4,3 +4,4 @@ dist/
 .mcpregistry_*
 baseline-*.json
 .DS_Store
+kimi-agent.py
