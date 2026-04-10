@@ -85,14 +85,6 @@ pub struct RecentAction {
     pub timestamp_ms: i64,
 }
 
-/// An auto-emitted signal record for rate limiting.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutoSignalEmission {
-    pub kind: String, // "watch" or "recommend"
-    pub key: String,  // unique identifier for dedup
-    pub timestamp_ms: i64,
-}
-
 /// A lightweight local repair pattern.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepairPattern {
@@ -152,7 +144,6 @@ pub struct RecommendationFeedbackEvent {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DerivedGuidanceResetReport {
-    pub auto_signal_emissions_cleared: usize,
     pub recent_recommendation_emissions_cleared: usize,
     pub pending_recommendation_feedback_cleared: usize,
     pub recent_recommendation_feedback_cleared: usize,
@@ -161,8 +152,7 @@ pub struct DerivedGuidanceResetReport {
 
 impl DerivedGuidanceResetReport {
     pub fn total_cleared(&self) -> usize {
-        self.auto_signal_emissions_cleared
-            + self.recent_recommendation_emissions_cleared
+        self.recent_recommendation_emissions_cleared
             + self.pending_recommendation_feedback_cleared
             + self.recent_recommendation_feedback_cleared
             + self.recent_interventions_cleared
@@ -255,9 +245,6 @@ pub struct WorkspaceState {
     /// Pending recommendation feedback waiting for the next meaningful action.
     #[serde(default)]
     pub pending_recommendation_feedback: VecDeque<PendingRecommendationFeedback>,
-    /// Rate limiter for auto-emitted signals (watch, recommend).
-    #[serde(default)]
-    pub auto_signal_emissions: Vec<AutoSignalEmission>,
     /// Resolved recommendation feedback events used to bias future scores.
     #[serde(default)]
     pub recent_recommendation_feedback: VecDeque<RecommendationFeedbackEvent>,
@@ -325,13 +312,11 @@ impl WorkspaceState {
 
     pub fn reset_derived_guidance(&mut self, epoch: &str) -> DerivedGuidanceResetReport {
         let report = DerivedGuidanceResetReport {
-            auto_signal_emissions_cleared: self.auto_signal_emissions.len(),
             recent_recommendation_emissions_cleared: self.recent_recommendation_emissions.len(),
             pending_recommendation_feedback_cleared: self.pending_recommendation_feedback.len(),
             recent_recommendation_feedback_cleared: self.recent_recommendation_feedback.len(),
             recent_interventions_cleared: self.recent_interventions.len(),
         };
-        self.auto_signal_emissions.clear();
         self.recent_recommendation_emissions.clear();
         self.pending_recommendation_feedback.clear();
         self.recent_recommendation_feedback.clear();
@@ -748,56 +733,6 @@ impl WorkspaceState {
         });
         self.recent_interventions.truncate(MAX_RECENT_INTERVENTIONS);
         self.updated_ms = now;
-    }
-
-    /// Returns repair patterns with 2+ source sessions that haven't been signaled recently.
-    /// Each element is (pattern, dedup_key).
-    pub fn pending_auto_watch_signals(&self) -> Vec<(&RepairPattern, String)> {
-        let now = chrono::Utc::now().timestamp_millis();
-        self.repair_patterns
-            .iter()
-            .filter(|p| p.source_ids.len() >= 2 && (now - p.last_seen_ms) < 86_400_000)
-            .filter_map(|p| {
-                let key = format!(
-                    "{}:{}:{}",
-                    p.error_tool,
-                    p.repair_tool,
-                    p.repair_target.as_deref().unwrap_or("")
-                );
-                let recently_emitted = self.auto_signal_emissions.iter().any(|e| {
-                    e.kind == "watch" && e.key == key && (now - e.timestamp_ms) < 86_400_000
-                });
-                if recently_emitted {
-                    None
-                } else {
-                    Some((p, key))
-                }
-            })
-            .collect()
-    }
-
-    /// Check whether an auto-signal of given kind+key was emitted within the window.
-    pub fn has_recent_auto_signal(&self, kind: &str, key: &str, window_ms: i64) -> bool {
-        let now = chrono::Utc::now().timestamp_millis();
-        self.auto_signal_emissions
-            .iter()
-            .any(|e| e.kind == kind && e.key == key && (now - e.timestamp_ms) < window_ms)
-    }
-
-    /// Record that an auto-signal was emitted.
-    pub fn record_auto_signal(&mut self, kind: &str, key: &str) {
-        let now = chrono::Utc::now().timestamp_millis();
-        self.auto_signal_emissions
-            .retain(|e| (now - e.timestamp_ms) < 86_400_000);
-        self.auto_signal_emissions.push(AutoSignalEmission {
-            kind: kind.to_string(),
-            key: key.to_string(),
-            timestamp_ms: now,
-        });
-        if self.auto_signal_emissions.len() > 50 {
-            self.auto_signal_emissions
-                .drain(..self.auto_signal_emissions.len() - 50);
-        }
     }
 
     pub fn substrate_activity(&self) -> SubstrateActivity {
@@ -1856,11 +1791,6 @@ mod tests {
     #[test]
     fn ensure_current_derived_guidance_epoch_clears_guidance_caches_once() {
         let mut ws = make_ws();
-        ws.auto_signal_emissions.push(AutoSignalEmission {
-            kind: "recommend".into(),
-            key: "ctx".into(),
-            timestamp_ms: 1,
-        });
         ws.recent_recommendation_emissions
             .push_front(RecentRecommendationEmission {
                 session_id: "s1".into(),
@@ -1895,13 +1825,11 @@ mod tests {
         });
 
         let report = ws.ensure_current_derived_guidance_epoch().unwrap();
-        assert_eq!(report.auto_signal_emissions_cleared, 1);
         assert_eq!(report.recent_recommendation_emissions_cleared, 1);
         assert_eq!(report.pending_recommendation_feedback_cleared, 1);
         assert_eq!(report.recent_recommendation_feedback_cleared, 1);
         assert_eq!(report.recent_interventions_cleared, 1);
         assert_eq!(ws.derived_guidance_epoch.as_deref(), Some(DERIVED_GUIDANCE_EPOCH));
-        assert!(ws.auto_signal_emissions.is_empty());
         assert!(ws.recent_recommendation_emissions.is_empty());
         assert!(ws.pending_recommendation_feedback.is_empty());
         assert!(ws.recent_recommendation_feedback.is_empty());

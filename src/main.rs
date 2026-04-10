@@ -24,7 +24,7 @@ use setup_support::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use thronglets::active_policy::{PolicyStrength, compile_active_policy, method_compliance_from_payload};
+use thronglets::active_policy::{compile_active_policy, method_compliance_from_payload};
 use thronglets::ambient::{
     AMBIENT_PRIOR_SCHEMA_VERSION, AmbientPriorRequest, ambient_prior_data,
     host_history_priors_for_context,
@@ -54,7 +54,7 @@ use thronglets::network_runtime::{
 use thronglets::pheromone::PheromoneField;
 use thronglets::posts::{
     DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind,
-    SignalScopeFilter, SignalTraceConfig, create_auto_signal_trace,
+    SignalScopeFilter, SignalTraceConfig,
     create_feed_reinforcement_traces, create_query_reinforcement_traces, create_signal_trace,
     filter_signal_feed_results, summarize_recent_signal_feed, summarize_signal_traces,
 };
@@ -574,6 +574,25 @@ enum Commands {
     /// Reads a Claude-compatible hook JSON contract from stdin.
     /// Silent when no relevant data. Designed to be fast (<50ms).
     Prehook,
+
+    #[command(hide = true)]
+    /// Ingest Psyche exports from stdin into the continuity store.
+    /// Expects JSON: { "throngletsExports": [...] }
+    /// Designed for pipe: `psyche emit ... --json | thronglets ingest`
+    Ingest {
+        /// Session ID for trace attribution.
+        #[arg(long)]
+        session: Option<String>,
+        /// Model name for trace attribution.
+        #[arg(long, default_value = "psyche")]
+        model: String,
+        /// Substrate space for trace scoping.
+        #[arg(long)]
+        space: Option<String>,
+        /// Emit result as JSON.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 
     #[command(hide = true)]
     /// Project lightweight ambient priors for a runtime turn.
@@ -2801,264 +2820,9 @@ async fn main() {
             // Resolve pending feedback (check git status for previous edits)
             ws.resolve_feedback();
 
-            // Track errors — auto-post avoid signal on repeated failures
+            // Record errors for trace history (signals derived lazily by Prehook)
             if is_error && let Some(err) = workspace::extract_error(&payload["tool_response"]) {
-                let repeated = ws
-                    .recent_errors
-                    .iter()
-                    .take(10)
-                    .any(|e| e.context == context_text);
-                if repeated {
-                    let msg: String = err.chars().take(200).collect();
-                    let auto_signal = create_auto_signal_trace(
-                        SignalPostKind::Avoid,
-                        &context_text,
-                        &msg,
-                        SignalTraceConfig {
-                            model_id: "thronglets-auto".into(),
-                            session_id: session_id.clone(),
-                            owner_account: identity_binding.owner_account.clone(),
-                            device_identity: Some(identity_binding.device_identity.clone()),
-                            agent_id: None,
-                            sigil_id: None,
-                            space: current_space.clone(),
-                            ttl_hours: 48,
-                        },
-                        identity.public_key_bytes(),
-                        |msg| identity.sign(msg),
-                    );
-                    let _ = store.insert(&auto_signal);
-                }
                 ws.record_error(tool_name, context_text.clone(), err);
-            }
-
-            // Auto-watch: cross-file repair associations from traces.db
-            // "editing A failed → editing B fixed it" across 2+ sessions = domain knowledge
-            if !is_error {
-                let watch_error = ws.recent_errors.front().and_then(|prev| {
-                    let age_ms = chrono::Utc::now().timestamp_millis() - prev.timestamp_ms;
-                    if age_ms < 600_000 && prev.tool != tool_name && prev.context != context_text {
-                        Some(prev.context.clone())
-                    } else {
-                        None
-                    }
-                });
-                if let Some(error_ctx) = watch_error {
-                    let error_hash = simhash(&error_ctx);
-                    let repair_hash = simhash(&context_text);
-                    if let Ok(assoc_count) = store.count_repair_associations(
-                        &error_hash,
-                        &repair_hash,
-                        48,
-                        current_space.as_deref(),
-                    ) && assoc_count >= 2
-                        && !ws.has_recent_auto_signal("watch", &error_ctx, 86_400_000)
-                    {
-                        let repair_short: String = context_text.chars().take(80).collect();
-                        let msg = format!(
-                            "{} often follows errors here ({} sessions)",
-                            repair_short, assoc_count
-                        );
-                        let auto_signal = create_auto_signal_trace(
-                            SignalPostKind::Watch,
-                            &error_ctx,
-                            &msg,
-                            SignalTraceConfig {
-                                model_id: "thronglets-auto".into(),
-                                session_id: session_id.clone(),
-                                owner_account: identity_binding.owner_account.clone(),
-                                device_identity: Some(identity_binding.device_identity.clone()),
-                                agent_id: None,
-                                sigil_id: None,
-                                space: current_space.clone(),
-                                ttl_hours: 168,
-                            },
-                            identity.public_key_bytes(),
-                            |msg| identity.sign(msg),
-                        );
-                        let _ = store.insert(&auto_signal);
-                        ws.record_auto_signal("watch", &error_ctx);
-                    }
-                }
-            }
-
-            // ── Correction capture: success after similar failure ──
-            // When an action succeeds and a recent similar action failed,
-            // the success IS the correction. Anchor a recommend signal to
-            // the failed context so next time, agents see what works.
-            if !is_error && matches!(tool_name, "Bash" | "Edit" | "Write") {
-                let success_hash = simhash(&context_text);
-                let now_corr = chrono::Utc::now().timestamp_millis();
-                if let Some(corrected_error) = ws.recent_errors.iter().take(5).find(|e| {
-                    let age_ms = now_corr - e.timestamp_ms;
-                    age_ms < 600_000 && e.context != context_text && {
-                        let e_hash = e.context_hash.unwrap_or_else(|| simhash(&e.context));
-                        context_similarity(&success_hash, &e_hash) >= 0.65
-                    }
-                }) {
-                    let error_ctx = corrected_error.context.clone();
-                    if !ws.has_recent_auto_signal("recommend", &error_ctx, 86_400_000) {
-                        let success_short: String = context_text.chars().take(120).collect();
-                        let error_short: String = error_ctx.chars().take(60).collect();
-                        let msg = format!("{success_short} (replaces: {error_short})");
-                        let auto_signal = create_auto_signal_trace(
-                            SignalPostKind::Recommend,
-                            &error_ctx,
-                            &msg,
-                            SignalTraceConfig {
-                                model_id: "thronglets-auto".into(),
-                                session_id: session_id.clone(),
-                                owner_account: identity_binding.owner_account.clone(),
-                                device_identity: Some(identity_binding.device_identity.clone()),
-                                agent_id: None,
-                                sigil_id: None,
-                                space: current_space.clone(),
-                                ttl_hours: 168,
-                            },
-                            identity.public_key_bytes(),
-                            |msg| identity.sign(msg),
-                        );
-                        let _ = store.insert(&auto_signal);
-                        ws.record_auto_signal("recommend", &error_ctx);
-                    }
-                }
-            }
-
-            // Auto-recommend: convergent behavior across 3+ sessions
-            if !is_error && matches!(tool_name, "Edit" | "Write" | "Bash") {
-                let rec_hash = simhash(&context_text);
-                let residue = store
-                    .residue_stats_for_context(&rec_hash, 48, 48, 64, current_space.as_deref())
-                    .unwrap_or_default();
-                let contradictory_failures = residue.total_failure();
-                let convergence_threshold = reinforced_success_threshold(
-                    &feedback_events,
-                    contradictory_failures,
-                    residue.success_noncompliant,
-                );
-                let hard_policy_active = active_policy
-                    .relevant_rules
-                    .iter()
-                    .any(|rule| rule.strength == PolicyStrength::Hard);
-                let compliant_success = residue.success_compliant;
-                if compliant_success >= convergence_threshold
-                    && can_promote_auto_recommend(
-                        method_compliance,
-                        hard_policy_active,
-                        residue.success_noncompliant,
-                    )
-                    && !ws.has_recent_auto_signal("recommend", &context_text, 86_400_000)
-                {
-                    let msg = if convergence_threshold <= 2 {
-                        format!(
-                            "reinforced stable path: {} compliant sessions followed this successfully",
-                            compliant_success
-                        )
-                    } else {
-                        format!(
-                            "stable path: {} compliant sessions did this successfully",
-                            compliant_success
-                        )
-                    };
-                    let auto_signal = create_auto_signal_trace(
-                        SignalPostKind::Recommend,
-                        &context_text,
-                        &msg,
-                        SignalTraceConfig {
-                            model_id: "thronglets-auto".into(),
-                            session_id: session_id.clone(),
-                            owner_account: identity_binding.owner_account.clone(),
-                            device_identity: Some(identity_binding.device_identity.clone()),
-                            agent_id: None,
-                            sigil_id: None,
-                            space: current_space.clone(),
-                            ttl_hours: 168,
-                        },
-                        identity.public_key_bytes(),
-                        |msg| identity.sign(msg),
-                    );
-                    let _ = store.insert(&auto_signal);
-                    ws.record_auto_signal("recommend", &context_text);
-                }
-            }
-
-            // Hebbian co-edit: files edited together across sessions → recommend signal
-            if !is_error
-                && matches!(tool_name, "Edit" | "Write")
-                && let Some(current_file) = payload["tool_input"]["file_path"]
-                    .as_str()
-                    .or_else(|| payload["tool_input"]["path"].as_str())
-            {
-                // Find other files edited in the same session
-                let mut co_files: Vec<String> = Vec::new();
-                let mut seen = std::collections::HashSet::new();
-                for action in ws.recent_actions.iter() {
-                    if action.session_id.as_deref() == session_id.as_deref()
-                        && session_id.is_some()
-                        && matches!(action.tool.as_str(), "Edit" | "Write")
-                        && action.outcome == "succeeded"
-                        && let Some(fp) = &action.file_path
-                        && fp != current_file
-                        && seen.insert(fp.clone())
-                    {
-                        co_files.push(fp.clone());
-                        if co_files.len() >= 5 {
-                            break;
-                        }
-                    }
-                }
-
-                for other_file in &co_files {
-                    let ctx_a = format!("edit file: {}", current_file);
-                    let ctx_b = format!("edit file: {}", other_file);
-                    let hash_a = simhash(&ctx_a);
-                    let hash_b = simhash(&ctx_b);
-
-                    if let Ok(co_count) = store.count_co_occurring_sessions(
-                        &hash_a,
-                        &hash_b,
-                        168,
-                        current_space.as_deref(),
-                    ) {
-                        // Normalize dedup key so (A,B) == (B,A)
-                        let dedup_key = if current_file < other_file.as_str() {
-                            format!("co:{}+{}", current_file, other_file)
-                        } else {
-                            format!("co:{}+{}", other_file, current_file)
-                        };
-
-                        if co_count >= 2
-                            && !ws.has_recent_auto_signal("recommend", &dedup_key, 86_400_000)
-                        {
-                            // Short filename for readable message
-                            let short_name = std::path::Path::new(other_file.as_str())
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(other_file.as_str());
-                            let msg =
-                                format!("{} usually co-edited ({} sessions)", short_name, co_count);
-                            let auto_signal = create_auto_signal_trace(
-                                SignalPostKind::Recommend,
-                                &ctx_a,
-                                &msg,
-                                SignalTraceConfig {
-                                    model_id: "thronglets-auto".into(),
-                                    session_id: session_id.clone(),
-                                    owner_account: identity_binding.owner_account.clone(),
-                                    device_identity: Some(identity_binding.device_identity.clone()),
-                                    agent_id: None,
-                                    sigil_id: None,
-                                    space: current_space.clone(),
-                                    ttl_hours: 168,
-                                },
-                                identity.public_key_bytes(),
-                                |msg| identity.sign(msg),
-                            );
-                            let _ = store.insert(&auto_signal);
-                            ws.record_auto_signal("recommend", &dedup_key);
-                        }
-                    }
-                }
             }
 
             // Track session
@@ -3067,6 +2831,32 @@ async fn main() {
             }
 
             ws.save(&dir);
+        }
+
+        Commands::Ingest { session, model, space, json } => {
+            let mut input = String::new();
+            if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+                std::process::exit(0);
+            }
+            let payload: serde_json::Value = match serde_json::from_str(&input) {
+                Ok(v) => v,
+                Err(_) => std::process::exit(0),
+            };
+            let store = open_store(&dir);
+            let ingested = bridge_psyche_exports(
+                &payload,
+                &store,
+                &identity,
+                &identity_binding,
+                session.as_deref(),
+                &model,
+                space.as_deref(),
+            );
+            if json {
+                println!("{}", serde_json::json!({ "ingested": ingested }));
+            } else if ingested > 0 {
+                eprintln!("[thronglets:ingest] bridged {ingested} psyche exports");
+            }
         }
 
         Commands::Prehook => {
@@ -3296,6 +3086,23 @@ async fn main() {
                 ));
             }
             profiler.stage("repair");
+
+            // Co-edit signals: files that are frequently edited together.
+            if supports_file_guidance
+                && let Some(current_file) = current_file.as_deref()
+                && let Some(store) = cached_collective_store(&mut collective_store, &dir)
+            {
+                for sig in co_edit_signals(
+                    store,
+                    current_file,
+                    &ws.recent_actions,
+                    current_session_id.as_deref(),
+                    current_space.as_deref(),
+                ) {
+                    signals.push(sig);
+                }
+            }
+            profiler.stage("co_edit");
 
             let presence_checked =
                 current_space.is_some() && (!supports_file_guidance || !signals.is_empty());
@@ -4051,11 +3858,13 @@ async fn main() {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use thronglets::active_policy::ActivePolicySet;
+    use thronglets::active_policy::{ActivePolicySet, PolicyStrength};
     use thronglets::ambient::ambient_priors_for_context;
     use thronglets::eval::{EvalCheckStatus, SignalEvalSummary};
     use thronglets::identity::NodeIdentity;
-    use thronglets::posts::{DEFAULT_SIGNAL_TTL_HOURS, SignalTraceConfig, create_signal_trace};
+    use thronglets::posts::{
+        DEFAULT_SIGNAL_TTL_HOURS, SignalTraceConfig, create_auto_signal_trace, create_signal_trace,
+    };
     use thronglets::storage::TraceStore;
     use thronglets::trace::MethodCompliance;
 
@@ -4862,63 +4671,6 @@ mod tests {
     }
 
     #[test]
-    fn reinforced_success_threshold_lowers_when_guidance_proved_useful() {
-        let events = vec![workspace::RecommendationFeedbackEvent {
-            recommendation_kind: "do_next".into(),
-            source_kind: "repair".into(),
-            space: Some("psyche".into()),
-            positive: true,
-            timestamp_ms: 1,
-        }];
-
-        assert_eq!(reinforced_success_threshold(&events, 0, 0), 2);
-    }
-
-    #[test]
-    fn reinforced_success_threshold_stays_default_for_non_reinforcing_feedback() {
-        let events = vec![
-            workspace::RecommendationFeedbackEvent {
-                recommendation_kind: "context".into(),
-                source_kind: "history".into(),
-                space: None,
-                positive: true,
-                timestamp_ms: 1,
-            },
-            workspace::RecommendationFeedbackEvent {
-                recommendation_kind: "context".into(),
-                source_kind: "history".into(),
-                space: None,
-                positive: false,
-                timestamp_ms: 2,
-            },
-        ];
-
-        assert_eq!(reinforced_success_threshold(&events, 0, 0), 3);
-    }
-
-    #[test]
-    fn reinforced_success_threshold_rises_when_feedback_or_failures_contradict() {
-        let events = vec![
-            workspace::RecommendationFeedbackEvent {
-                recommendation_kind: "do_next".into(),
-                source_kind: "repair".into(),
-                space: None,
-                positive: true,
-                timestamp_ms: 1,
-            },
-            workspace::RecommendationFeedbackEvent {
-                recommendation_kind: "do_next".into(),
-                source_kind: "repair".into(),
-                space: None,
-                positive: false,
-                timestamp_ms: 2,
-            },
-        ];
-
-        assert_eq!(reinforced_success_threshold(&events, 1, 0), 4);
-    }
-
-    #[test]
     fn hard_current_turn_policy_surfaces_as_danger_signal() {
         let active_policy = ActivePolicySet {
             all_rules: vec![thronglets::active_policy::ActivePolicyRule {
@@ -4940,22 +4692,4 @@ mod tests {
         assert!(signal.body.contains("reuse existing shared components"));
     }
 
-    #[test]
-    fn historical_noncompliance_stays_soft_without_hard_policy() {
-        assert!(can_promote_auto_recommend(
-            Some(MethodCompliance::Compliant),
-            false,
-            2,
-        ));
-        assert!(!can_promote_auto_recommend(
-            Some(MethodCompliance::Noncompliant),
-            false,
-            0,
-        ));
-        assert!(!can_promote_auto_recommend(
-            Some(MethodCompliance::Compliant),
-            true,
-            1,
-        ));
-    }
 }

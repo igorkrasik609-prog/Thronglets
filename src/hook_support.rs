@@ -18,9 +18,9 @@ use thronglets::posts::{
 };
 use thronglets::presence::summarize_recent_presence;
 use thronglets::signals::{Recommendation, Signal, SignalKind, StepCandidate};
+use thronglets::context::simhash;
 use thronglets::storage::TraceStore;
-use thronglets::trace::{MethodCompliance, Outcome};
-use thronglets::workspace;
+use thronglets::trace::Outcome;
 
 pub(crate) fn git_file_history(file_path: &str, max_entries: usize) -> Option<String> {
     use std::path::Path;
@@ -181,42 +181,6 @@ fn strip_mixed_residue_prefix(summary: &str) -> &str {
     summary.strip_prefix("mixed residue: ").unwrap_or(summary)
 }
 
-pub(crate) fn reinforced_success_threshold(
-    feedback_events: &[workspace::RecommendationFeedbackEvent],
-    contradictory_failures: u32,
-    noncompliant_successes: u32,
-) -> u32 {
-    let mut reinforced = false;
-    let mut contradicted = false;
-    for event in feedback_events {
-        let relevant_recommendation =
-            matches!(event.recommendation_kind.as_str(), "do_next" | "maybe_also");
-        let relevant_source = matches!(
-            event.source_kind.as_str(),
-            "repair" | "preparation" | "adjacency"
-        );
-        if !(relevant_recommendation && relevant_source) {
-            continue;
-        }
-        if event.positive {
-            reinforced = true;
-        } else {
-            contradicted = true;
-        }
-    }
-
-    let base_threshold = if reinforced && !contradicted { 2 } else { 3 };
-    let contradiction_floor = contradictory_failures
-        .saturating_add(noncompliant_successes)
-        .saturating_add(2);
-    let feedback_floor = if contradicted {
-        base_threshold.max(4)
-    } else {
-        base_threshold
-    };
-    feedback_floor.max(contradiction_floor)
-}
-
 pub(crate) fn active_policy_signal(active_policy: &ActivePolicySet) -> Option<Signal> {
     if active_policy.relevant_rules.is_empty() {
         return None;
@@ -247,18 +211,62 @@ pub(crate) fn active_policy_signal(active_policy: &ActivePolicySet) -> Option<Si
     }
 }
 
-pub(crate) fn can_promote_auto_recommend(
-    method_compliance: Option<MethodCompliance>,
-    hard_policy_active: bool,
-    noncompliant_successes: u32,
-) -> bool {
-    if matches!(method_compliance, Some(MethodCompliance::Noncompliant)) {
-        return false;
+/// Derive co-edit signals lazily at Prehook time.
+/// Replaces the eager Hebbian co-edit block that was in the Hook handler.
+pub(crate) fn co_edit_signals(
+    store: &TraceStore,
+    current_file: &str,
+    recent_actions: &std::collections::VecDeque<crate::workspace::RecentAction>,
+    session_id: Option<&str>,
+    space: Option<&str>,
+) -> Vec<Signal> {
+    let session_id = match session_id {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    // Find other files edited in the same session
+    let mut co_files: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for action in recent_actions {
+        if action.session_id.as_deref() == Some(session_id)
+            && matches!(action.tool.as_str(), "Edit" | "Write")
+            && action.outcome == "succeeded"
+            && let Some(fp) = &action.file_path
+            && fp != current_file
+            && seen.insert(fp.clone())
+        {
+            co_files.push(fp.clone());
+            if co_files.len() >= 5 {
+                break;
+            }
+        }
     }
-    if hard_policy_active && noncompliant_successes > 0 {
-        return false;
+
+    let mut signals = Vec::new();
+    let ctx_a = format!("edit file: {}", current_file);
+    let hash_a = simhash(&ctx_a);
+
+    for other_file in &co_files {
+        let ctx_b = format!("edit file: {}", other_file);
+        let hash_b = simhash(&ctx_b);
+
+        if let Ok(co_count) = store.count_co_occurring_sessions(&hash_a, &hash_b, 168, space) {
+            if co_count >= 2 {
+                let short_name = std::path::Path::new(other_file.as_str())
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(other_file.as_str());
+                signals.push(Signal {
+                    kind: SignalKind::Adjacency,
+                    score: 150,
+                    body: format!("  ~ co-edited: {} ({} sessions)", short_name, co_count),
+                    candidate: None,
+                });
+            }
+        }
     }
-    true
+    signals
 }
 
 pub(crate) fn presence_context_signal(

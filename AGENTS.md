@@ -42,7 +42,8 @@ Rust binary (v0.7.11)
 ├── responses.rs      — CLI response types (Summary/Data structs)
 ├── render.rs         — CLI text rendering functions
 ├── adapter_ops.rs    — Adapter detect/install/doctor/bootstrap operations
-└── hook_support.rs   — Hook/prehook helpers, profiler, release checks
+├── hook_support.rs   — Hook/prehook helpers, profiler, release checks
+└── main.rs:Ingest    — Psyche export pipe ingestion (`psyche emit | thronglets ingest`)
 ```
 
 ## Service Layer
@@ -74,6 +75,11 @@ Tools over JSON-RPC 2.0:
 - `presence_ping` / `presence_feed` — session presence
 - `trace_anchor` — anchor trace on Oasyce chain
 - `authorization_check` — verify identity binding
+
+### Psyche → Thronglets bridge
+Two paths for Psyche exports to reach the Thronglets continuity store:
+- **MCP mode** (automatic): When Psyche runs as MCP server, `process_input` responses include `throngletsExports`. Thronglets hook detects `mcp__psyche__*` tools and auto-ingests via `bridge_psyche_exports()`.
+- **Pipe mode** (hook-based): `psyche emit <dir> --json | thronglets ingest --session $ID`. For when Psyche runs as CLI hooks instead of MCP.
 
 ### HTTP/REST (non-MCP agents)
 Same operations over HTTP JSON API.
