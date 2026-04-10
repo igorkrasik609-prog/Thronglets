@@ -16,6 +16,7 @@ pub mod pheromone;
 pub mod posts;
 pub mod presence;
 pub mod profile;
+pub mod pulse;
 pub mod service;
 pub mod signals;
 pub mod storage;

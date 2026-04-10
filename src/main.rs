@@ -30,6 +30,7 @@ use thronglets::ambient::{
     host_history_priors_for_context,
 };
 use thronglets::anchor::AnchorClient;
+use thronglets::pulse::PulseEmitter;
 use thronglets::context::{simhash, similarity as context_similarity};
 use thronglets::continuity::summarize_recent_continuity;
 use thronglets::contracts::{
@@ -564,6 +565,22 @@ enum Commands {
     },
 
     #[command(hide = true)]
+    /// Emit a multi-dimensional pulse to the Oasyce chain
+    Pulse {
+        /// Sigil ID to pulse for
+        #[arg(long)]
+        sigil_id: String,
+
+        /// Oasyce chain RPC endpoint
+        #[arg(long, default_value = "http://localhost:1317")]
+        rpc: String,
+
+        /// Chain ID
+        #[arg(long, default_value = "oasyce-1")]
+        chain_id: String,
+    },
+
+    #[command(hide = true)]
     /// Auto-record traces from agent tool hooks.
     /// Reads a Claude-compatible hook JSON contract from stdin and records a trace.
     /// Designed to be fast (<50ms).
@@ -997,6 +1014,36 @@ fn load_identity_binding(data_dir: &std::path::Path, identity: &NodeIdentity) ->
 fn open_store(data_dir: &std::path::Path) -> TraceStore {
     std::fs::create_dir_all(data_dir).expect("failed to create data directory");
     TraceStore::open(&data_dir.join("traces.db")).expect("failed to open trace store")
+}
+
+/// Try to spawn a background pulse emitter. Requires both THRONGLETS_SIGIL_ID
+/// and THRONGLETS_CHAIN_RPC env vars to be set. Fail-open: returns silently if
+/// either is missing. Reloads identity from disk for the background thread.
+fn maybe_spawn_pulse(data_dir: &Path, store: &Arc<TraceStore>) {
+    let sigil_id = match std::env::var("THRONGLETS_SIGIL_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let rpc = match std::env::var("THRONGLETS_CHAIN_RPC") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let chain_id = std::env::var("THRONGLETS_CHAIN_ID").unwrap_or_else(|_| "oasyce-1".to_string());
+    let key_path = data_dir.join("node.key");
+
+    let emitter = PulseEmitter::new(&sigil_id, &rpc, &chain_id);
+    let st = Arc::clone(store);
+
+    std::thread::spawn(move || {
+        let identity = match NodeIdentity::load_or_generate(&key_path) {
+            Ok(id) => Arc::new(id),
+            Err(e) => {
+                tracing::warn!("Pulse: failed to load identity: {e}");
+                return;
+            }
+        };
+        thronglets::pulse::pulse_loop(emitter, identity, st);
+    });
 }
 
 /// Resolve the Oasyce chain RPC endpoint for auto-anchoring.
@@ -2437,6 +2484,9 @@ async fn main() {
             .await
             .expect("failed to start network");
 
+            // Background pulse emitter (fail-open: no-op if env vars missing)
+            maybe_spawn_pulse(&dir, &store);
+
             info!(
                 "Node {} running. Press Ctrl+C to stop.",
                 identity.short_id()
@@ -2502,6 +2552,9 @@ async fn main() {
             // Non-blocking update check (background thread, never fails)
             thronglets::update::check_for_update();
 
+            // Background pulse emitter (fail-open: no-op if env vars missing)
+            maybe_spawn_pulse(&dir, &store);
+
             let ctx = Arc::new(McpContext {
                 identity: Arc::new(identity),
                 binding: Arc::new(identity_binding),
@@ -2518,6 +2571,48 @@ async fn main() {
                 && let Ok(data) = serde_json::to_string(&snapshot)
             {
                 let _ = std::fs::write(&field_path, data);
+            }
+        }
+
+        Commands::Pulse {
+            sigil_id,
+            rpc,
+            chain_id,
+        } => {
+            let store = open_store(&dir);
+            let emitter = PulseEmitter::new(&sigil_id, &rpc, &chain_id);
+
+            println!("Aggregating dimensions...");
+            let dims = emitter.aggregate_dimensions(&store);
+            for (name, alive) in &dims {
+                println!("  {name}: {}", if *alive { "alive" } else { "silent" });
+            }
+
+            // Run blocking HTTP in spawn_blocking to avoid tokio runtime conflict
+            let key_path = dir.join("node.key");
+            let result = tokio::task::spawn_blocking(move || {
+                let id = NodeIdentity::load_or_generate(&key_path)
+                    .expect("failed to load identity");
+                emitter.emit(&id, &store)
+            })
+            .await
+            .expect("pulse task panicked");
+
+            match result {
+                Ok(result) => {
+                    println!(
+                        "Pulse sent: {} (dimensions: {})",
+                        result.tx_hash,
+                        result.dimensions.join(", ")
+                    );
+                }
+                Err(thronglets::pulse::PulseError::NoDimensions) => {
+                    println!("All dimensions silent — no pulse sent.");
+                }
+                Err(e) => {
+                    eprintln!("Pulse failed: {e}");
+                    std::process::exit(1);
+                }
             }
         }
 
@@ -3450,6 +3545,9 @@ async fn main() {
 
             // Non-blocking update check (background thread, never fails)
             thronglets::update::check_for_update();
+
+            // Background pulse emitter (fail-open: no-op if env vars missing)
+            maybe_spawn_pulse(&dir, &store);
 
             let ctx = Arc::new(thronglets::http::HttpContext {
                 identity: Arc::new(identity),

@@ -862,6 +862,21 @@ impl TraceStore {
         Self::collect_traces(&mut stmt, params![like, cutoff_ms, limit as i64])
     }
 
+    /// Query the latest viability signal from Psyche (stored as PsycheState signal).
+    /// Returns the context_text of the most recent viability trace within the given window.
+    pub fn query_latest_viability_signal(&self, hours: u32) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let sql = "SELECT context_text FROM traces WHERE context_text LIKE 'psyche:viability:%' AND timestamp >= ?1 ORDER BY timestamp DESC LIMIT 1";
+        let mut stmt = conn.prepare(sql)?;
+        let mut rows = stmt.query(params![cutoff_ms])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Query recent external continuity traces.
     pub fn query_recent_continuity_traces(
         &self,

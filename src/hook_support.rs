@@ -780,10 +780,10 @@ pub(crate) fn bridge_psyche_exports(
         let kind = export["kind"].as_str().unwrap_or("");
         let summary = build_export_summary(export);
 
-        if kind == "self-state" {
-            // Self-state → psyche_state signal (ephemeral broadcast, not continuity)
+        if kind == "self-state" || kind == "viability" {
+            // Self-state / viability → psyche_state signal (ephemeral broadcast, not continuity)
             let key = export["key"].as_str().unwrap_or("");
-            let context = format!("psyche:self-state:{key}");
+            let context = format!("psyche:{kind}:{key}");
             let signal = create_signal_trace(
                 SignalPostKind::PsycheState,
                 &context,
