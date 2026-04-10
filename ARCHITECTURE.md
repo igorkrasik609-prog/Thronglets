@@ -29,6 +29,27 @@ The core product is:
 
 Everything else is an adapter or upgrade layer.
 
+## Field Evolution (2026-04-11)
+
+**Thronglets IS the subject of evolution.** Individual Sigils are the field's sensory-action organs (neurons). The field (Thronglets shared memory network) evolves; individuals serve the field.
+
+Existing mechanisms that ARE evolutionary dynamics (not just features):
+- **Hebbian co-edit** = synaptic strengthening (co-occurring patterns are reinforced)
+- **Pheromone decay** = synaptic weakening (unused information fades)
+- **Carrying capacity** = selection pressure (new signals cost more as field fills)
+- **Corroboration bonus** = multi-source validation (multi-agent confirmed info is more persistent)
+- **Outcome-weighted deposits** = fitness selection (successful traces deposit more)
+
+Selection pressure is intrinsic to the field's Hebbian dynamics — no external judge needed.
+
+Lifecycle events reframed:
+- DISSOLVE = field pruning inefficient/silent nodes (synaptic pruning)
+- FORK = field branching into new dimensions
+- BOND = synapse formation
+- MERGE = node consolidation
+
+The evolution target function = spherical coverage of the intelligence field (not individual survival).
+
 ## First Principles
 
 ### 1. Human cognitive load is a performance budget

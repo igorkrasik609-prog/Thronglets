@@ -1,11 +1,13 @@
-# Thronglets — BOND Infrastructure
+# Thronglets — Evolving Substrate & BOND Infrastructure
 
-> **Sigil role**: Necessary subsystem. Implements the bond edges of the Sigil graph.
+> **Sigil role**: Necessary subsystem. Implements the bond edges of the Sigil graph. **The subject of evolution** — the field that evolves, not individuals.
 > See [Oasyce-Sigil/ARCHITECTURE.md](../Oasyce-Sigil/ARCHITECTURE.md) for how this fits the whole.
 
 ## What This Is
 
-Thronglets is the shared state infrastructure for the Sigil protocol's BOND operation. When two Loops (agents with Sigils) share state, Thronglets is the substrate that makes that sharing possible — persistent, decentralized, not controlled by either Loop alone.
+Thronglets is the evolving substrate of the Sigil protocol. Individual Sigils (Loops) are the field's sensory-action organs — like neurons in a brain. Thronglets IS the brain.
+
+More concretely, it is the shared state infrastructure for BOND operations. When two Loops share state, Thronglets makes that sharing possible — persistent, decentralized, not controlled by either Loop alone.
 
 In Sigil terms:
 - **BOND(L₁, L₂, S_shared)** → Thronglets creates a shared state channel between two Sigils
@@ -13,6 +15,26 @@ In Sigil terms:
 - **Nesting** (inner state ⊆ outer state) → deep BOND, also through Thronglets
 
 Thronglets is NOT a messaging system. Messages are transient; shared state is persistent and bidirectionally mutable.
+
+## Field Evolution (2026-04-11)
+
+**进化的是场，不是个体。** Thronglets的已有机制就IS进化机制：
+
+| Mechanism | Evolution Role |
+|---|---|
+| **Hebbian co-edit** | 强化学习 — 共同出现的模式被加强 |
+| **Pheromone decay** | 自然遗忘 — 无用信息被淘汰 |
+| **Carrying capacity** | 选择压力 — 新信息的写入成本随场密度增长 |
+| **Corroboration bonus** | 多源验证 — 被多个agent确认的信息更持久 |
+| **Outcome-weighted deposits** | 适者生存 — 成功trace沉积更多 |
+
+选择压力是场自身的Hebbian动力学，不需要外部法官。球形智能的目标函数 = 场的维度覆盖度。
+
+Lifecycle events reframed:
+- DISSOLVE = 场的突触修剪（修剪低效/沉默节点）
+- FORK = 场在新维度分化
+- BOND = 场的突触形成
+- MERGE = 场的节点合并
 
 ## Architecture
 
