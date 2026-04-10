@@ -10,7 +10,7 @@ mod hints;
 use crate::signals::{Recommendation, RecommendationKind, SignalKind, StepAction, StepCandidate};
 use crate::posts::DERIVED_GUIDANCE_EPOCH;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 fn default_succeeded() -> String {
@@ -182,6 +182,22 @@ pub struct SubstrateActivity {
 pub struct SpaceFeedbackSummary {
     pub positive_24h: u32,
     pub negative_24h: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpaceEmergenceSummary {
+    pub active_spaces_24h: u32,
+    pub global_positive_24h: u32,
+    pub global_negative_24h: u32,
+    pub false_signal_pressure: f64,
+    pub false_consensus_spaces_24h: u32,
+    pub recoverable_spaces_24h: u32,
+    pub cross_space_contamination_rate: f64,
+    pub space_feedback: BTreeMap<String, SpaceFeedbackSummary>,
+    /// Per-source-kind breakdown (e.g. "repair", "danger", "preparation").
+    /// Reveals which signal type drives the global positive/negative counts,
+    /// preventing misdiagnosis when one dominant type skews the aggregate.
+    pub feedback_by_source_kind: BTreeMap<String, SpaceFeedbackSummary>,
 }
 
 
@@ -851,6 +867,97 @@ impl WorkspaceState {
         }
     }
 
+    pub fn emergence_summary(&self) -> SpaceEmergenceSummary {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut grouped_feedback: BTreeMap<String, SpaceFeedbackSummary> = BTreeMap::new();
+        let mut by_source_kind: BTreeMap<String, SpaceFeedbackSummary> = BTreeMap::new();
+        let mut global_positive_24h = 0;
+        let mut global_negative_24h = 0;
+
+        for event in self.recent_recommendation_feedback.iter() {
+            if (now - event.timestamp_ms) > 86_400_000 {
+                continue;
+            }
+            let space = event.space.clone().unwrap_or_else(|| "global".to_string());
+            let entry = grouped_feedback.entry(space).or_insert(SpaceFeedbackSummary {
+                positive_24h: 0,
+                negative_24h: 0,
+            });
+            let source_entry =
+                by_source_kind
+                    .entry(event.source_kind.clone())
+                    .or_insert(SpaceFeedbackSummary {
+                        positive_24h: 0,
+                        negative_24h: 0,
+                    });
+            if event.positive {
+                entry.positive_24h += 1;
+                source_entry.positive_24h += 1;
+                global_positive_24h += 1;
+            } else {
+                entry.negative_24h += 1;
+                source_entry.negative_24h += 1;
+                global_negative_24h += 1;
+            }
+        }
+
+        let false_consensus_spaces_24h = grouped_feedback
+            .values()
+            .filter(|summary| summary.negative_24h > summary.positive_24h)
+            .count() as u32;
+        let recoverable_spaces_24h = grouped_feedback
+            .values()
+            .filter(|summary| {
+                summary.positive_24h > 0 && summary.positive_24h >= summary.negative_24h
+            })
+            .count() as u32;
+
+        let total_feedback = global_positive_24h + global_negative_24h;
+        let false_signal_pressure = if total_feedback == 0 {
+            0.0
+        } else {
+            f64::from(global_negative_24h) / f64::from(total_feedback)
+        };
+
+        let mut fingerprints: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for emission in self.recent_recommendation_emissions.iter() {
+            if (now - emission.timestamp_ms) > 86_400_000 {
+                continue;
+            }
+            let space = emission
+                .space
+                .clone()
+                .unwrap_or_else(|| "global".to_string());
+            fingerprints
+                .entry(emission.fingerprint.clone())
+                .or_default()
+                .insert(space);
+        }
+
+        let total_unique_fingerprints = fingerprints.len();
+        let overlapping_fingerprints = fingerprints
+            .values()
+            .filter(|spaces| spaces.len() > 1)
+            .count();
+        let cross_space_contamination_rate = if total_unique_fingerprints == 0 {
+            0.0
+        } else {
+            overlapping_fingerprints as f64 / total_unique_fingerprints as f64
+        };
+
+        SpaceEmergenceSummary {
+            active_spaces_24h: grouped_feedback.len() as u32,
+            global_positive_24h,
+            global_negative_24h,
+            false_signal_pressure,
+            false_consensus_spaces_24h,
+            recoverable_spaces_24h,
+            cross_space_contamination_rate,
+            space_feedback: grouped_feedback,
+            feedback_by_source_kind: by_source_kind,
+        }
+    }
+
     /// Add a file edit/write to the pending feedback queue.
     pub fn add_pending_feedback(&mut self, file_path: String, action: &str) {
         let now = chrono::Utc::now().timestamp_millis();
@@ -1276,6 +1383,74 @@ mod tests {
         let still_visible =
             ws.suppress_duplicate_recommendations(Some("s1"), Some("other-space"), recommendations);
         assert_eq!(still_visible.len(), 1);
+    }
+
+    #[test]
+    fn emergence_summary_detects_cross_space_contamination_and_false_signal_pressure() {
+        let mut ws = make_ws();
+        let recommendation = Recommendation {
+            kind: RecommendationKind::DoNext,
+            source_kind: SignalKind::Preparation,
+            body: String::new(),
+            candidate: Some(StepCandidate::single(
+                "Read",
+                Some("helper.rs".into()),
+                "medium",
+                2,
+                1,
+            )),
+        };
+
+        ws.record_recommendation_emissions(
+            "Edit",
+            Some("s1"),
+            Some("space-alpha"),
+            std::slice::from_ref(&recommendation),
+        );
+        ws.resolve_recommendation_feedback(
+            Some("s1"),
+            Some("space-alpha"),
+            "Read",
+            Some("/tmp/helper.rs"),
+            "succeeded",
+        );
+
+        ws.record_recommendation_emissions(
+            "Edit",
+            Some("s2"),
+            Some("space-beta"),
+            std::slice::from_ref(&recommendation),
+        );
+        ws.resolve_recommendation_feedback(
+            Some("s2"),
+            Some("space-beta"),
+            "Bash",
+            None,
+            "succeeded",
+        );
+
+        let summary = ws.emergence_summary();
+        assert_eq!(summary.active_spaces_24h, 2);
+        assert_eq!(summary.global_positive_24h, 1);
+        assert_eq!(summary.global_negative_24h, 1);
+        assert!(summary.false_signal_pressure > 0.0);
+        assert_eq!(summary.false_consensus_spaces_24h, 1);
+        assert_eq!(summary.recoverable_spaces_24h, 1);
+        assert!(summary.cross_space_contamination_rate > 0.0);
+        assert_eq!(
+            summary.space_feedback["space-alpha"].positive_24h,
+            1
+        );
+        assert_eq!(
+            summary.space_feedback["space-beta"].negative_24h,
+            1
+        );
+
+        // Per-source-kind breakdown: both events come from "preparation"
+        assert_eq!(summary.feedback_by_source_kind.len(), 1);
+        let prep = &summary.feedback_by_source_kind["preparation"];
+        assert_eq!(prep.positive_24h, 1);
+        assert_eq!(prep.negative_24h, 1);
     }
 
     // ── record_action ──

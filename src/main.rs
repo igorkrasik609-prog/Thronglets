@@ -36,7 +36,8 @@ use thronglets::contracts::{
     GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_COLLECTIVE_QUERIES, PREHOOK_MAX_HINTS,
 };
 use thronglets::eval::{
-    EvalCheckThresholds, EvalConfig, EvalFocus, LocalFeedbackSummary, evaluate_signal_quality,
+    EvalCheckThresholds, EvalConfig, EvalFocus, LocalFeedbackSummary, SignalEvalSummary,
+    evaluate_signal_quality,
 };
 use thronglets::identity::{
     ConnectionFile, ConnectionSeedScope, DEFAULT_CONNECTION_FILE_TTL_HOURS, IdentityBinding,
@@ -837,6 +838,120 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+
+    #[command(hide = true)]
+    /// Summarize offline signal quality together with space-level emergence indicators.
+    EvalEmergence {
+        /// Look back over traces from the last N hours.
+        #[arg(long, default_value_t = 168)]
+        hours: u64,
+
+        /// Evaluate at most this many recent sessions.
+        #[arg(long, default_value_t = 200)]
+        max_sessions: usize,
+
+        /// Scope evaluation to this project root. Defaults to the current working directory.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+
+        /// Evaluate across the entire trace store instead of scoping to one project.
+        #[arg(long, default_value_t = false)]
+        global: bool,
+
+        /// Emit machine-readable JSON instead of a text summary.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, serde::Serialize)]
+struct EvalEmergenceOutput {
+    project_scope: Option<String>,
+    signal_eval: Option<SignalEvalSummary>,
+    workspace_emergence: workspace::SpaceEmergenceSummary,
+    substrate_activity: workspace::SubstrateActivity,
+}
+
+impl EvalEmergenceOutput {
+    fn render(&self) -> String {
+        let mut lines = vec![format!(
+            "project scope: {}",
+            self.project_scope.as_deref().unwrap_or("global")
+        )];
+
+        if let Some(summary) = self.signal_eval.as_ref() {
+            let repair_precision = if summary.repair_predictions == 0 {
+                0.0
+            } else {
+                (summary.repair_first_step_hits as f64 / summary.repair_predictions as f64) * 100.0
+            };
+            lines.push(format!(
+                "offline eval: sessions_scored={}, repair_first_step_precision={repair_precision:.1}%",
+                summary.sessions_scored,
+            ));
+        } else {
+            lines.push("offline eval: pending (not enough recent session history)".to_string());
+        }
+
+        lines.push(format!(
+            "active spaces (24h): {}",
+            self.workspace_emergence.active_spaces_24h
+        ));
+        lines.push(format!(
+            "false signal pressure (24h): {:.3}",
+            self.workspace_emergence.false_signal_pressure
+        ));
+        lines.push(format!(
+            "cross-space contamination rate (24h): {:.3}",
+            self.workspace_emergence.cross_space_contamination_rate
+        ));
+        lines.push(format!(
+            "false-consensus spaces (24h): {}",
+            self.workspace_emergence.false_consensus_spaces_24h
+        ));
+        lines.push(format!(
+            "recoverable spaces (24h): {}",
+            self.workspace_emergence.recoverable_spaces_24h
+        ));
+        lines.push(format!(
+            "substrate activity: {}",
+            self.substrate_activity.activity
+        ));
+
+        if !self.workspace_emergence.feedback_by_source_kind.is_empty() {
+            let by_kind = self
+                .workspace_emergence
+                .feedback_by_source_kind
+                .iter()
+                .map(|(kind, summary)| {
+                    format!(
+                        "{kind}(+{} / -{})",
+                        summary.positive_24h, summary.negative_24h
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("feedback by signal kind: {by_kind}"));
+        }
+
+        if !self.workspace_emergence.space_feedback.is_empty() {
+            let compact = self
+                .workspace_emergence
+                .space_feedback
+                .iter()
+                .map(|(space, summary)| {
+                    format!(
+                        "{space}(+{} / -{})",
+                        summary.positive_24h, summary.negative_24h
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("space feedback: {compact}"));
+        }
+
+        lines.join("\n")
+    }
 }
 
 fn data_dir(cli_override: &Option<PathBuf>) -> PathBuf {
@@ -1296,6 +1411,52 @@ async fn main() {
             }
             return;
         }
+        Commands::EvalEmergence {
+            hours,
+            max_sessions,
+            project_root,
+            global,
+            json,
+        } => {
+            let store = open_store(&dir);
+            let workspace = load_workspace_state(&dir);
+            let project_scope = if *global {
+                None
+            } else {
+                Some(project_root.clone().unwrap_or_else(|| {
+                    std::env::current_dir().expect("failed to determine current working directory")
+                }))
+            };
+            let signal_eval = evaluate_signal_quality(
+                &store,
+                *hours,
+                *max_sessions,
+                project_scope.as_deref(),
+                EvalConfig::default(),
+            )
+            .expect("failed to evaluate emergence signal quality")
+            .map(|summary| {
+                summary.with_local_feedback(if project_scope.is_some() {
+                    LocalFeedbackSummary::from_workspace(&workspace)
+                } else {
+                    None
+                })
+            });
+
+            let output = EvalEmergenceOutput {
+                project_scope: project_scope.as_ref().map(|path| path.display().to_string()),
+                signal_eval,
+                workspace_emergence: workspace.emergence_summary(),
+                substrate_activity: workspace.substrate_activity(),
+            };
+
+            if *json {
+                print_json(&output);
+            } else {
+                println!("{}", output.render());
+            }
+            return;
+        }
         Commands::AmbientPriors { json } => {
             let mut input = String::new();
             if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
@@ -1463,6 +1624,9 @@ async fn main() {
         }
         Commands::RebuildPriors { .. } => {
             unreachable!("rebuild-priors handled before identity bootstrap")
+        }
+        Commands::EvalEmergence { .. } => {
+            unreachable!("eval-emergence handled before identity bootstrap")
         }
 
         Commands::Start { json } => {
