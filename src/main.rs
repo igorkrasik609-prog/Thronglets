@@ -2512,16 +2512,20 @@ async fn main() {
 
             // Restore pheromone field from disk if available
             let field_path = dir.join("pheromone-field.v1.json");
-            if field_path.exists()
+            let restored_from_disk = if field_path.exists()
                 && let Ok(data) = std::fs::read_to_string(&field_path)
                 && let Ok(snapshot) = serde_json::from_str(&data)
             {
                 field.restore(&snapshot);
                 tracing::info!(points = field.len(), "Restored pheromone field from disk");
-            }
+                true
+            } else {
+                false
+            };
 
-            // Hydrate field from existing traces
-            field.hydrate_from_store(&store);
+            if !restored_from_disk {
+                field.hydrate_from_store(&store);
+            }
 
             if let Some(adapter) = agent.and_then(AdapterArg::as_kind) {
                 let _ = auto_clear_restart_pending_on_runtime_contact(&dir, adapter);
@@ -2567,9 +2571,9 @@ async fn main() {
 
             // Persist pheromone field on shutdown
             let snapshot = field.snapshot();
-            if !snapshot.points.is_empty()
-                && let Ok(data) = serde_json::to_string(&snapshot)
-            {
+            if snapshot.points.is_empty() {
+                let _ = std::fs::remove_file(&field_path);
+            } else if let Ok(data) = serde_json::to_string(&snapshot) {
                 let _ = std::fs::write(&field_path, data);
             }
         }
@@ -2581,19 +2585,18 @@ async fn main() {
         } => {
             let store = open_store(&dir);
             let emitter = PulseEmitter::new(&sigil_id, &rpc, &chain_id);
+            let identity = NodeIdentity::load_or_generate(&dir.join("node.key"))
+                .expect("failed to load identity");
 
             println!("Aggregating dimensions...");
-            let dims = emitter.aggregate_dimensions(&store);
+            let dims = emitter.aggregate_dimensions(&store, &identity);
             for (name, alive) in &dims {
                 println!("  {name}: {}", if *alive { "alive" } else { "silent" });
             }
 
             // Run blocking HTTP in spawn_blocking to avoid tokio runtime conflict
-            let key_path = dir.join("node.key");
             let result = tokio::task::spawn_blocking(move || {
-                let id = NodeIdentity::load_or_generate(&key_path)
-                    .expect("failed to load identity");
-                emitter.emit(&id, &store)
+                emitter.emit(&identity, &store)
             })
             .await
             .expect("pulse task panicked");
@@ -2803,7 +2806,7 @@ async fn main() {
                 identity.public_key_bytes(),
                 |msg| identity.sign(msg),
             );
-            match store.insert(&trace) {
+            match store.insert_with_space(&trace, current_space.as_deref()) {
                 Ok(_) => {
                     if hook_debug {
                         eprintln!("[thronglets:hook] recorded {capability}");
@@ -2902,7 +2905,7 @@ async fn main() {
                     identity.public_key_bytes(),
                     |msg| identity.sign(msg),
                 );
-                let _ = store.insert(&feedback_trace);
+                let _ = store.insert_with_space(&feedback_trace, current_space.as_deref());
             }
 
             // Track pending feedback for Edit/Write
@@ -3165,7 +3168,12 @@ async fn main() {
                 if claim_collective_query(&repair_hint.candidate, &mut collective_queries_remaining)
                     && let Some(store) = cached_collective_store(&mut collective_store, &dir)
                     && let Ok(collective_sources) =
-                        store.count_repair_sources(tool_name, &repair_hint.candidate.steps, 168)
+                        store.count_repair_sources(
+                            tool_name,
+                            &repair_hint.candidate.steps,
+                            168,
+                            current_space.as_deref(),
+                        )
                 {
                     apply_collective_sources(
                         &mut repair_hint.candidate,
@@ -3319,7 +3327,7 @@ async fn main() {
                         identity.public_key_bytes(),
                         |msg| identity.sign(msg),
                     );
-                    let _ = store.insert(&trace);
+                    let _ = store.insert_with_space(&trace, current_space.as_deref());
 
                     // Emit presence
                     let presence = create_presence_trace(
@@ -3427,7 +3435,7 @@ async fn main() {
                         identity.public_key_bytes(),
                         |msg| identity.sign(msg),
                     );
-                    let _ = store.insert(&trace);
+                    let _ = store.insert_with_space(&trace, current_space.as_deref());
 
                     ws.save(&dir);
                 }
@@ -3451,7 +3459,7 @@ async fn main() {
                         identity.public_key_bytes(),
                         |msg| identity.sign(msg),
                     );
-                    let _ = store.insert(&trace);
+                    let _ = store.insert_with_space(&trace, current_space.as_deref());
                 }
 
                 "subagent-stop" => {
@@ -3485,7 +3493,7 @@ async fn main() {
                         identity.public_key_bytes(),
                         |msg| identity.sign(msg),
                     );
-                    let _ = store.insert(&trace);
+                    let _ = store.insert_with_space(&trace, current_space.as_deref());
                 }
 
                 _ => {} // Unknown event — silent exit
@@ -3514,14 +3522,19 @@ async fn main() {
 
             // Restore pheromone field from disk if available
             let field_path = dir.join("pheromone-field.v1.json");
-            if field_path.exists()
+            let restored_from_disk = if field_path.exists()
                 && let Ok(data) = std::fs::read_to_string(&field_path)
                 && let Ok(snapshot) = serde_json::from_str(&data)
             {
                 field.restore(&snapshot);
                 tracing::info!(points = field.len(), "Restored pheromone field from disk");
+                true
+            } else {
+                false
+            };
+            if !restored_from_disk {
+                field.hydrate_from_store(&store);
             }
-            field.hydrate_from_store(&store);
 
             // Auto-join P2P network unless --local is specified.
             let _network_tx = if !local {
@@ -3574,9 +3587,9 @@ async fn main() {
 
             // Persist pheromone field on shutdown
             let snapshot = field.snapshot();
-            if !snapshot.points.is_empty()
-                && let Ok(data) = serde_json::to_string(&snapshot)
-            {
+            if snapshot.points.is_empty() {
+                let _ = std::fs::remove_file(&field_path);
+            } else if let Ok(data) = serde_json::to_string(&snapshot) {
                 let _ = std::fs::write(&field_path, data);
             }
         }

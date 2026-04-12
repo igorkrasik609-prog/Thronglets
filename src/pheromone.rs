@@ -132,6 +132,13 @@ impl FieldPoint {
         }
     }
 
+    fn effective_decay_lambda(&self) -> f64 {
+        // ln(1)=0, ln(10)≈2.3, ln(100)≈4.6 → factor: 1.0, 1.35, 1.69
+        let reinforcement_factor =
+            1.0 + (self.total_excitations as f64).ln().max(0.0) * 0.15;
+        DECAY_LAMBDA / reinforcement_factor
+    }
+
     /// Apply temporal decay to intensity based on elapsed time.
     /// Well-reinforced points (high total_excitations) decay slower —
     /// up to ~2x half-life at ~800 excitations. This creates persistent
@@ -141,11 +148,7 @@ impl FieldPoint {
             return;
         }
         let dt = (now_ms - self.last_excited) as f64;
-        // ln(1)=0, ln(10)≈2.3, ln(100)≈4.6 → factor: 1.0, 1.35, 1.69
-        let reinforcement_factor =
-            1.0 + (self.total_excitations as f64).ln().max(0.0) * 0.15;
-        let effective_lambda = DECAY_LAMBDA / reinforcement_factor;
-        self.intensity *= (-effective_lambda * dt).exp();
+        self.intensity *= (-self.effective_decay_lambda() * dt).exp();
     }
 
     /// Excite this field point with a new observation.
@@ -201,7 +204,7 @@ impl FieldPoint {
             return self.intensity;
         }
         let dt = (now_ms - self.last_excited) as f64;
-        self.intensity * (-DECAY_LAMBDA * dt).exp()
+        self.intensity * (-self.effective_decay_lambda() * dt).exp()
     }
 
     /// Should this point be pruned?
@@ -410,10 +413,17 @@ impl FieldInner {
         }
     }
 
+    fn current_total_intensity(&self, now_ms: u64) -> f64 {
+        self.nodes
+            .values()
+            .map(|point| point.current_intensity(now_ms))
+            .sum()
+    }
+
     /// Current load factor: total_intensity / FIELD_CAPACITY.
     /// 0.0 = empty field, 1.0 = at capacity, >1.0 = over capacity.
-    fn load_factor(&self) -> f64 {
-        self.total_intensity / FIELD_CAPACITY
+    fn load_factor(&self, now_ms: u64) -> f64 {
+        self.current_total_intensity(now_ms) / FIELD_CAPACITY
     }
 
     /// Diffuse intensity from each field point to neighboring buckets.
@@ -516,7 +526,8 @@ impl FieldInner {
         // At 50% load: cost_multiplier = 1.25
         // At 100% load: cost_multiplier = 2.0
         // At 200% load: cost_multiplier = 5.0
-        let load = self.load_factor();
+        self.total_intensity = self.current_total_intensity(now_ms);
+        let load = self.load_factor(now_ms);
         let cost_multiplier = 1.0 + load * load;
 
         // ── Corroboration bonus ──
@@ -797,16 +808,9 @@ impl PheromoneField {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let mut inner = self.inner.write().unwrap();
         inner.edges.retain(|_, e| !e.is_dead(now_ms));
-        // Collect intensity of dead points before removing them
-        let dead_intensity: f64 = inner
-            .nodes
-            .values()
-            .filter(|p| p.is_dead(now_ms))
-            .map(|p| p.current_intensity(now_ms))
-            .sum();
         let before = inner.nodes.len();
         inner.nodes.retain(|_, p| !p.is_dead(now_ms));
-        inner.total_intensity = (inner.total_intensity - dead_intensity).max(0.0);
+        inner.total_intensity = inner.current_total_intensity(now_ms);
         before - inner.nodes.len()
     }
 
@@ -828,23 +832,17 @@ impl PheromoneField {
         inner.edges.retain(|_, e| !e.is_dead(now_ms));
         let couplings_pruned = before_edges - inner.edges.len();
 
-        let dead_intensity: f64 = inner
-            .nodes
-            .values()
-            .filter(|p| p.is_dead(now_ms))
-            .map(|p| p.current_intensity(now_ms))
-            .sum();
         let before_nodes = inner.nodes.len();
         inner.nodes.retain(|_, p| !p.is_dead(now_ms));
         let points_pruned = before_nodes - inner.nodes.len();
-        inner.total_intensity = (inner.total_intensity - dead_intensity).max(0.0);
+        inner.total_intensity = inner.current_total_intensity(now_ms);
 
         TickResult {
             diffused,
             couplings_reinforced: 0,
             couplings_pruned,
             points_pruned,
-            load_factor: inner.load_factor(),
+            load_factor: inner.load_factor(now_ms),
         }
     }
 
@@ -865,12 +863,14 @@ impl PheromoneField {
     /// Current field load factor: total_intensity / FIELD_CAPACITY.
     /// 0.0 = empty, 1.0 = at carrying capacity, >1.0 = over capacity.
     pub fn load_factor(&self) -> f64 {
-        self.inner.read().unwrap().load_factor()
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        self.inner.read().unwrap().load_factor(now_ms)
     }
 
     /// Total pheromone intensity across all field points.
     pub fn total_intensity(&self) -> f64 {
-        self.inner.read().unwrap().total_intensity
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        self.inner.read().unwrap().current_total_intensity(now_ms)
     }
 
     /// Snapshot the entire field for P2P sync or persistence.
@@ -885,7 +885,7 @@ impl PheromoneField {
             .map(|(key, point)| FieldSnapshotEntry {
                 capability: key.capability.clone(),
                 bucket: key.bucket,
-                intensity: point.current_intensity(now_ms),
+                intensity: point.intensity,
                 valence: point.valence,
                 latency: point.latency,
                 variance: point.variance,
@@ -910,36 +910,36 @@ impl PheromoneField {
         FieldSnapshot {
             points,
             couplings,
-            total_intensity: inner.total_intensity,
+            total_intensity: inner.current_total_intensity(now_ms),
         }
     }
 
     /// Restore field from a snapshot (e.g., on startup from disk).
     pub fn restore(&self, snapshot: &FieldSnapshot) {
         let mut inner = self.inner.write().unwrap();
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        inner.nodes.clear();
+        inner.edges.clear();
+        inner.total_intensity = 0.0;
 
         for entry in &snapshot.points {
             let key = FieldKey {
                 capability: entry.capability.clone(),
                 bucket: entry.bucket,
             };
-            let point = inner
-                .nodes
-                .entry(key)
-                .or_insert_with(|| FieldPoint::new(entry.last_excited));
-            let total = point.intensity + entry.intensity;
-            if total > 0.0 {
-                point.valence =
-                    (point.valence * point.intensity + entry.valence * entry.intensity) / total;
-                point.latency =
-                    (point.latency * point.intensity + entry.latency * entry.intensity) / total;
-                point.variance =
-                    (point.variance * point.intensity + entry.variance * entry.intensity) / total;
-            }
-            point.intensity = total;
-            point.last_excited = point.last_excited.max(entry.last_excited);
-            point.total_excitations = point.total_excitations.max(entry.total_excitations);
-            point.source_count = point.source_count.max(entry.source_count);
+            inner.nodes.insert(
+                key,
+                FieldPoint {
+                    intensity: entry.intensity,
+                    valence: entry.valence,
+                    latency: entry.latency,
+                    variance: entry.variance,
+                    last_excited: entry.last_excited,
+                    total_excitations: entry.total_excitations,
+                    source_count: entry.source_count,
+                    sources: Vec::new(),
+                },
+            );
         }
 
         for entry in &snapshot.couplings {
@@ -952,12 +952,7 @@ impl PheromoneField {
             edge.last_reinforced = edge.last_reinforced.max(entry.last_reinforced);
         }
 
-        // Recompute total_intensity from restored state
-        inner.total_intensity = inner
-            .nodes
-            .values()
-            .map(|p| p.intensity)
-            .sum();
+        inner.total_intensity = inner.current_total_intensity(now_ms);
     }
 
     /// Apply a delta from P2P sync. CRDT-friendly: addition is commutative.
@@ -1104,6 +1099,7 @@ impl PheromoneField {
         let mut inner = self.inner.write().unwrap();
         inner.nodes.clear();
         inner.edges.clear();
+        inner.total_intensity = 0.0;
     }
 
     pub fn hydrate_from_store(&self, store: &crate::storage::TraceStore) {
@@ -1622,5 +1618,63 @@ mod tests {
             "coupling should be positive after co-excitation: {}",
             o.coupling
         );
+    }
+
+    #[test]
+    fn read_side_intensity_matches_mutating_decay() {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let mut point = FieldPoint::new(now_ms);
+        point.intensity = 5.0;
+        point.total_excitations = 256;
+        point.last_excited = now_ms - 72 * 3_600_000;
+
+        let read_only = point.current_intensity(now_ms);
+        let mut mutated = point.clone();
+        mutated.decay(now_ms);
+
+        assert!(
+            (read_only - mutated.intensity).abs() < 1e-9,
+            "read-side decay ({read_only}) should match mutating decay ({})",
+            mutated.intensity
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_current_intensity() {
+        let field = PheromoneField::new();
+        let t = make_trace("cap/recover", "ctx", Outcome::Succeeded, 100);
+        field.excite(&t);
+
+        {
+            let mut inner = field.inner.write().unwrap();
+            for point in inner.nodes.values_mut() {
+                point.last_excited -= (HALF_LIFE_HOURS * 3_600_000.0) as u64;
+            }
+        }
+
+        let before = field.aggregate("cap/recover").unwrap().intensity;
+        let snapshot = field.snapshot();
+
+        let restored = PheromoneField::new();
+        restored.restore(&snapshot);
+        let after = restored.aggregate("cap/recover").unwrap().intensity;
+
+        assert!(
+            (before - after).abs() < 0.01,
+            "restore should preserve current intensity: before={before}, after={after}"
+        );
+    }
+
+    #[test]
+    fn clear_resets_total_intensity() {
+        let field = PheromoneField::new();
+        field.excite(&make_trace("cap/clear", "ctx", Outcome::Succeeded, 100));
+        assert!(field.total_intensity() > 0.0);
+
+        field.clear();
+
+        assert!(field.is_empty());
+        assert_eq!(field.total_intensity(), 0.0);
+        assert_eq!(field.load_factor(), 0.0);
     }
 }

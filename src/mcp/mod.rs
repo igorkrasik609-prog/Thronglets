@@ -646,6 +646,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
                     .send(NetworkCommand::PublishTrace {
                         trace: Box::new(out.trace),
                         space: None,
+                        receipt: None,
                     })
                     .await;
             }

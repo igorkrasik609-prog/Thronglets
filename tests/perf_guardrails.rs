@@ -272,6 +272,59 @@ fn prehook_surfaces_other_active_sessions_in_same_space() {
 }
 
 #[test]
+fn hook_persists_space_for_lazy_trace_queries() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let hook_payload = r#"{
+        "tool_name":"Bash",
+        "session_id":"space-test",
+        "space":"psyche",
+        "tool_input":{"command":"cargo test"},
+        "tool_response":{"error":"linker failed"}
+    }"#;
+
+    let output = run_bin(
+        &["--data-dir", data_dir.path().to_str().unwrap(), "hook"],
+        Some(hook_payload),
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    WorkspaceState::default().save(data_dir.path());
+
+    let wrong_space = r#"{"tool_name":"Bash","space":"other-space","tool_input":{"command":"cargo test"}}"#;
+    let output = run_bin(
+        &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
+        Some(wrong_space),
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "prehook wrong-space failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+
+    let right_space = r#"{"tool_name":"Bash","space":"psyche","tool_input":{"command":"cargo test"}}"#;
+    let output = run_bin(
+        &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
+        Some(right_space),
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "prehook right-space failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(PREHOOK_HEADER));
+    assert!(stdout.contains("risk residue"));
+}
+
+#[test]
 fn prehook_profile_uses_stderr_only() {
     let data_dir = tempfile::tempdir().unwrap();
     let payload = r#"{"tool_name":"Bash","tool_input":{"command":"cargo test"}}"#;

@@ -282,21 +282,55 @@ impl WorkspaceState {
     pub fn load(data_dir: &Path) -> Self {
         let path = Self::path(data_dir);
         match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(workspace) => workspace,
+                Err(error) => {
+                    let backup = Self::corrupt_backup_path(&path);
+                    let _ = std::fs::rename(&path, &backup);
+                    tracing::warn!(
+                        path = %path.display(),
+                        backup = %backup.display(),
+                        %error,
+                        "Workspace state was corrupt; moved aside and reset"
+                    );
+                    Self::default()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "Failed to read workspace state");
+                Self::default()
+            }
         }
     }
 
-    /// Save workspace state to disk. Silently ignores errors.
+    /// Save workspace state to disk atomically. Silently ignores errors.
     pub fn save(&self, data_dir: &Path) {
         let path = Self::path(data_dir);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, json);
+            let tmp_path = Self::tmp_path(&path);
+            if std::fs::write(&tmp_path, json).is_ok() {
+                let _ = std::fs::rename(&tmp_path, &path);
+            }
         }
     }
 
     fn path(data_dir: &Path) -> PathBuf {
         data_dir.join("workspace.json")
+    }
+
+    fn tmp_path(path: &Path) -> PathBuf {
+        path.with_extension(format!("json.tmp.{}", std::process::id()))
+    }
+
+    fn corrupt_backup_path(path: &Path) -> PathBuf {
+        path.with_extension(format!(
+            "json.corrupt.{}",
+            chrono::Utc::now().timestamp_millis()
+        ))
     }
 
     pub fn ensure_derived_guidance_epoch(
@@ -1841,5 +1875,38 @@ mod tests {
     fn load_missing_file_returns_default() {
         let ws = WorkspaceState::load(Path::new("/nonexistent/path"));
         assert_eq!(ws.recent_files.len(), 0);
+    }
+
+    #[test]
+    fn load_corrupt_file_moves_backup_and_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = WorkspaceState::path(dir.path());
+        std::fs::write(&path, "{not valid json").unwrap();
+
+        let ws = WorkspaceState::load(dir.path());
+
+        assert!(ws.recent_files.is_empty());
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("workspace.json.corrupt."))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(!path.exists(), "corrupt workspace.json should be moved aside");
+    }
+
+    #[test]
+    fn save_cleans_up_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = make_ws();
+
+        ws.save(dir.path());
+
+        assert!(WorkspaceState::path(dir.path()).exists());
+        assert!(
+            !WorkspaceState::tmp_path(&WorkspaceState::path(dir.path())).exists(),
+            "temporary workspace file should not remain after atomic save"
+        );
     }
 }

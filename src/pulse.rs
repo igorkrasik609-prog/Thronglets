@@ -67,19 +67,34 @@ impl PulseEmitter {
     ///
     /// - `thronglets`: presence heartbeat within the last 60 minutes
     /// - `psyche`: latest viability signal says "viable" (within 12 hours)
-    pub fn aggregate_dimensions(&self, store: &TraceStore) -> HashMap<String, bool> {
+    pub fn aggregate_dimensions(
+        &self,
+        store: &TraceStore,
+        identity: &NodeIdentity,
+    ) -> HashMap<String, bool> {
         let mut dims = HashMap::new();
+        let local_device_identity = identity.device_identity();
+        let local_node_pubkey = identity.public_key_bytes();
 
-        // Thronglets dimension: any recent presence trace?
+        // Thronglets dimension: any recent LOCAL presence trace?
         let has_presence = store
-            .query_recent_presence_traces(PRESENCE_WINDOW_HOURS, 1)
-            .map(|traces| !traces.is_empty())
+            .query_recent_presence_traces(PRESENCE_WINDOW_HOURS, 24)
+            .map(|traces| {
+                traces.into_iter().any(|trace| {
+                    trace.device_identity.as_deref() == Some(local_device_identity.as_str())
+                        || trace.node_pubkey == local_node_pubkey
+                })
+            })
             .unwrap_or(false);
         dims.insert("thronglets".to_string(), has_presence);
 
-        // Psyche dimension: latest viability signal says viable?
+        // Psyche dimension: latest LOCAL viability signal says viable?
         let psyche_viable = store
-            .query_latest_viability_signal(VIABILITY_WINDOW_HOURS)
+            .query_latest_viability_signal(
+                VIABILITY_WINDOW_HOURS,
+                &local_device_identity,
+                local_node_pubkey,
+            )
             .ok()
             .flatten()
             .map(|ctx| ctx.contains("viable") && !ctx.contains("critical"))
@@ -96,7 +111,7 @@ impl PulseEmitter {
         identity: &NodeIdentity,
         store: &TraceStore,
     ) -> Result<PulseResult, PulseError> {
-        let dims = self.aggregate_dimensions(store);
+        let dims = self.aggregate_dimensions(store, identity);
         let alive: Vec<String> = dims
             .into_iter()
             .filter(|(_, alive)| *alive)
@@ -273,6 +288,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::posts::{SignalPostKind, SignalTraceConfig, create_signal_trace};
+    use crate::presence::{DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace};
 
     #[test]
     fn emitter_stores_config() {
@@ -287,7 +304,8 @@ mod tests {
     fn aggregate_dimensions_empty_store() {
         let store = TraceStore::in_memory().unwrap();
         let e = PulseEmitter::new("SIG_test", "http://localhost:1317", "oasyce-1");
-        let dims = e.aggregate_dimensions(&store);
+        let identity = NodeIdentity::generate();
+        let dims = e.aggregate_dimensions(&store, &identity);
         // No traces → both dimensions dead
         assert_eq!(dims.get("thronglets"), Some(&false));
         assert_eq!(dims.get("psyche"), Some(&false));
@@ -302,5 +320,100 @@ mod tests {
             Err(PulseError::NoDimensions) => {} // expected
             other => panic!("expected NoDimensions, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn aggregate_dimensions_ignore_remote_residue() {
+        let store = TraceStore::in_memory().unwrap();
+        let local = NodeIdentity::generate();
+        let remote = NodeIdentity::generate();
+        let e = PulseEmitter::new("SIG_test", "http://localhost:1317", "oasyce-1");
+
+        let remote_presence = create_presence_trace(
+            PresenceTraceConfig {
+                model_id: "remote".into(),
+                session_id: Some("remote-session".into()),
+                owner_account: None,
+                device_identity: Some(remote.device_identity()),
+                space: Some("psyche".into()),
+                mode: Some("focus".into()),
+                sigil_id: None,
+                capability: None,
+                ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
+            },
+            remote.public_key_bytes(),
+            |msg| remote.sign(msg),
+        );
+        store.insert(&remote_presence).unwrap();
+
+        let remote_viability = create_signal_trace(
+            SignalPostKind::PsycheState,
+            "psyche:viability:remote",
+            "viable",
+            SignalTraceConfig {
+                model_id: "remote".into(),
+                session_id: Some("remote-session".into()),
+                owner_account: None,
+                device_identity: Some(remote.device_identity()),
+                agent_id: None,
+                sigil_id: None,
+                space: Some("psyche".into()),
+                ttl_hours: 6,
+            },
+            remote.public_key_bytes(),
+            |msg| remote.sign(msg),
+        );
+        store.insert(&remote_viability).unwrap();
+
+        let dims = e.aggregate_dimensions(&store, &local);
+        assert_eq!(dims.get("thronglets"), Some(&false));
+        assert_eq!(dims.get("psyche"), Some(&false));
+    }
+
+    #[test]
+    fn aggregate_dimensions_use_local_presence_and_viability() {
+        let store = TraceStore::in_memory().unwrap();
+        let local = NodeIdentity::generate();
+        let e = PulseEmitter::new("SIG_test", "http://localhost:1317", "oasyce-1");
+
+        let local_presence = create_presence_trace(
+            PresenceTraceConfig {
+                model_id: "local".into(),
+                session_id: Some("local-session".into()),
+                owner_account: None,
+                device_identity: Some(local.device_identity()),
+                space: Some("psyche".into()),
+                mode: Some("focus".into()),
+                sigil_id: None,
+                capability: None,
+                ttl_minutes: DEFAULT_PRESENCE_TTL_MINUTES,
+            },
+            local.public_key_bytes(),
+            |msg| local.sign(msg),
+        );
+        store.insert(&local_presence).unwrap();
+
+        let local_viability = create_signal_trace(
+            SignalPostKind::PsycheState,
+            "psyche:viability:local",
+            "viable",
+            SignalTraceConfig {
+                model_id: "local".into(),
+                session_id: Some("local-session".into()),
+                owner_account: None,
+                device_identity: Some(local.device_identity()),
+                agent_id: None,
+                sigil_id: None,
+                space: Some("psyche".into()),
+                ttl_hours: 6,
+            },
+            local.public_key_bytes(),
+            |msg| local.sign(msg),
+        );
+        store.insert(&local_viability).unwrap();
+
+        let dims = e.aggregate_dimensions(&store, &local);
+        assert_eq!(dims.get("thronglets"), Some(&true));
+        assert_eq!(dims.get("psyche"), Some(&true));
     }
 }

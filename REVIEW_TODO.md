@@ -1,0 +1,7 @@
+- [ ] src/service.rs:69 — 普通 `record_trace` 服务路径仍没有 `space` 字段，非 hook/prehook 写入的 trace 还不能稳定参与 space-local 的 lazy signal derivation。
+- [ ] src/mcp/mod.rs:648 — MCP `trace_record` 仍以 `space: None` 发布普通 trace，即使调用方知道所属 space，也无法获得 space-scoped gossip/publish 语义。
+- [ ] src/pheromone.rs:894 — pheromone snapshot 只持久化 `source_count`；`restore()` 会把 `sources` 重建为空，重启后 corroboration 仍可能和运行时状态轻微漂移。
+- [ ] src/pulse.rs:89 — [cross-project] pulse 维度仍硬编码为 `"thronglets"` / `"psyche"`，没有和链侧规范化维度名或注册表做显式对齐校验。
+- [ ] src/network/mod.rs:429 — DCUtR / UPnP / relay 失败目前主要停留在 debug/info 日志，缺少更高层可见的 degraded 状态，NAT 失败排障仍然偏盲。
+- [ ] tests/regression_corpus.rs:1 — regression corpus 主要覆盖 ambient policy / prior 语义，还没有覆盖 pheromone 数值边界、publish 失败恢复和 workspace 持久化损坏等核心失败模式。
+- [ ] tests/eval_emergence.rs:1 — `eval-emergence` 仍是 CLI happy-path 验证，未直接约束 cross-space contamination 修复、pulse 聚合边界或异常输入恢复行为。

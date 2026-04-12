@@ -449,22 +449,33 @@ async fn publish_local_traces(store: &TraceStore, command_tx: &mpsc::Sender<Netw
         && !traces.is_empty()
     {
         info!(count = traces.len(), "Publishing local traces to network");
-        let mut ids: Vec<[u8; 32]> = Vec::new();
+        let mut published_ids: Vec<[u8; 32]> = Vec::new();
         for trace in traces {
-            ids.push(trace.id);
             let space = trace
                 .context_text
                 .as_ref()
                 .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
                 .and_then(|v| v.get("space")?.as_str().map(String::from));
-            let _ = command_tx
+            let trace_id = trace.id;
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            if command_tx
                 .send(NetworkCommand::PublishTrace {
                     trace: Box::new(trace),
                     space,
+                    receipt: Some(reply_tx),
                 })
-                .await;
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            if reply_rx.await.unwrap_or(false) {
+                published_ids.push(trace_id);
+            }
         }
-        let _ = store.mark_published(&ids);
+        if !published_ids.is_empty() {
+            let _ = store.mark_published(&published_ids);
+        }
     }
 }
 
@@ -519,12 +530,16 @@ mod tests {
     use super::{
         DEFAULT_PUBLIC_BOOTSTRAP_SEEDS, effective_bootstrap_seeds,
         maybe_promote_joined_primary_peer, maybe_promote_same_owner_trace_source,
+        publish_local_traces,
         normalize_dialable_peer_address, observe_reusable_peer_address,
     };
     use crate::context::simhash;
     use crate::identity::{IdentityBinding, NodeIdentity};
+    use crate::network::NetworkCommand;
     use crate::network_state::NetworkSnapshot;
+    use crate::storage::TraceStore;
     use crate::trace::{Outcome, Trace};
+    use tokio::sync::mpsc;
 
     #[test]
     fn joined_primary_live_peer_is_promoted_to_trusted_seed() {
@@ -661,5 +676,58 @@ mod tests {
                 .iter()
                 .any(|addr| addr == &format!("/ip4/127.0.0.1/tcp/4001/p2p/{peer_id}"))
         );
+    }
+
+    #[tokio::test]
+    async fn publish_local_traces_only_marks_confirmed_traces() {
+        let store = TraceStore::in_memory().unwrap();
+        let identity = NodeIdentity::generate();
+        let accepted = Trace::new(
+            "cap/accepted".into(),
+            Outcome::Succeeded,
+            10,
+            1,
+            simhash("accepted"),
+            Some("accepted".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            identity.public_key_bytes(),
+            |msg| identity.sign(msg),
+        );
+        let rejected = Trace::new(
+            "cap/rejected".into(),
+            Outcome::Succeeded,
+            10,
+            1,
+            simhash("rejected"),
+            Some("rejected".into()),
+            Some("s2".into()),
+            "test-model".into(),
+            identity.public_key_bytes(),
+            |msg| identity.sign(msg),
+        );
+        store.insert(&accepted).unwrap();
+        store.insert(&rejected).unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<NetworkCommand>(8);
+        let accepted_id = accepted.id;
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let NetworkCommand::PublishTrace {
+                    trace,
+                    receipt: Some(reply),
+                    ..
+                } = command
+                {
+                    let _ = reply.send(trace.id == accepted_id);
+                }
+            }
+        });
+
+        publish_local_traces(&store, &tx).await;
+
+        let unpublished = store.unpublished_traces(10).unwrap();
+        assert_eq!(unpublished.len(), 1);
+        assert_eq!(unpublished[0].id, rejected.id);
     }
 }

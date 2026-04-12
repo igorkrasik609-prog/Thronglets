@@ -72,6 +72,7 @@ pub enum NetworkCommand {
     PublishTrace {
         trace: Box<Trace>,
         space: Option<String>,
+        receipt: Option<tokio::sync::oneshot::Sender<bool>>,
     },
     /// Subscribe to a space-specific gossipsub topic.
     SubscribeSpace(String),
@@ -457,13 +458,20 @@ pub async fn start(
                 // Handle commands from the runtime
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {
-                        NetworkCommand::PublishTrace { trace, space } => {
+                        NetworkCommand::PublishTrace {
+                            trace,
+                            space,
+                            receipt,
+                        } => {
+                            let mut accepted = false;
                             match serde_json::to_vec(&trace) {
                                 Ok(data) => {
                                     // Always publish to global topic
                                     let global = gossipsub::IdentTopic::new(TRACE_TOPIC);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(global, data.clone()) {
                                         warn!(%e, "Failed to publish trace to global topic");
+                                    } else {
+                                        accepted = true;
                                     }
                                     // Also publish to space-specific topic if set
                                     if let Some(ref space) = space {
@@ -475,6 +483,9 @@ pub async fn start(
                                 Err(e) => {
                                     warn!(%e, "Failed to serialize trace for publishing");
                                 }
+                            }
+                            if let Some(reply) = receipt {
+                                let _ = reply.send(accepted);
                             }
                         }
                         NetworkCommand::SubscribeSpace(space) => {

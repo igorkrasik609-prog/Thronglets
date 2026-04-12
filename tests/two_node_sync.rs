@@ -131,6 +131,7 @@ async fn two_nodes_sync_trace_via_loopback_bootstrap() {
         .send(NetworkCommand::PublishTrace {
             trace: Box::new(trace),
             space: None,
+            receipt: None,
         })
         .await
         .expect("send publish command");

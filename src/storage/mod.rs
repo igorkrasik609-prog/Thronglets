@@ -145,9 +145,20 @@ impl TraceStore {
     /// Insert a trace. Returns false if duplicate (content-addressed dedup).
     /// Auto-extracts `space` from JSON payload in context_text when present.
     pub fn insert(&self, trace: &Trace) -> rusqlite::Result<bool> {
+        self.insert_with_space(trace, None)
+    }
+
+    /// Insert a trace with an explicit space override.
+    pub fn insert_with_space(
+        &self,
+        trace: &Trace,
+        space_override: Option<&str>,
+    ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().unwrap();
         let bucket = context_bucket(&trace.context_hash);
-        let space = extract_space(&trace.context_text);
+        let space = space_override
+            .map(str::to_string)
+            .or_else(|| extract_space(&trace.context_text));
         let result = conn.execute(
             "INSERT OR IGNORE INTO traces (id, capability, outcome, latency_ms, input_size, context_hash, context_text, session_id, owner_account, device_identity, agent_id, sigil_id, method_compliance, model_id, timestamp, node_pubkey, signature, context_bucket, space)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
@@ -340,6 +351,7 @@ impl TraceStore {
         failed_tool: &str,
         steps: &[StepAction],
         hours: u64,
+        space: Option<&str>,
     ) -> rusqlite::Result<u32> {
         if steps.is_empty() || steps.len() > 2 {
             return Ok(0);
@@ -359,12 +371,13 @@ impl TraceStore {
                  WHERE t0.session_id IS NOT NULL
                    AND t0.capability = ?1
                    AND t0.outcome = 1
+                   AND (?6 IS NULL OR (t0.space = ?6 AND t1.space = ?6))
                    AND t1.timestamp > t0.timestamp
                    AND (t1.timestamp - t0.timestamp) <= 600000
                    AND t0.timestamp >= ?2
                    AND t1.capability = ?3
                    AND (?4 IS NULL OR t1.context_text = ?4 OR t1.context_text LIKE ?5)",
-                params![failed_cap, cutoff_ms, step1_cap, step1_exact, step1_suffix,],
+                params![failed_cap, cutoff_ms, step1_cap, step1_exact, step1_suffix, space,],
                 |row| row.get::<_, i64>(0),
             )?
         } else {
@@ -380,6 +393,7 @@ impl TraceStore {
                  WHERE t0.session_id IS NOT NULL
                    AND t0.capability = ?1
                    AND t0.outcome = 1
+                   AND (?9 IS NULL OR (t0.space = ?9 AND t1.space = ?9 AND t2.space = ?9))
                    AND t1.timestamp > t0.timestamp
                    AND t2.timestamp > t1.timestamp
                    AND (t1.timestamp - t0.timestamp) <= 600000
@@ -398,6 +412,7 @@ impl TraceStore {
                     step2_cap,
                     step2_exact,
                     step2_suffix,
+                    space,
                 ],
                 |row| row.get::<_, i64>(0),
             )?
@@ -862,19 +877,38 @@ impl TraceStore {
         Self::collect_traces(&mut stmt, params![like, cutoff_ms, limit as i64])
     }
 
-    /// Query the latest viability signal from Psyche (stored as PsycheState signal).
-    /// Returns the context_text of the most recent viability trace within the given window.
-    pub fn query_latest_viability_signal(&self, hours: u32) -> rusqlite::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
-        let sql = "SELECT context_text FROM traces WHERE context_text LIKE 'psyche:viability:%' AND timestamp >= ?1 ORDER BY timestamp DESC LIMIT 1";
-        let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt.query(params![cutoff_ms])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
-        } else {
-            Ok(None)
+    /// Query the latest local viability signal from Psyche (stored as PsycheState signal).
+    /// Returns the signal message for the most recent matching local trace.
+    pub fn query_latest_viability_signal(
+        &self,
+        hours: u32,
+        local_device_identity: &str,
+        local_node_pubkey: [u8; 32],
+    ) -> rusqlite::Result<Option<String>> {
+        let traces = self.query_recent_signal_traces(hours, Some(SignalPostKind::PsycheState), 32, None)?;
+        for trace in traces {
+            let is_local = trace.device_identity.as_deref() == Some(local_device_identity)
+                || trace.node_pubkey == local_node_pubkey;
+            if !is_local {
+                continue;
+            }
+            let Some(context_text) = trace.context_text.as_deref() else {
+                continue;
+            };
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(context_text) else {
+                continue;
+            };
+            let Some(context) = payload.get("context").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            if !context.starts_with("psyche:viability:") {
+                continue;
+            }
+            if let Some(message) = payload.get("message").and_then(|value| value.as_str()) {
+                return Ok(Some(message.to_string()));
+            }
         }
+        Ok(None)
     }
 
     /// Query recent external continuity traces.
@@ -1786,9 +1820,70 @@ mod tests {
                     StepAction::new("Bash", None),
                 ],
                 24,
+                None,
             )
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn count_repair_sources_respects_space() {
+        use crate::context::simhash;
+
+        let store = TraceStore::in_memory().unwrap();
+        let id = NodeIdentity::generate();
+
+        let bash_fail = Trace::new(
+            "claude-code/Bash".into(),
+            Outcome::Failed,
+            10,
+            10,
+            simhash("bash: cargo test"),
+            Some("bash: cargo test".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let read = Trace::new(
+            "claude-code/Read".into(),
+            Outcome::Succeeded,
+            10,
+            10,
+            simhash("read file: Cargo.toml"),
+            Some("read file: Cargo.toml".into()),
+            Some("s1".into()),
+            "test-model".into(),
+            id.public_key_bytes(),
+            |m| id.sign(m),
+        );
+
+        store.insert_with_space(&bash_fail, Some("psyche")).unwrap();
+        store.insert_with_space(&read, Some("psyche")).unwrap();
+
+        assert_eq!(
+            store
+                .count_repair_sources(
+                    "Bash",
+                    &[StepAction::new("Read", Some("Cargo.toml".into()))],
+                    24,
+                    Some("psyche"),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .count_repair_sources(
+                    "Bash",
+                    &[StepAction::new("Read", Some("Cargo.toml".into()))],
+                    24,
+                    Some("other-space"),
+                )
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
