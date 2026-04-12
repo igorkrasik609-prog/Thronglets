@@ -4,7 +4,12 @@ use thronglets::ambient::{
     AmbientPolicyState, AmbientTurnGoal, ambient_priors_for_context_with_policy,
 };
 use thronglets::context::simhash;
+use thronglets::continuity::{ContinuityEvent, ContinuityTaxonomy, ExternalContinuityInput};
 use thronglets::identity::NodeIdentity;
+use thronglets::identity::IdentityBinding;
+use thronglets::pheromone::PheromoneField;
+use thronglets::pulse::{PulseEmitter, PRESENCE_DIMENSION_NAME, VIABILITY_DIMENSION_NAME};
+use thronglets::service::{self, Ctx, RecordTraceReq};
 use thronglets::storage::TraceStore;
 use thronglets::trace::{MethodCompliance, Outcome, Trace};
 
@@ -44,6 +49,102 @@ fn hard_task_policy(summary: &str) -> Vec<thronglets::active_policy::ActivePolic
         &json!({}),
     )
     .all_rules
+}
+
+#[test]
+fn regression_corpus_pulse_dimensions_use_canonical_names() {
+    let store = TraceStore::in_memory().unwrap();
+    let identity = NodeIdentity::generate();
+    let emitter = PulseEmitter::new("SIG_test", "http://localhost:1317", "oasyce-1");
+
+    let dims = emitter.aggregate_dimensions(&store, &identity);
+
+    assert_eq!(dims.get(PRESENCE_DIMENSION_NAME), Some(&false));
+    assert_eq!(dims.get(VIABILITY_DIMENSION_NAME), Some(&false));
+    assert!(!dims.contains_key("thronglets"));
+    assert!(!dims.contains_key("psyche"));
+}
+
+#[test]
+fn regression_corpus_record_trace_scopes_storage_and_rejects_invalid_continuity() {
+    let store = TraceStore::in_memory().unwrap();
+    let identity = NodeIdentity::generate();
+    let binding = IdentityBinding::new(identity.device_identity());
+    let field = PheromoneField::new();
+    let ctx = Ctx {
+        store: &store,
+        field: Some(&field),
+        identity: &identity,
+        binding: &binding,
+    };
+
+    let req = RecordTraceReq {
+        capability: "tool:Edit".into(),
+        outcome: Outcome::Failed,
+        latency_ms: 120,
+        input_size: 2,
+        context: "repair flaky login flow".into(),
+        model: "claude-opus-4-6".into(),
+        session_id: Some("session-space".into()),
+        space: Some("psyche".into()),
+        agent_id: None,
+        sigil_id: None,
+        method_compliance: Some(MethodCompliance::Unknown),
+    };
+
+    let recorded = service::record_trace(&ctx, req, None).expect("record_trace should succeed");
+    let service::RecordResult::Trace(trace) = recorded else {
+        panic!("expected normal trace result");
+    };
+    assert_eq!(trace.trace.capability, "tool:Edit");
+
+    let matching = store
+        .query_similar_failed_traces(&simhash("repair flaky login flow"), 0, 24, 10, Some("psyche"))
+        .unwrap();
+    assert_eq!(matching.len(), 1);
+
+    let other_space = store
+        .query_similar_failed_traces(
+            &simhash("repair flaky login flow"),
+            0,
+            24,
+            10,
+            Some("other-space"),
+        )
+        .unwrap();
+    assert!(other_space.is_empty());
+
+    let invalid_continuity = ExternalContinuityInput {
+        provider: "thronglets".into(),
+        mode: "optional".into(),
+        version: 1,
+        taxonomy: ContinuityTaxonomy::Coordination,
+        event: ContinuityEvent::WritebackCalibration,
+        summary: "writeback drift keeps reopening the same loop".into(),
+        space: Some("psyche".into()),
+        audit_ref: None,
+    };
+    let err = match service::record_trace(
+        &ctx,
+        RecordTraceReq {
+            capability: "".into(),
+            outcome: Outcome::Succeeded,
+            latency_ms: 0,
+            input_size: 0,
+            context: "".into(),
+            model: "claude-opus-4-6".into(),
+            session_id: Some("session-continuity".into()),
+            space: Some("psyche".into()),
+            agent_id: None,
+            sigil_id: None,
+            method_compliance: None,
+        },
+        Some(invalid_continuity),
+    ) {
+        Ok(_) => panic!("invalid continuity should be rejected gracefully"),
+        Err(err) => err,
+    };
+    assert!(err.contains("taxonomy"));
 }
 
 #[test]

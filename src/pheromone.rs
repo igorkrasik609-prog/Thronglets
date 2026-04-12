@@ -352,6 +352,8 @@ pub struct FieldSnapshotEntry {
     pub last_excited: u64,
     pub total_excitations: u64,
     pub source_count: u32,
+    #[serde(default)]
+    pub source_hashes: Vec<[u8; 8]>,
 }
 
 /// Delta for incremental P2P sync.
@@ -892,6 +894,7 @@ impl PheromoneField {
                 last_excited: point.last_excited,
                 total_excitations: point.total_excitations,
                 source_count: point.source_count,
+                source_hashes: point.sources.clone(),
             })
             .collect();
 
@@ -936,8 +939,10 @@ impl PheromoneField {
                     variance: entry.variance,
                     last_excited: entry.last_excited,
                     total_excitations: entry.total_excitations,
-                    source_count: entry.source_count,
-                    sources: Vec::new(),
+                    source_count: entry
+                        .source_count
+                        .max(entry.source_hashes.len() as u32),
+                    sources: entry.source_hashes.clone(),
                 },
             );
         }
@@ -1174,7 +1179,17 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     fn make_trace(capability: &str, context: &str, outcome: Outcome, latency_ms: u32) -> Trace {
-        let key = SigningKey::from_bytes(&[1u8; 32]);
+        make_trace_with_seed(capability, context, outcome, latency_ms, 1)
+    }
+
+    fn make_trace_with_seed(
+        capability: &str,
+        context: &str,
+        outcome: Outcome,
+        latency_ms: u32,
+        seed: u8,
+    ) -> Trace {
+        let key = SigningKey::from_bytes(&[seed; 32]);
         Trace::new(
             capability.to_string(),
             outcome,
@@ -1488,6 +1503,40 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_restore_preserves_source_fingerprints() {
+        let field = PheromoneField::new();
+        let t1 = make_trace_with_seed("cap/src", "ctx", Outcome::Succeeded, 100, 1);
+        let t2 = make_trace_with_seed("cap/src", "ctx", Outcome::Succeeded, 100, 2);
+        field.excite(&t1);
+        field.excite(&t2);
+
+        let snapshot = field.snapshot();
+        assert_eq!(snapshot.points[0].source_hashes.len(), 2);
+
+        let restored = PheromoneField::new();
+        restored.restore(&snapshot);
+        restored.excite(&make_trace_with_seed(
+            "cap/src",
+            "ctx",
+            Outcome::Succeeded,
+            100,
+            1,
+        ));
+
+        let inner = restored.inner.read().unwrap();
+        let point = inner
+            .nodes
+            .values()
+            .find(|point| point.total_excitations >= 3)
+            .expect("expected restored point");
+        assert_eq!(
+            point.source_count, 2,
+            "restored source hashes should dedupe repeated sources"
+        );
+        assert_eq!(point.sources.len(), 2);
+    }
+
+    #[test]
     fn delta_sync() {
         let field_a = PheromoneField::new();
         let t = make_trace("cap/sync", "sync test", Outcome::Succeeded, 100);
@@ -1637,6 +1686,21 @@ mod tests {
             "read-side decay ({read_only}) should match mutating decay ({})",
             mutated.intensity
         );
+    }
+
+    #[test]
+    fn field_point_current_intensity_stays_finite_at_boundaries() {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let mut point = FieldPoint::new(now_ms);
+
+        point.intensity = 0.0;
+        assert_eq!(point.current_intensity(now_ms), 0.0);
+
+        point.intensity = f64::MAX / 4.0;
+        assert!(point.current_intensity(now_ms).is_finite());
+
+        point.intensity = -3.5;
+        assert!(point.current_intensity(now_ms).is_finite());
     }
 
     #[test]

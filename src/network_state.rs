@@ -24,6 +24,8 @@ pub struct NetworkSnapshot {
     pub updated_at_ms: i64,
     pub bootstrap_targets: usize,
     pub last_bootstrap_contact_at_ms: Option<i64>,
+    #[serde(default)]
+    pub degraded_nat: bool,
     pub peer_count: usize,
     pub direct_peer_count: usize,
     pub relay_peer_count: usize,
@@ -43,6 +45,7 @@ pub struct NetworkStatus {
     pub activity: &'static str,
     pub transport_mode: &'static str,
     pub vps_dependency_level: &'static str,
+    pub nat_status: &'static str,
     pub bootstrap_fallback_mode: &'static str,
     pub peer_count: usize,
     pub direct_peer_count: usize,
@@ -99,6 +102,16 @@ impl NetworkSnapshot {
         self.updated_at_ms = now;
         self.bootstrap_targets = bootstrap_targets;
         self.last_bootstrap_contact_at_ms = Some(now);
+    }
+
+    pub fn mark_nat_ok(&mut self) {
+        self.updated_at_ms = now_ms();
+        self.degraded_nat = false;
+    }
+
+    pub fn mark_nat_degraded(&mut self) {
+        self.updated_at_ms = now_ms();
+        self.degraded_nat = true;
     }
 
     pub fn load(data_dir: &Path) -> Self {
@@ -344,11 +357,13 @@ impl NetworkSnapshot {
         } else {
             "immediate"
         };
+        let nat_status = if self.degraded_nat { "degraded" } else { "ok" };
 
         NetworkStatus {
             activity,
             transport_mode,
             vps_dependency_level,
+            nat_status,
             bootstrap_fallback_mode,
             peer_count: self.peer_count,
             direct_peer_count: self.direct_peer_count,
@@ -410,6 +425,7 @@ mod tests {
         assert_eq!(status.activity, "offline");
         assert_eq!(status.transport_mode, "offline");
         assert_eq!(status.vps_dependency_level, "offline");
+        assert_eq!(status.nat_status, "ok");
         assert_eq!(status.bootstrap_fallback_mode, "disabled");
         assert_eq!(status.peer_count, 0);
     }
@@ -421,6 +437,7 @@ mod tests {
         let status = snapshot.to_status();
         assert_eq!(status.activity, "bootstrapping");
         assert_eq!(status.vps_dependency_level, "bootstrap-only");
+        assert_eq!(status.nat_status, "ok");
         assert_eq!(status.bootstrap_fallback_mode, "immediate");
         assert!(status.bootstrap_contacted_recently);
     }
@@ -431,6 +448,7 @@ mod tests {
         let status = snapshot.to_status();
         assert_eq!(status.activity, "offline");
         assert_eq!(status.vps_dependency_level, "bootstrap-only");
+        assert_eq!(status.nat_status, "ok");
         assert_eq!(status.bootstrap_fallback_mode, "immediate");
         assert!(!status.bootstrap_contacted_recently);
     }
@@ -443,7 +461,16 @@ mod tests {
         assert_eq!(status.activity, "connected");
         assert_eq!(status.transport_mode, "direct");
         assert_eq!(status.vps_dependency_level, "peer-native");
+        assert_eq!(status.nat_status, "ok");
         assert_eq!(status.bootstrap_fallback_mode, "disabled");
+    }
+
+    #[test]
+    fn degraded_nat_status_is_reported() {
+        let mut snapshot = NetworkSnapshot::begin(1);
+        snapshot.degraded_nat = true;
+        let status = snapshot.to_status();
+        assert_eq!(status.nat_status, "degraded");
     }
 
     #[test]

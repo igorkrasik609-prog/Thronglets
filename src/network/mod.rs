@@ -53,6 +53,10 @@ pub enum NetworkEvent {
         trace: Box<Trace>,
         source_peer: PeerId,
     },
+    /// Current NAT reachability state as observed from transport events.
+    NatStatusChanged {
+        degraded_nat: bool,
+    },
 }
 
 /// A capability summary retrieved from the DHT.
@@ -426,8 +430,26 @@ pub async fn start(
                             dcutr::Event { remote_peer_id, result }
                         )) => {
                             match result {
-                                Ok(_) => info!(%remote_peer_id, "DCUtR: upgraded to direct connection"),
-                                Err(ref e) => debug!(%remote_peer_id, %e, "DCUtR: hole-punch failed, keeping relay"),
+                                Ok(_) => {
+                                    info!(%remote_peer_id, "DCUtR: upgraded to direct connection");
+                                    let _ = event_tx
+                                        .send(NetworkEvent::NatStatusChanged {
+                                            degraded_nat: false,
+                                        })
+                                        .await;
+                                }
+                                Err(ref e) => {
+                                    debug!(
+                                        %remote_peer_id,
+                                        %e,
+                                        "DCUtR: hole-punch failed, keeping relay"
+                                    );
+                                    let _ = event_tx
+                                        .send(NetworkEvent::NatStatusChanged {
+                                            degraded_nat: true,
+                                        })
+                                        .await;
+                                }
                             }
                         }
                         // AutoNAT: detect if we're publicly reachable
@@ -435,6 +457,10 @@ pub async fn start(
                             autonat::Event::StatusChanged { old, new }
                         )) => {
                             info!(?old, ?new, "AutoNAT: reachability status changed");
+                            let degraded_nat = !format!("{new:?}").to_lowercase().contains("public");
+                            let _ = event_tx
+                                .send(NetworkEvent::NatStatusChanged { degraded_nat })
+                                .await;
                         }
                         // UPnP: automatic port mapping on the router
                         SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Upnp(
@@ -442,12 +468,22 @@ pub async fn start(
                         )) => {
                             info!(%addr, "UPnP: mapped external address");
                             swarm.add_external_address(addr);
+                            let _ = event_tx
+                                .send(NetworkEvent::NatStatusChanged {
+                                    degraded_nat: false,
+                                })
+                                .await;
                         }
                         SwarmEvent::Behaviour(ThrongletsNetworkBehaviourEvent::Upnp(
                             upnp::Event::ExpiredExternalAddr(addr)
                         )) => {
                             info!(%addr, "UPnP: external address mapping expired");
                             swarm.remove_external_address(&addr);
+                            let _ = event_tx
+                                .send(NetworkEvent::NatStatusChanged {
+                                    degraded_nat: true,
+                                })
+                                .await;
                         }
                         SwarmEvent::NewListenAddr { address, .. } => {
                             info!(%address, "Listening on");

@@ -765,6 +765,7 @@ mod tests {
             activity: "offline",
             transport_mode: "offline",
             vps_dependency_level: "offline",
+            nat_status: "ok",
             bootstrap_fallback_mode: "disabled",
             peer_count: 0,
             direct_peer_count: 0,

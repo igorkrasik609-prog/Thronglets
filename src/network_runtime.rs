@@ -388,6 +388,14 @@ fn handle_network_event(
                 }
             }
         }
+        NetworkEvent::NatStatusChanged { degraded_nat } => {
+            if degraded_nat {
+                network_snapshot.mark_nat_degraded();
+            } else {
+                network_snapshot.mark_nat_ok();
+            }
+            network_snapshot.save(data_dir);
+        }
     }
 }
 
@@ -445,17 +453,12 @@ async fn publish_capability_summaries(
 }
 
 async fn publish_local_traces(store: &TraceStore, command_tx: &mpsc::Sender<NetworkCommand>) {
-    if let Ok(traces) = store.unpublished_traces(50)
+    if let Ok(traces) = store.unpublished_traces_with_space(50)
         && !traces.is_empty()
     {
         info!(count = traces.len(), "Publishing local traces to network");
         let mut published_ids: Vec<[u8; 32]> = Vec::new();
-        for trace in traces {
-            let space = trace
-                .context_text
-                .as_ref()
-                .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
-                .and_then(|v| v.get("space")?.as_str().map(String::from));
+        for (trace, space) in traces {
             let trace_id = trace.id;
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             if command_tx
@@ -706,28 +709,41 @@ mod tests {
             identity.public_key_bytes(),
             |msg| identity.sign(msg),
         );
-        store.insert(&accepted).unwrap();
-        store.insert(&rejected).unwrap();
+        store.insert_with_space(&accepted, Some("space-accepted")).unwrap();
+        store.insert_with_space(&rejected, Some("space-rejected")).unwrap();
 
         let (tx, mut rx) = mpsc::channel::<NetworkCommand>(8);
         let accepted_id = accepted.id;
-        tokio::spawn(async move {
+        let join = tokio::spawn(async move {
+            let mut accepted_space = None;
+            let mut rejected_space = None;
             while let Some(command) = rx.recv().await {
                 if let NetworkCommand::PublishTrace {
                     trace,
+                    space,
                     receipt: Some(reply),
-                    ..
                 } = command
                 {
+                    if trace.id == accepted_id {
+                        accepted_space = space;
+                    } else {
+                        rejected_space = space;
+                    }
                     let _ = reply.send(trace.id == accepted_id);
                 }
             }
+            (accepted_space, rejected_space)
         });
 
         publish_local_traces(&store, &tx).await;
+        drop(tx);
+
+        let (accepted_space, rejected_space) = join.await.unwrap();
 
         let unpublished = store.unpublished_traces(10).unwrap();
         assert_eq!(unpublished.len(), 1);
         assert_eq!(unpublished[0].id, rejected.id);
+        assert_eq!(accepted_space.as_deref(), Some("space-accepted"));
+        assert_eq!(rejected_space.as_deref(), Some("space-rejected"));
     }
 }

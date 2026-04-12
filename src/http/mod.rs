@@ -140,6 +140,7 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         context: args["context"].as_str().unwrap_or("").to_string(),
         model: args["model"].as_str().unwrap_or("unknown").to_string(),
         session_id: args["session_id"].as_str().map(String::from),
+        space: args["space"].as_str().map(String::from),
         agent_id: args["agent_id"].as_str().map(String::from),
         sigil_id: args["sigil_id"].as_str().map(String::from),
         method_compliance: args["method_compliance"].as_str().and_then(MethodCompliance::parse),

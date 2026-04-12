@@ -630,6 +630,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         context: args.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         model: args.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
         session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
+        space: args.get("space").and_then(|v| v.as_str()).map(String::from),
         agent_id: args.get("agent_id").and_then(|v| v.as_str()).map(String::from),
         sigil_id: args.get("sigil_id").and_then(|v| v.as_str()).map(String::from),
         method_compliance: args
@@ -638,6 +639,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
             .and_then(MethodCompliance::parse),
     };
 
+    let publish_space = req.space.clone();
     match service::record_trace(&svc, req, external_continuity) {
         Ok(service::RecordResult::Trace(out)) => {
             // MCP-specific: publish to network
@@ -645,7 +647,7 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
                 let _ = tx
                     .send(NetworkCommand::PublishTrace {
                         trace: Box::new(out.trace),
-                        space: None,
+                        space: publish_space,
                         receipt: None,
                     })
                     .await;
@@ -1388,6 +1390,46 @@ mod tests {
         // Should have by_model breakdown
         let by_model = &parsed["by_model"];
         assert!(by_model["claude-opus-4-6"]["count"].as_u64().unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn trace_record_preserves_space_for_network_publish() {
+        let (tx, mut rx) = mpsc::channel::<NetworkCommand>(4);
+        let identity = Arc::new(NodeIdentity::generate());
+        let ctx = Arc::new(McpContext {
+            binding: Arc::new(IdentityBinding::new(identity.device_identity())),
+            identity,
+            store: Arc::new(TraceStore::in_memory().unwrap()),
+            field: Arc::new(PheromoneField::new()),
+            network_tx: Some(tx),
+        });
+        let session = McpSession::new();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(53)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "trace_record",
+                "arguments": {
+                    "capability": "urn:mcp:anthropic:claude:code",
+                    "outcome": "succeeded",
+                    "context": "refactoring async rust code",
+                    "model": "claude-opus-4-6",
+                    "space": "psyche"
+                }
+            }),
+        };
+
+        let resp = handle_request(&ctx, &session, req).await.unwrap();
+        assert!(resp.error.is_none(), "trace_record should succeed");
+
+        match rx.recv().await.expect("expected publish command") {
+            NetworkCommand::PublishTrace { space, .. } => {
+                assert_eq!(space.as_deref(), Some("psyche"));
+            }
+            other => panic!("expected PublishTrace, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -74,6 +74,7 @@ pub struct RecordTraceReq {
     pub context: String,
     pub model: String,
     pub session_id: Option<String>,
+    pub space: Option<String>,
     pub agent_id: Option<String>,
     pub sigil_id: Option<String>,
     pub method_compliance: Option<MethodCompliance>,
@@ -99,6 +100,20 @@ pub fn record_trace(
     req: RecordTraceReq,
     external_continuity: Option<ExternalContinuityInput>,
 ) -> Result<RecordResult, String> {
+    let RecordTraceReq {
+        capability,
+        outcome,
+        latency_ms,
+        input_size,
+        context,
+        model,
+        session_id,
+        space,
+        agent_id,
+        sigil_id,
+        method_compliance,
+    } = req;
+
     // External continuity path
     if let Some(input) = external_continuity {
         input.validate()?;
@@ -109,44 +124,44 @@ pub fn record_trace(
             ExternalContinuityRecordConfig {
                 owner_account: ctx.binding.owner_account.clone(),
                 device_identity: ctx.binding.device_identity.clone(),
-                outcome: req.outcome,
-                model_id: req.model,
-                session_id: req.session_id,
+                outcome,
+                model_id: model,
+                session_id,
             },
         )?;
         return Ok(RecordResult::Continuity(result));
     }
 
     // Normal trace path
-    let context_hash = simhash(&req.context);
-    let context_text = if req.context.is_empty() {
+    let context_hash = simhash(&context);
+    let context_text = if context.is_empty() {
         None
     } else {
-        Some(req.context)
+        Some(context)
     };
     let (owner, device) = sign_config(ctx);
 
     let trace = Trace::new_with_agent_compliance(
-        req.capability.clone(),
-        req.outcome,
-        req.latency_ms,
-        req.input_size,
+        capability.clone(),
+        outcome,
+        latency_ms,
+        input_size,
         context_hash,
         context_text,
-        req.session_id,
+        session_id,
         owner,
         device,
-        req.agent_id,
-        req.sigil_id,
-        req.method_compliance,
-        req.model,
+        agent_id,
+        sigil_id,
+        method_compliance,
+        model,
         ctx.identity.public_key_bytes(),
         |msg| ctx.identity.sign(msg),
     );
 
     let tid = trace_id_hex(&trace);
     ctx.store
-        .insert(&trace)
+        .insert_with_space(&trace, space.as_deref())
         .map_err(|e| format!("storage: {e}"))?;
 
     // Excite pheromone field if available

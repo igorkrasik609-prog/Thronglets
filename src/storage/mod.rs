@@ -1057,6 +1057,22 @@ impl TraceStore {
         Self::collect_traces(&mut stmt, params![limit as i64])
     }
 
+    /// Query unpublished traces together with their persisted space scope.
+    pub fn unpublished_traces_with_space(
+        &self,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<(Trace, Option<String>)>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS}, space FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((Self::trace_from_row(row)?, row.get(17)?))
+        })?;
+        rows.collect()
+    }
+
     /// Mark traces as published to the P2P network.
     pub fn mark_published(&self, trace_ids: &[[u8; 32]]) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -1125,42 +1141,44 @@ impl TraceStore {
         stmt: &mut rusqlite::Statement,
         params: impl rusqlite::Params,
     ) -> rusqlite::Result<Vec<Trace>> {
-        let rows = stmt.query_map(params, |row| {
-            let id_bytes: Vec<u8> = row.get(0)?;
-            let outcome_u8: u8 = row.get(2)?;
-            let context_bytes: Vec<u8> = row.get(5)?;
-            let pubkey_bytes: Vec<u8> = row.get(15)?;
-            let sig_bytes: Vec<u8> = row.get(16)?;
-
-            Ok(Trace {
-                id: id_bytes.try_into().unwrap_or([0u8; 32]),
-                capability: row.get(1)?,
-                outcome: match outcome_u8 {
-                    0 => Outcome::Succeeded,
-                    1 => Outcome::Failed,
-                    2 => Outcome::Partial,
-                    _ => Outcome::Timeout,
-                },
-                latency_ms: row.get::<_, u32>(3)?,
-                input_size: row.get::<_, u32>(4)?,
-                context_hash: context_bytes.try_into().unwrap_or([0u8; 16]),
-                context_text: row.get(6)?,
-                session_id: row.get(7)?,
-                owner_account: row.get(8)?,
-                device_identity: row.get(9)?,
-                agent_id: row.get(10)?,
-                sigil_id: row.get(11)?,
-                method_compliance: row
-                    .get::<_, Option<String>>(12)?
-                    .as_deref()
-                    .and_then(MethodCompliance::parse),
-                model_id: row.get(13)?,
-                timestamp: row.get::<_, i64>(14)? as u64,
-                node_pubkey: pubkey_bytes.try_into().unwrap_or([0u8; 32]),
-                signature: Signature::from_bytes(&sig_bytes.try_into().unwrap_or([0u8; 64])),
-            })
-        })?;
+        let rows = stmt.query_map(params, Self::trace_from_row)?;
         rows.collect()
+    }
+
+    fn trace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Trace> {
+        let id_bytes: Vec<u8> = row.get(0)?;
+        let outcome_u8: u8 = row.get(2)?;
+        let context_bytes: Vec<u8> = row.get(5)?;
+        let pubkey_bytes: Vec<u8> = row.get(15)?;
+        let sig_bytes: Vec<u8> = row.get(16)?;
+
+        Ok(Trace {
+            id: id_bytes.try_into().unwrap_or([0u8; 32]),
+            capability: row.get(1)?,
+            outcome: match outcome_u8 {
+                0 => Outcome::Succeeded,
+                1 => Outcome::Failed,
+                2 => Outcome::Partial,
+                _ => Outcome::Timeout,
+            },
+            latency_ms: row.get::<_, u32>(3)?,
+            input_size: row.get::<_, u32>(4)?,
+            context_hash: context_bytes.try_into().unwrap_or([0u8; 16]),
+            context_text: row.get(6)?,
+            session_id: row.get(7)?,
+            owner_account: row.get(8)?,
+            device_identity: row.get(9)?,
+            agent_id: row.get(10)?,
+            sigil_id: row.get(11)?,
+            method_compliance: row
+                .get::<_, Option<String>>(12)?
+                .as_deref()
+                .and_then(MethodCompliance::parse),
+            model_id: row.get(13)?,
+            timestamp: row.get::<_, i64>(14)? as u64,
+            node_pubkey: pubkey_bytes.try_into().unwrap_or([0u8; 32]),
+            signature: Signature::from_bytes(&sig_bytes.try_into().unwrap_or([0u8; 64])),
+        })
     }
 }
 
