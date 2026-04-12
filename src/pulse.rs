@@ -18,6 +18,12 @@ use std::time::Duration;
 /// Default pulse interval: 6 hours.
 pub const DEFAULT_PULSE_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 
+/// Canonical pulse dimension for local shared presence.
+pub const PRESENCE_DIMENSION_NAME: &str = "presence";
+
+/// Canonical pulse dimension for local viability.
+pub const VIABILITY_DIMENSION_NAME: &str = "viability";
+
 /// Presence recency window: traces within 60 minutes count as alive.
 const PRESENCE_WINDOW_HOURS: u32 = 1;
 
@@ -65,8 +71,8 @@ impl PulseEmitter {
 
     /// Aggregate which dimensions are currently alive.
     ///
-    /// - `thronglets`: presence heartbeat within the last 60 minutes
-    /// - `psyche`: latest viability signal says "viable" (within 12 hours)
+    /// - `presence`: presence heartbeat within the last 60 minutes
+    /// - `viability`: latest viability signal says "viable" (within 12 hours)
     pub fn aggregate_dimensions(
         &self,
         store: &TraceStore,
@@ -86,9 +92,9 @@ impl PulseEmitter {
                 })
             })
             .unwrap_or(false);
-        dims.insert("thronglets".to_string(), has_presence);
+        dims.insert(PRESENCE_DIMENSION_NAME.to_string(), has_presence);
 
-        // Psyche dimension: latest LOCAL viability signal says viable?
+        // Viability dimension: latest LOCAL viability signal says viable?
         let psyche_viable = store
             .query_latest_viability_signal(
                 VIABILITY_WINDOW_HOURS,
@@ -99,7 +105,7 @@ impl PulseEmitter {
             .flatten()
             .map(|ctx| ctx.contains("viable") && !ctx.contains("critical"))
             .unwrap_or(false);
-        dims.insert("psyche".to_string(), psyche_viable);
+        dims.insert(VIABILITY_DIMENSION_NAME.to_string(), psyche_viable);
 
         dims
     }
@@ -307,8 +313,8 @@ mod tests {
         let identity = NodeIdentity::generate();
         let dims = e.aggregate_dimensions(&store, &identity);
         // No traces → both dimensions dead
-        assert_eq!(dims.get("thronglets"), Some(&false));
-        assert_eq!(dims.get("psyche"), Some(&false));
+        assert_eq!(dims.get(PRESENCE_DIMENSION_NAME), Some(&false));
+        assert_eq!(dims.get(VIABILITY_DIMENSION_NAME), Some(&false));
     }
 
     #[test]
@@ -366,8 +372,8 @@ mod tests {
         store.insert(&remote_viability).unwrap();
 
         let dims = e.aggregate_dimensions(&store, &local);
-        assert_eq!(dims.get("thronglets"), Some(&false));
-        assert_eq!(dims.get("psyche"), Some(&false));
+        assert_eq!(dims.get(PRESENCE_DIMENSION_NAME), Some(&false));
+        assert_eq!(dims.get(VIABILITY_DIMENSION_NAME), Some(&false));
     }
 
     #[test]
@@ -413,7 +419,7 @@ mod tests {
         store.insert(&local_viability).unwrap();
 
         let dims = e.aggregate_dimensions(&store, &local);
-        assert_eq!(dims.get("thronglets"), Some(&true));
-        assert_eq!(dims.get("psyche"), Some(&true));
+        assert_eq!(dims.get(PRESENCE_DIMENSION_NAME), Some(&true));
+        assert_eq!(dims.get(VIABILITY_DIMENSION_NAME), Some(&true));
     }
 }
