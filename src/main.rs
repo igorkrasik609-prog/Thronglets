@@ -2729,7 +2729,7 @@ async fn main() {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("claude-code");
             auto_clear_restart_from_agent_source(&dir, agent_source);
-            let current_space = payload_string(&payload, "space");
+            let current_space = derive_space(&payload);
             let current_mode = payload_string(&payload, "mode");
 
             // Map tool to capability URI
@@ -2981,7 +2981,7 @@ async fn main() {
             };
 
             let tool_name = payload["tool_name"].as_str().unwrap_or("");
-            let current_space = payload_string(&payload, "space");
+            let current_space = derive_space(&payload);
             let current_session_id = payload_string(&payload, "session_id");
             let agent_source = payload["agent_source"]
                 .as_str()
@@ -3298,7 +3298,7 @@ async fn main() {
             };
 
             let session_id = payload_string(&payload, "session_id");
-            let current_space = payload_string(&payload, "space");
+            let current_space = derive_space(&payload);
 
             let store = open_store(&dir);
             let mut ws = load_workspace_state(&dir);

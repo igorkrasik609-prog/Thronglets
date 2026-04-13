@@ -68,6 +68,26 @@ pub(crate) fn payload_string(payload: &serde_json::Value, key: &str) -> Option<S
         .map(ToOwned::to_owned)
 }
 
+/// Derive space from explicit payload field, falling back to cwd.
+/// Uses last 2 path components (e.g. "Desktop/Thronglets") as a stable,
+/// human-readable project identifier.
+pub(crate) fn derive_space(payload: &serde_json::Value) -> Option<String> {
+    // Explicit space in payload takes priority
+    if let Some(s) = payload_string(payload, "space") {
+        return Some(s);
+    }
+    // Fall back to working directory
+    let cwd = std::env::current_dir().ok()?;
+    let mut parts = cwd.components().rev().take(2).collect::<Vec<_>>();
+    parts.reverse();
+    let space: String = parts
+        .iter()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    if space.is_empty() { None } else { Some(space) }
+}
+
 pub(crate) fn apply_collective_sources(
     candidate: &mut StepCandidate,
     score: &mut i32,
