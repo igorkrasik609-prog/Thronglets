@@ -2920,7 +2920,7 @@ async fn main() {
 
             // Record errors for trace history (signals derived lazily by Prehook)
             if is_error && let Some(err) = workspace::extract_error(&payload["tool_response"]) {
-                ws.record_error(tool_name, context_text.clone(), err);
+                ws.record_error(tool_name, context_text.clone(), err, current_space.clone());
             }
 
             // Track session
@@ -3042,6 +3042,12 @@ async fn main() {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let ctx_hash = simhash(&hook_context);
             if let Some(recent_error) = ws.recent_errors.iter().find(|e| {
+                // Scoped errors only match their own space; unscoped (legacy) errors are always visible
+                if let Some(ref es) = e.space {
+                    if current_space.as_deref() != Some(es.as_str()) {
+                        return false;
+                    }
+                }
                 let age_ms = now_ms - e.timestamp_ms;
                 if e.tool == tool_name && age_ms < 3_600_000 {
                     return true; // same tool, last hour — always fire

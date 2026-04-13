@@ -414,6 +414,7 @@ fn prehook_profile_keeps_stdout_shape_when_signals_exist() {
         error_snippet: "parser exploded".into(),
         timestamp_ms: now,
         context_hash: None,
+        space: None,
     });
     ws.repair_patterns.push_front(RepairPattern {
         error_tool: "Edit".into(),
@@ -578,6 +579,7 @@ fn prehook_ranks_danger_and_repair_above_history() {
         error_snippet: "parser exploded".into(),
         timestamp_ms: now,
         context_hash: None,
+        space: None,
     });
     ws.recent_actions.push_front(RecentAction {
         tool: "Edit".into(),
@@ -778,6 +780,7 @@ fn prehook_upgrades_repair_with_collective_sources() {
         error_snippet: "linker failed".into(),
         timestamp_ms: now,
         context_hash: None,
+        space: None,
     });
     for (offset, (tool, file_path, outcome)) in [
         ("Bash", None, "failed"),

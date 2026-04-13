@@ -61,6 +61,8 @@ pub struct RecentError {
     pub timestamp_ms: i64,
     #[serde(default)]
     pub context_hash: Option<[u8; 16]>, // cached SimHash, avoids recomputation in prehook
+    #[serde(default)]
+    pub space: Option<String>,
 }
 
 /// A pending feedback item — an edit/write waiting to see if it was committed.
@@ -695,7 +697,7 @@ impl WorkspaceState {
     }
 
     /// Record an error from a PostToolUse hook.
-    pub fn record_error(&mut self, tool: &str, context: String, error_snippet: String) {
+    pub fn record_error(&mut self, tool: &str, context: String, error_snippet: String, space: Option<String>) {
         let now = chrono::Utc::now().timestamp_millis();
         let context_hash = Some(crate::context::simhash(&context));
         self.recent_errors.push_front(RecentError {
@@ -704,6 +706,7 @@ impl WorkspaceState {
             error_snippet,
             timestamp_ms: now,
             context_hash,
+            space,
         });
         self.recent_errors.truncate(MAX_RECENT_ERRORS);
         self.updated_ms = now;
@@ -1179,7 +1182,7 @@ mod tests {
     fn record_error_adds_and_truncates() {
         let mut ws = make_ws();
         for i in 0..15 {
-            ws.record_error("Bash", format!("ctx{i}"), format!("err{i}"));
+            ws.record_error("Bash", format!("ctx{i}"), format!("err{i}"), Some("test/project".into()));
         }
         assert_eq!(ws.recent_errors.len(), MAX_RECENT_ERRORS);
         assert_eq!(ws.recent_errors[0].error_snippet, "err14");
@@ -1575,6 +1578,7 @@ mod tests {
             "Bash",
             "compile".into(),
             "error[E0308]: mismatched types".into(),
+            None,
         );
         ws.updated_ms = chrono::Utc::now().timestamp_millis();
         let hints = ws.context_hints("Bash", None);
@@ -1806,7 +1810,7 @@ mod tests {
 
         let mut ws = make_ws();
         ws.record_file("/a.rs".into(), "Edit", "test".into(), "succeeded");
-        ws.record_error("Bash", "ctx".into(), "err".into());
+        ws.record_error("Bash", "ctx".into(), "err".into(), Some("test/proj".into()));
         ws.track_session("s1", "cap", false);
         ws.record_action("Read", Some("/b.rs".into()), "succeeded", None);
         ws.add_pending_feedback("/a.rs".into(), "Edit");
