@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.9.2 — 2026-04-13
+
+- **Space isolation** — all traces and signals are now scoped to the calling project. `derive_space()` in `hook_support.rs` extracts a stable project identifier from cwd (last 2 path components). Explicit `space` in hook payload takes priority.
+  - PostToolUse: traces tagged with `current_space`
+  - PreToolUse: signals queried within scope
+  - `RecentError` gains `space: Option<String>` — prehook error lookup filters by space, preventing cross-project error leakage. Legacy unscoped errors remain visible for backward compatibility.
+- **Negative feedback validated** — primordial soup experiment (3 conditions × 3 seeds, 1000 ticks) confirms `weaken_at()` reduces signal noise 78% in volatile environments. Deferred from production pending space isolation observation period.
+
+## v0.9.0 — 2026-04-11
+
+- **Convergence release** — synchronized pulse dimensions, trace bridge hardening, and network state alignment across Sigil ecosystem.
+
 ## v0.8.1 — 2026-04-09
 
 - **Codex sparse trace writeback** — managed Codex guidance now tells the agent to keep `ambient_priors` and ambient presence primary, but proactively write sparse `trace_record` residue after meaningful edits, shell commands, and repo/code searches using tool-level capabilities like `codex/edit`, `codex/bash`, and `codex/search`.
