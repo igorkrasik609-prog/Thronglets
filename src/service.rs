@@ -39,6 +39,20 @@ pub struct Ctx<'a> {
 
 // ── Helpers ──────────────────────────────────────────────────
 
+/// Derive space from cwd (last 2 path components). Used as fallback
+/// when MCP/HTTP clients don't send an explicit space parameter.
+pub fn space_from_cwd() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut parts = cwd.components().rev().take(2).collect::<Vec<_>>();
+    parts.reverse();
+    let space: String = parts
+        .iter()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    if space.is_empty() { None } else { Some(space) }
+}
+
 pub fn parse_outcome(s: &str) -> Outcome {
     match s {
         "succeeded" | "success" => Outcome::Succeeded,

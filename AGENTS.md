@@ -39,7 +39,7 @@ Lifecycle events reframed:
 ## Architecture
 
 ```
-Rust binary (v0.7.11)
+Rust binary (v0.9.2)
 ├── service.rs        — Shared business logic (single source of truth for all operations)
 ├── trace/            — Atomic execution record (outcome, latency, context, signatures)
 ├── storage/          — SQLite trace store with TTL and context bucketing
@@ -67,6 +67,34 @@ Rust binary (v0.7.11)
 ├── hook_support.rs   — Hook/prehook helpers, profiler, release checks
 └── main.rs:Ingest    — Psyche export pipe ingestion (`psyche emit | thronglets ingest`)
 ```
+
+## Space Isolation (v0.9.2)
+
+Signals must have scope. Space isolation ensures each project's traces, signals, and errors stay within their own namespace.
+
+- **`derive_space(payload)`** in `hook_support.rs` — extracts project identity from cwd (last 2 path components, e.g. `Desktop/Thronglets`). Explicit `space` in hook payload takes priority.
+- **Write-side**: PostToolUse tags traces with `current_space`. Psyche bridge derives space from cwd (not hardcoded).
+- **Read-side**: PreToolUse queries signals within scope. `RecentError` carries `space: Option<String>` — prehook filters by it.
+- **Legacy compat**: Errors with `space: None` (pre-isolation) remain visible to all spaces.
+
+Sigil (identity) and Space (context) are orthogonal dimensions: Sigil = who, Space = where. A Sigil in different spaces sees different signals but remains the same identity.
+
+## Capability Normalization (v0.9.3)
+
+Different agents name the same actions differently: `claude-code/Edit`, `codex/edit`, `openclaw/Edit`. The pheromone field normalizes these to canonical forms so multi-agent traces converge to shared field points:
+
+| Raw capability | Normalized | Category |
+|---|---|---|
+| `claude-code/Read`, `openclaw/Read` | `tool:read` | File reading |
+| `claude-code/Edit`, `codex/edit`, `claude-code/Write` | `tool:edit` | File modification |
+| `claude-code/Bash`, `codex/bash` | `tool:exec` | Command execution |
+| `claude-code/Grep`, `claude-code/Glob`, `codex/search` | `tool:search` | Content search |
+| `urn:thronglets:*` | pass-through | Internal lifecycle |
+| `mcp:*` | pass-through | External MCP tools |
+
+**Design**: normalization happens at the field layer (`pheromone.rs`), not at storage. Traces preserve original capability URIs for audit. The field sees a unified namespace where `codex/edit` and `claude-code/Edit` are the same species — enabling corroboration, Hebbian coupling, and carrying capacity pressure to operate across agents.
+
+MCP `trace_record` without explicit `space` falls back to cwd-derived space (`space_from_cwd()` in `service.rs`).
 
 ## Service Layer
 

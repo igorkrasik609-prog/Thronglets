@@ -82,6 +82,47 @@ const COUPLING_PRUNE_THRESHOLD: f64 = 0.05;
 /// Calibrated for M1 Pro workloads. Set to f64::MAX to disable.
 const FIELD_CAPACITY: f64 = 10_000.0;
 
+// ── Capability Normalization ────────────────────────────────────
+
+/// Normalize agent-specific capability URIs to canonical forms.
+///
+/// Different agents name the same actions differently:
+///   claude-code/Edit, codex/edit, openclaw/Edit → tool:edit
+/// Traces preserve original URIs (audit trail). The field normalizes
+/// so that same-kind actions from different agents share field points.
+/// This is what makes multi-agent pheromone convergence possible.
+pub(crate) fn normalize_capability(raw: &str) -> String {
+    // Internal lifecycle/signal capabilities — pass through unchanged
+    if raw.starts_with("urn:thronglets:") {
+        return raw.to_string();
+    }
+
+    // Extract the action verb from "prefix/Action" patterns
+    let action = raw
+        .rsplit_once('/')
+        .map(|(_, action)| action)
+        .unwrap_or(raw);
+
+    match action.to_ascii_lowercase().as_str() {
+        "read" => "tool:read".to_string(),
+        "edit" | "write" => "tool:edit".to_string(),
+        "bash" | "exec_command" | "review-fix" => "tool:exec".to_string(),
+        "grep" | "glob" | "search" => "tool:search".to_string(),
+        "agent" => "tool:delegate".to_string(),
+        "taskcreate" | "taskupdate" | "taskget" | "tasklist" => "tool:task".to_string(),
+        "toolsearch" => "tool:discover".to_string(),
+        "enterplanmode" | "exitplanmode" => "tool:plan".to_string(),
+        "websearch" | "webfetch" => "tool:web".to_string(),
+        "notebookedit" => "tool:notebook".to_string(),
+        // MCP tools from external systems — keep as-is
+        _ if raw.starts_with("mcp:") => raw.to_string(),
+        // Unknown single-segment capabilities — keep as-is
+        _ if !raw.contains('/') => raw.to_string(),
+        // Unknown prefixed capabilities — normalize prefix away
+        _ => format!("tool:{}", action.to_ascii_lowercase()),
+    }
+}
+
 // ── Field Point ────────────────────────────────────────────────
 
 /// A single point in the pheromone field.
@@ -217,10 +258,21 @@ impl FieldPoint {
 
 /// Composite key for a field point: (capability, context_bucket).
 /// context_bucket is 16-bit, derived from first 2 bytes of SimHash.
+/// Capability is always normalized — different agents' names for the
+/// same action collapse to one key, enabling multi-agent convergence.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 struct FieldKey {
     capability: String,
     bucket: i64,
+}
+
+impl FieldKey {
+    fn new(capability: &str, bucket: i64) -> Self {
+        Self {
+            capability: normalize_capability(capability),
+            bucket,
+        }
+    }
 }
 
 // ── Graph Edges ──────────────────────────────────────────────
@@ -235,15 +287,17 @@ struct EdgeKey {
 
 impl EdgeKey {
     fn new(a: &str, b: &str) -> Self {
-        if a <= b {
+        let na = normalize_capability(a);
+        let nb = normalize_capability(b);
+        if na <= nb {
             Self {
-                cap_a: a.to_string(),
-                cap_b: b.to_string(),
+                cap_a: na,
+                cap_b: nb,
             }
         } else {
             Self {
-                cap_a: b.to_string(),
-                cap_b: a.to_string(),
+                cap_a: nb,
+                cap_b: na,
             }
         }
     }
@@ -447,10 +501,7 @@ impl FieldInner {
                 if !(0..=65535).contains(&neighbor_bucket) {
                     continue;
                 }
-                let neighbor_key = FieldKey {
-                    capability: key.capability.clone(),
-                    bucket: neighbor_bucket,
-                };
+                let neighbor_key = FieldKey::new(&key.capability, neighbor_bucket);
                 ops.push((neighbor_key, diffuse_amount, point.valence, point.latency));
             }
             sources.push((key.clone(), diffuse_amount * 2.0));
@@ -494,10 +545,7 @@ impl FieldInner {
     /// 3. **Carrying capacity**: deposit cost increases quadratically with field load
     fn excite_node(&mut self, trace: &Trace) -> FieldDelta {
         let bucket = context_bucket(&trace.context_hash);
-        let key = FieldKey {
-            capability: trace.capability.clone(),
-            bucket,
-        };
+        let key = FieldKey::new(&trace.capability, bucket);
         let now_ms = trace.timestamp;
         let source_id = source_fingerprint(trace);
 
@@ -569,7 +617,7 @@ impl FieldInner {
         self.total_intensity += effective_deposit;
 
         FieldDelta {
-            capability: trace.capability.clone(),
+            capability: normalize_capability(&trace.capability),
             bucket,
             intensity_add: effective_deposit,
             outcome: trace.outcome,
@@ -616,11 +664,14 @@ impl PheromoneField {
 
         // Hebbian: detect co-excitations from field state.
         // For each OTHER capability, find max(last_excited) across its nodes.
+        // Compare normalized names so different agents' same-kind actions
+        // don't create spurious self-couplings.
         let now_ms = trace.timestamp;
+        let normalized_cap = normalize_capability(&trace.capability);
         let co_excited: Vec<String> = {
             let mut max_ts: HashMap<String, u64> = HashMap::new();
             for (k, p) in &inner.nodes {
-                if k.capability == trace.capability {
+                if k.capability == normalized_cap {
                     continue;
                 }
                 let ts = max_ts.entry(k.capability.clone()).or_insert(0);
@@ -634,7 +685,7 @@ impl PheromoneField {
         };
 
         for cap in &co_excited {
-            let edge_key = EdgeKey::new(&trace.capability, cap);
+            let edge_key = EdgeKey::new(&normalized_cap, cap);
             let edge = inner.edges.entry(edge_key).or_insert(Edge {
                 weight: 0.0,
                 last_reinforced: now_ms,
@@ -765,6 +816,7 @@ impl PheromoneField {
     pub fn aggregate(&self, capability: &str) -> Option<FieldScan> {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let inner = self.inner.read().unwrap();
+        let normalized = normalize_capability(capability);
 
         let mut total_intensity = 0.0;
         let mut weighted_valence = 0.0;
@@ -774,7 +826,7 @@ impl PheromoneField {
         let mut max_source_count = 0u32;
 
         for (key, point) in &inner.nodes {
-            if key.capability != capability {
+            if key.capability != normalized {
                 continue;
             }
             let intensity = point.current_intensity(now_ms);
@@ -926,10 +978,7 @@ impl PheromoneField {
         inner.total_intensity = 0.0;
 
         for entry in &snapshot.points {
-            let key = FieldKey {
-                capability: entry.capability.clone(),
-                bucket: entry.bucket,
-            };
+            let key = FieldKey::new(&entry.capability, entry.bucket);
             inner.nodes.insert(
                 key,
                 FieldPoint {
@@ -962,10 +1011,7 @@ impl PheromoneField {
 
     /// Apply a delta from P2P sync. CRDT-friendly: addition is commutative.
     pub fn apply_delta(&self, delta: &FieldDelta) {
-        let key = FieldKey {
-            capability: delta.capability.clone(),
-            bucket: delta.bucket,
-        };
+        let key = FieldKey::new(&delta.capability, delta.bucket);
         let mut inner = self.inner.write().unwrap();
         let point = inner
             .nodes
@@ -1035,10 +1081,7 @@ impl PheromoneField {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let inner = self.inner.read().unwrap();
         let bucket = context_bucket(context_hash);
-        let key = FieldKey {
-            capability: capability.to_string(),
-            bucket,
-        };
+        let key = FieldKey::new(capability, bucket);
 
         // Node-derived signals
         let (familiarity, consensus, momentum) = match inner.nodes.get(&key) {
@@ -1064,10 +1107,11 @@ impl PheromoneField {
 
         // Edge-derived coupling: average weight of live edges involving this capability.
         let coupling = {
+            let norm_cap = &key.capability; // already normalized by FieldKey::new
             let mut total_weight = 0.0;
             let mut count = 0u32;
             for (edge_key, edge) in &inner.edges {
-                if edge_key.cap_a == capability || edge_key.cap_b == capability {
+                if edge_key.cap_a == *norm_cap || edge_key.cap_b == *norm_cap {
                     let w = edge.current_weight(now_ms);
                     if w > COUPLING_PRUNE_THRESHOLD {
                         total_weight += w;
@@ -1232,7 +1276,7 @@ mod tests {
         let hash = simhash("git status");
         let results = field.scan(&hash, 1, 10);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].capability, "claude-code/Bash");
+        assert_eq!(results[0].capability, "tool:exec");
         assert!(results[0].intensity > 2.0);
         assert!(results[0].total_excitations == 3);
     }
@@ -1440,23 +1484,24 @@ mod tests {
 
         let caps: Vec<&str> = results.iter().map(|r| r.capability.as_str()).collect();
         assert!(
-            caps.contains(&"cap/primary"),
-            "primary should be in results"
+            caps.contains(&"tool:primary"),
+            "primary should be in results (normalized), got: {:?}",
+            caps
         );
         assert!(
-            caps.contains(&"cap/associated"),
+            caps.contains(&"tool:associated"),
             "coupled capability should surface in scan results, got: {:?}",
             caps
         );
 
         let primary_i = results
             .iter()
-            .find(|r| r.capability == "cap/primary")
+            .find(|r| r.capability == "tool:primary")
             .unwrap()
             .intensity;
         let assoc_i = results
             .iter()
-            .find(|r| r.capability == "cap/associated")
+            .find(|r| r.capability == "tool:associated")
             .unwrap()
             .intensity;
         assert!(
@@ -1740,5 +1785,47 @@ mod tests {
         assert!(field.is_empty());
         assert_eq!(field.total_intensity(), 0.0);
         assert_eq!(field.load_factor(), 0.0);
+    }
+
+    #[test]
+    fn cross_agent_traces_share_field_point() {
+        let field = PheromoneField::new();
+
+        // Two agents, same action, same context — different capability URIs
+        let t_claude = make_trace("claude-code/Edit", "edit file: main.rs", Outcome::Succeeded, 50);
+        let t_codex = make_trace_with_seed("codex/edit", "edit file: main.rs", Outcome::Succeeded, 50, 2);
+
+        field.excite(&t_claude);
+        field.excite(&t_codex);
+
+        // Both should land in the same field point (tool:edit)
+        let agg = field.aggregate("tool:edit").expect("normalized aggregate should exist");
+        assert_eq!(agg.total_excitations, 2, "both traces should contribute to same field point");
+        assert_eq!(agg.source_count, 2, "two distinct sources should be tracked");
+
+        // Querying with either raw name should find the normalized point
+        let agg_raw = field.aggregate("claude-code/Edit").expect("raw query should also resolve");
+        assert_eq!(agg_raw.total_excitations, 2);
+    }
+
+    #[test]
+    fn normalize_capability_mapping() {
+        assert_eq!(normalize_capability("claude-code/Read"), "tool:read");
+        assert_eq!(normalize_capability("claude-code/Edit"), "tool:edit");
+        assert_eq!(normalize_capability("claude-code/Bash"), "tool:exec");
+        assert_eq!(normalize_capability("claude-code/Grep"), "tool:search");
+        assert_eq!(normalize_capability("codex/edit"), "tool:edit");
+        assert_eq!(normalize_capability("codex/bash"), "tool:exec");
+        assert_eq!(normalize_capability("codex/search"), "tool:search");
+        assert_eq!(normalize_capability("openclaw/Read"), "tool:read");
+        // Internal capabilities pass through
+        assert_eq!(
+            normalize_capability("urn:thronglets:lifecycle:session-start"),
+            "urn:thronglets:lifecycle:session-start"
+        );
+        // MCP tools pass through
+        assert_eq!(normalize_capability("mcp:psyche/process_input"), "mcp:psyche/process_input");
+        // Unknown single-segment pass through
+        assert_eq!(normalize_capability("data-asset-management"), "data-asset-management");
     }
 }

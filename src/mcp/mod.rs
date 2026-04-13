@@ -630,7 +630,11 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
         context: args.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         model: args.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
         session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
-        space: args.get("space").and_then(|v| v.as_str()).map(String::from),
+        space: args
+            .get("space")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(crate::service::space_from_cwd),
         agent_id: args.get("agent_id").and_then(|v| v.as_str()).map(String::from),
         sigil_id: args.get("sigil_id").and_then(|v| v.as_str()).map(String::from),
         method_compliance: args

@@ -208,7 +208,8 @@ async fn mcp_full_protocol_handshake() {
     let parsed: Value = serde_json::from_str(text).expect("explore response should be JSON");
     let caps = parsed["capabilities"].as_array().unwrap();
     assert!(!caps.is_empty(), "should find at least one capability");
-    assert_eq!(caps[0]["capability"], "mcp-test/integration");
+    // Field returns normalized capability names (cross-agent convergence)
+    assert_eq!(caps[0]["capability"], "tool:integration");
 
     // 7. Unknown method returns error
     let resp = rpc_call(
