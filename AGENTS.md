@@ -39,7 +39,7 @@ Lifecycle events reframed:
 ## Architecture
 
 ```
-Rust binary (v0.9.2)
+Rust binary (v0.9.3)
 ├── service.rs        — Shared business logic (single source of truth for all operations)
 ├── trace/            — Atomic execution record (outcome, latency, context, signatures)
 ├── storage/          — SQLite trace store with TTL and context bucketing
