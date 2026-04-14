@@ -1,1 +1,0 @@
-- [ ] /Users/wutongcheng/Desktop/Oasyce-Sigil/DIMENSION_REGISTRY_V1.md:29 — [cross-project] canonical pulse names are now aligned, but chain-side enforcement of the registry remains deferred in the spec layer rather than this repo.

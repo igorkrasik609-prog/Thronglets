@@ -50,6 +50,28 @@ Lifecycle events reframed:
 
 The evolution target function = spherical coverage of the intelligence field (not individual survival).
 
+## Capability Normalization (v0.9.3)
+
+Different agents name the same actions differently. The pheromone field normalizes these to canonical forms so multi-agent traces converge to shared field points:
+
+- `claude-code/Edit`, `codex/edit`, `openclaw/Edit` → `tool:edit`
+- `claude-code/Read`, `openclaw/Read` → `tool:read`
+- `claude-code/Bash`, `codex/bash` → `tool:exec`
+- `claude-code/Grep`, `claude-code/Glob`, `codex/search` → `tool:search`
+- `urn:thronglets:*`, `mcp:*` → pass-through
+
+Normalization happens at the field layer (`pheromone.rs`), not at storage. Traces preserve original capability URIs for audit. The field sees a unified namespace — enabling corroboration, Hebbian coupling, and carrying capacity pressure to operate across agents.
+
+## Temporal Direction in Hebbian Edges (future physics)
+
+Current Hebbian coupling is symmetric — "A and B often co-occur." But causation has direction — "A causes B" is not "B causes A."
+
+Traces carry timestamps. "tool:exec occurred 3s before tool:read" is already in the data. But the current edge model only records co-occurrence weight, not temporal order.
+
+Adding a direction attribute to edges (which cap tends to precede which) is a physics rule ("time has direction"), not a designed outcome. Whether the field develops causal structure from that rule is the field's business — not ours to prescribe.
+
+This is the substrate condition for causal reasoning to potentially emerge. We do not design causal reasoning into the field; we provide the physics that permits it.
+
 ## First Principles
 
 ### 1. Human cognitive load is a performance budget

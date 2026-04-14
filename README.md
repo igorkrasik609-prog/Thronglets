@@ -16,7 +16,7 @@ npx -y thronglets start
 
 ---
 
-官网: [thronglets.oasyce.com](https://thronglets.oasyce.com) · 架构: [ARCHITECTURE.md](ARCHITECTURE.md) · 当前版本: `v0.8.1`
+官网: [thronglets.oasyce.com](https://thronglets.oasyce.com) · 架构: [ARCHITECTURE.md](ARCHITECTURE.md) · 当前版本: `v0.9.3`
 
 ## 你的 AI 看到了什么（真实输出）
 

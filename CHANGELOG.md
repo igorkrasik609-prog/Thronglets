@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.9.3 — 2026-04-14
+
+- **Capability normalization** — pheromone field now normalizes agent-specific capability URIs to canonical forms (`claude-code/Edit`, `codex/edit`, `openclaw/Edit` → `tool:edit`). Multi-agent traces converge to shared field points, enabling cross-agent Hebbian coupling, corroboration, and carrying capacity pressure. Normalization happens at the field layer (`pheromone.rs`), not at storage — traces preserve original URIs for audit.
+- **Field convergence in eval-emergence** — `eval-emergence` now replays recent traces through the pheromone field and reports: active capabilities, multi-source capabilities (source_count > 1), Hebbian coupling edges with weights, and per-capability field intensity/valence/excitations. Provides observability into whether the field is actually converging across agents.
+- **Policy signal fix** — `active_policy_signal()` now emits `SignalKind::History` (context) instead of `SignalKind::Danger` (avoid). CLAUDE.md rules are contextual guidance, not predictions of tool failure. This eliminates the 95% false_signal_pressure caused by the feedback system scoring policy rules as "wrong" when tools succeed.
+- **MCP space fallback** — `trace_record` without explicit `space` now falls back to cwd-derived space via `space_from_cwd()` in `service.rs`.
+- **space_from_cwd single source** — removed duplicate in `hook_support.rs`; `derive_space()` now delegates to `service::space_from_cwd()`.
+
 ## v0.9.2 — 2026-04-13
 
 - **Space isolation** — all traces and signals are now scoped to the calling project. `derive_space()` in `hook_support.rs` extracts a stable project identifier from cwd (last 2 path components). Explicit `space` in hook payload takes priority.
