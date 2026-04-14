@@ -901,9 +901,36 @@ enum Commands {
 }
 
 #[derive(Debug, serde::Serialize)]
+struct FieldConvergenceCapability {
+    capability: String,
+    intensity: f64,
+    valence: f64,
+    source_count: u32,
+    excitations: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct FieldCouplingEdge {
+    cap_a: String,
+    cap_b: String,
+    weight: f64,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct FieldConvergence {
+    traces_replayed: u64,
+    active_capabilities: usize,
+    multi_source_capabilities: usize,
+    total_coupling_edges: usize,
+    capabilities: Vec<FieldConvergenceCapability>,
+    top_couplings: Vec<FieldCouplingEdge>,
+}
+
+#[derive(Debug, serde::Serialize)]
 struct EvalEmergenceOutput {
     project_scope: Option<String>,
     signal_eval: Option<SignalEvalSummary>,
+    field_convergence: FieldConvergence,
     workspace_emergence: workspace::SpaceEmergenceSummary,
     substrate_activity: workspace::SubstrateActivity,
 }
@@ -927,6 +954,28 @@ impl EvalEmergenceOutput {
             ));
         } else {
             lines.push("offline eval: pending (not enough recent session history)".to_string());
+        }
+
+        lines.push(format!(
+            "field: {} capabilities ({} multi-source), {} coupling edges, {} traces replayed",
+            self.field_convergence.active_capabilities,
+            self.field_convergence.multi_source_capabilities,
+            self.field_convergence.total_coupling_edges,
+            self.field_convergence.traces_replayed,
+        ));
+        if !self.field_convergence.capabilities.is_empty() {
+            let top: Vec<String> = self
+                .field_convergence
+                .capabilities
+                .iter()
+                .filter(|c| c.source_count > 1)
+                .take(5)
+                .map(|c| format!("  {}  src={} exc={}", c.capability, c.source_count, c.excitations))
+                .collect();
+            if !top.is_empty() {
+                lines.push("multi-source convergence:".to_string());
+                lines.extend(top);
+            }
         }
 
         lines.push(format!(
@@ -1509,9 +1558,51 @@ async fn main() {
                 })
             });
 
+            // Build field convergence report: replay recent traces through
+            // pheromone field with full Hebbian coupling, then inspect state.
+            let field_convergence = {
+                let field = PheromoneField::new();
+                let traces = store
+                    .recent_traces(*hours, 50_000)
+                    .unwrap_or_default();
+                let trace_count = traces.len() as u64;
+                for trace in &traces {
+                    field.excite(trace);
+                }
+                let caps = field.capabilities(100);
+                let multi_source = caps.iter().filter(|c| c.source_count > 1).count();
+                let top_couplings: Vec<FieldCouplingEdge> = field
+                    .active_edges(20)
+                    .into_iter()
+                    .map(|(a, b, w)| FieldCouplingEdge {
+                        cap_a: a,
+                        cap_b: b,
+                        weight: (w * 1000.0).round() / 1000.0,
+                    })
+                    .collect();
+                FieldConvergence {
+                    traces_replayed: trace_count,
+                    active_capabilities: caps.len(),
+                    multi_source_capabilities: multi_source,
+                    total_coupling_edges: field.coupling_count(),
+                    capabilities: caps
+                        .iter()
+                        .map(|c| FieldConvergenceCapability {
+                            capability: c.capability.clone(),
+                            intensity: (c.intensity * 100.0).round() / 100.0,
+                            valence: (c.valence * 1000.0).round() / 1000.0,
+                            source_count: c.source_count,
+                            excitations: c.total_excitations,
+                        })
+                        .collect(),
+                    top_couplings,
+                }
+            };
+
             let output = EvalEmergenceOutput {
                 project_scope: project_scope.as_ref().map(|path| path.display().to_string()),
                 signal_eval,
+                field_convergence,
                 workspace_emergence: workspace.emergence_summary(),
                 substrate_activity: workspace.substrate_activity(),
             };

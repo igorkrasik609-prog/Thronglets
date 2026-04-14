@@ -1030,6 +1030,25 @@ impl TraceStore {
         rows.collect()
     }
 
+    /// Fetch recent traces within a time window, ordered by timestamp ascending.
+    /// Excludes internal signal/presence/continuity traces — returns only
+    /// real agent activity suitable for field replay.
+    pub fn recent_traces(&self, hours: u64, limit: usize) -> rusqlite::Result<Vec<Trace>> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (hours as i64 * 3_600_000);
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces \
+             WHERE timestamp >= ?1 \
+               AND capability NOT LIKE 'urn:thronglets:signal:%' \
+               AND capability NOT LIKE 'urn:thronglets:presence:%' \
+               AND capability NOT LIKE 'urn:thronglets:continuity:%' \
+               AND capability NOT LIKE 'urn:thronglets:signal-reinforcement:%' \
+             ORDER BY timestamp ASC LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        Self::collect_traces(&mut stmt, params![cutoff_ms, limit as i64])
+    }
+
     /// Total trace count.
     pub fn count(&self) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();

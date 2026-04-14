@@ -905,6 +905,28 @@ impl PheromoneField {
         self.inner.read().unwrap().edges.len()
     }
 
+    /// List Hebbian edges with live weights, sorted by weight descending.
+    /// Returns (cap_a, cap_b, weight) triples.
+    pub fn active_edges(&self, limit: usize) -> Vec<(String, String, f64)> {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let inner = self.inner.read().unwrap();
+        let mut edges: Vec<(String, String, f64)> = inner
+            .edges
+            .iter()
+            .filter_map(|(key, edge)| {
+                let w = edge.current_weight(now_ms);
+                if w > COUPLING_PRUNE_THRESHOLD {
+                    Some((key.cap_a.clone(), key.cap_b.clone(), w))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        edges.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        edges.truncate(limit);
+        edges
+    }
+
     /// Number of live field points (for diagnostics).
     pub fn len(&self) -> usize {
         self.inner.read().unwrap().nodes.len()
