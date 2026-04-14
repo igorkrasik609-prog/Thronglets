@@ -4896,7 +4896,7 @@ mod tests {
         };
 
         let signal = active_policy_signal(&active_policy).unwrap();
-        assert_eq!(signal.kind, SignalKind::Danger);
+        assert_eq!(signal.kind, SignalKind::History);
         assert!(signal.body.contains("reuse existing shared components"));
     }
 

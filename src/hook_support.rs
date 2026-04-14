@@ -205,19 +205,18 @@ pub(crate) fn active_policy_signal(active_policy: &ActivePolicySet) -> Option<Si
         .relevant_rules
         .iter()
         .any(|rule| rule.strength == PolicyStrength::Hard);
-    if hard {
-        Some(Signal::danger(
-            format!("  ! active policy: {summaries}"),
-            340,
-        ))
-    } else {
-        Some(Signal {
-            kind: SignalKind::History,
-            score: 205,
-            body: format!("  ~ active method guidance: {summaries}"),
-            candidate: None,
-        })
-    }
+    // Both hard and soft policy rules are contextual guidance, not
+    // predictions of tool failure. Using History/Context prevents the
+    // feedback system from scoring them as "wrong" when the tool succeeds.
+    // Hard rules get higher score to outrank other context signals.
+    let score = if hard { 340 } else { 205 };
+    let prefix = if hard { "!" } else { "~" };
+    Some(Signal {
+        kind: SignalKind::History,
+        score,
+        body: format!("  {prefix} active policy: {summaries}"),
+        candidate: None,
+    })
 }
 
 /// Derive co-edit signals lazily at Prehook time.
