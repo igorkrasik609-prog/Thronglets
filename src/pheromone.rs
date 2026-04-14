@@ -277,36 +277,30 @@ impl FieldKey {
 
 // ── Graph Edges ──────────────────────────────────────────────
 
-/// Canonical key for a Hebbian edge between two capabilities.
-/// cap_a <= cap_b always (avoids duplicates).
+/// Directed Hebbian edge key: predecessor → successor.
+/// Temporal order is preserved — "A then B" and "B then A" are
+/// distinct edges with independent weights.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 struct EdgeKey {
-    cap_a: String,
-    cap_b: String,
+    predecessor: String,
+    successor: String,
 }
 
 impl EdgeKey {
-    fn new(a: &str, b: &str) -> Self {
-        let na = normalize_capability(a);
-        let nb = normalize_capability(b);
-        if na <= nb {
-            Self {
-                cap_a: na,
-                cap_b: nb,
-            }
-        } else {
-            Self {
-                cap_a: nb,
-                cap_b: na,
-            }
+    fn new(predecessor: &str, successor: &str) -> Self {
+        Self {
+            predecessor: normalize_capability(predecessor),
+            successor: normalize_capability(successor),
         }
     }
 
-    fn partner(&self, cap: &str) -> Option<&str> {
-        if self.cap_a == cap {
-            Some(&self.cap_b)
-        } else if self.cap_b == cap {
-            Some(&self.cap_a)
+    /// Returns the other capability in this edge, regardless of direction.
+    /// Used by scan() and overlay() which care about association, not order.
+    fn other_end(&self, cap: &str) -> Option<&str> {
+        if self.predecessor == cap {
+            Some(&self.successor)
+        } else if self.successor == cap {
+            Some(&self.predecessor)
         } else {
             None
         }
@@ -364,8 +358,10 @@ impl Default for TickResult {
 /// Serializable coupling entry for snapshots.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CouplingSnapshotEntry {
-    pub cap_a: String,
-    pub cap_b: String,
+    #[serde(alias = "cap_a")]
+    pub predecessor: String,
+    #[serde(alias = "cap_b")]
+    pub successor: String,
     pub weight: f64,
     pub last_reinforced: u64,
 }
@@ -685,7 +681,9 @@ impl PheromoneField {
         };
 
         for cap in &co_excited {
-            let edge_key = EdgeKey::new(&normalized_cap, cap);
+            // cap was excited BEFORE normalized_cap (it has an earlier last_excited).
+            // Directed edge: predecessor=cap → successor=normalized_cap.
+            let edge_key = EdgeKey::new(cap, &normalized_cap);
             let edge = inner.edges.entry(edge_key).or_insert(Edge {
                 weight: 0.0,
                 last_reinforced: now_ms,
@@ -775,7 +773,7 @@ impl PheromoneField {
 
         for (primary_cap, primary_intensity, primary_valence, primary_sim) in &primary_data {
             for (key, edge) in &inner.edges {
-                let Some(partner) = key.partner(primary_cap) else {
+                let Some(partner) = key.other_end(primary_cap) else {
                     continue;
                 };
                 if cap_map.contains_key(partner) {
@@ -906,7 +904,7 @@ impl PheromoneField {
     }
 
     /// List Hebbian edges with live weights, sorted by weight descending.
-    /// Returns (cap_a, cap_b, weight) triples.
+    /// Returns (predecessor, successor, weight) triples — directed edges.
     pub fn active_edges(&self, limit: usize) -> Vec<(String, String, f64)> {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let inner = self.inner.read().unwrap();
@@ -916,7 +914,7 @@ impl PheromoneField {
             .filter_map(|(key, edge)| {
                 let w = edge.current_weight(now_ms);
                 if w > COUPLING_PRUNE_THRESHOLD {
-                    Some((key.cap_a.clone(), key.cap_b.clone(), w))
+                    Some((key.predecessor.clone(), key.successor.clone(), w))
                 } else {
                     None
                 }
@@ -977,8 +975,8 @@ impl PheromoneField {
             .iter()
             .filter(|(_, e)| !e.is_dead(now_ms))
             .map(|(key, e)| CouplingSnapshotEntry {
-                cap_a: key.cap_a.clone(),
-                cap_b: key.cap_b.clone(),
+                predecessor: key.predecessor.clone(),
+                successor: key.successor.clone(),
                 weight: e.current_weight(now_ms),
                 last_reinforced: e.last_reinforced,
             })
@@ -1019,7 +1017,7 @@ impl PheromoneField {
         }
 
         for entry in &snapshot.couplings {
-            let key = EdgeKey::new(&entry.cap_a, &entry.cap_b);
+            let key = EdgeKey::new(&entry.predecessor, &entry.successor);
             let edge = inner.edges.entry(key).or_insert(Edge {
                 weight: 0.0,
                 last_reinforced: entry.last_reinforced,
@@ -1133,7 +1131,7 @@ impl PheromoneField {
             let mut total_weight = 0.0;
             let mut count = 0u32;
             for (edge_key, edge) in &inner.edges {
-                if edge_key.cap_a == *norm_cap || edge_key.cap_b == *norm_cap {
+                if edge_key.predecessor == *norm_cap || edge_key.successor == *norm_cap {
                     let w = edge.current_weight(now_ms);
                     if w > COUPLING_PRUNE_THRESHOLD {
                         total_weight += w;
@@ -1470,6 +1468,52 @@ mod tests {
             (edge.weight - COUPLING_LEARN_RATE).abs() < 0.01,
             "edge weight should be ~{COUPLING_LEARN_RATE}, got {}",
             edge.weight
+        );
+    }
+
+    #[test]
+    fn hebbian_edge_is_directed() {
+        let field = PheromoneField::new();
+
+        // A excites first, then B → directed edge A→B
+        let t1 = make_trace("cap/first", "ctx", Outcome::Succeeded, 100);
+        let t2 = make_trace("cap/second", "ctx", Outcome::Succeeded, 100);
+        field.excite(&t1);
+        field.excite(&t2);
+
+        let edges = field.active_edges(10);
+        assert_eq!(edges.len(), 1);
+        let (pred, succ, _w) = &edges[0];
+        assert_eq!(pred, "tool:first", "predecessor should be the first-excited cap");
+        assert_eq!(succ, "tool:second", "successor should be the second-excited cap");
+
+        // Reverse edge should NOT exist
+        let inner = field.inner.read().unwrap();
+        let reverse_key = EdgeKey::new("cap/second", "cap/first");
+        assert!(
+            inner.edges.get(&reverse_key).is_none(),
+            "reverse edge should not exist — directionality matters"
+        );
+    }
+
+    #[test]
+    fn hebbian_both_directions_coexist() {
+        let field = PheromoneField::new();
+
+        // Round 1: A then B → A→B edge
+        let t1 = make_trace("cap/x", "ctx", Outcome::Succeeded, 100);
+        let t2 = make_trace("cap/y", "ctx", Outcome::Succeeded, 100);
+        field.excite(&t1);
+        field.excite(&t2);
+        assert_eq!(field.coupling_count(), 1);
+
+        // Round 2: excite X again → B was recently excited, so B→X edge forms
+        let t3 = make_trace("cap/x", "ctx", Outcome::Succeeded, 100);
+        field.excite(&t3);
+        assert_eq!(
+            field.coupling_count(),
+            2,
+            "should have two directed edges: X→Y and Y→X"
         );
     }
 

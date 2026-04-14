@@ -911,8 +911,8 @@ struct FieldConvergenceCapability {
 
 #[derive(Debug, serde::Serialize)]
 struct FieldCouplingEdge {
-    cap_a: String,
-    cap_b: String,
+    predecessor: String,
+    successor: String,
     weight: f64,
 }
 
@@ -1574,9 +1574,9 @@ async fn main() {
                 let top_couplings: Vec<FieldCouplingEdge> = field
                     .active_edges(20)
                     .into_iter()
-                    .map(|(a, b, w)| FieldCouplingEdge {
-                        cap_a: a,
-                        cap_b: b,
+                    .map(|(pred, succ, w)| FieldCouplingEdge {
+                        predecessor: pred,
+                        successor: succ,
                         weight: (w * 1000.0).round() / 1000.0,
                     })
                     .collect();
