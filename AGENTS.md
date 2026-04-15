@@ -116,6 +116,7 @@ MCP `trace_record` without explicit `space` falls back to cwd-derived space (`sp
 |---|---|
 | BOND shared state | Traces + pheromone field in shared context buckets |
 | BOND scope | Context hash (SimHash) determines which traces are visible |
+| BOND depth | Abstraction level of field overlap: L0 concrete → L3 universal. Deeper = more specific, shallower = more persistent. Emergent from multi-level physics. |
 | Sigil identity | Node identity (ed25519 keypair) — will migrate to Sigil keypair |
 | BOND evidence | Trace records signed by both parties, optionally anchored on-chain |
 | UNBOND | Session end + trace TTL expiry (7 days default) |
