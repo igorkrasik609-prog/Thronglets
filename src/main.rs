@@ -2578,6 +2578,12 @@ async fn main() {
             // Background pulse emitter (fail-open: no-op if env vars missing)
             maybe_spawn_pulse(&dir, &store);
 
+            // Field socket: prehook queries the live field via IPC
+            let _field_socket = thronglets::pheromone_socket::start_listener(
+                Arc::clone(&field),
+                &dir,
+            );
+
             info!(
                 "Node {} running. Press Ctrl+C to stop.",
                 identity.short_id()
@@ -2649,6 +2655,12 @@ async fn main() {
 
             // Background pulse emitter (fail-open: no-op if env vars missing)
             maybe_spawn_pulse(&dir, &store);
+
+            // Field socket: prehook queries the live field via IPC instead of loading stale JSON
+            let _field_socket = thronglets::pheromone_socket::start_listener(
+                Arc::clone(&field),
+                &dir,
+            );
 
             let ctx = Arc::new(McpContext {
                 identity: Arc::new(identity),
@@ -3323,44 +3335,75 @@ async fn main() {
 
             // ── Field fallback: abstract patterns from Level 2-3 ──
             // When concrete paths (Level 0-1) found nothing strong,
-            // load the persisted field and scan Typed/Universal levels.
+            // query the live field via Unix socket (IPC to MCP/HTTP process).
+            // Falls back to loading persisted JSON if no socket is available.
             let has_strong_signal = signals
                 .iter()
                 .any(|s| !matches!(s.kind, SignalKind::History) || s.score >= 300);
             let field_fallback_checked = !has_strong_signal && !hook_context.is_empty();
             if field_fallback_checked {
-                let field_path = dir.join("pheromone-field.v1.json");
-                if field_path.exists()
-                    && let Ok(data) = std::fs::read_to_string(&field_path)
-                    && let Ok(snapshot) = serde_json::from_str::<thronglets::pheromone::FieldSnapshot>(&data)
-                {
-                    let field = PheromoneField::new();
-                    field.restore(&snapshot);
-                    let scans = field.scan_with_fallback(
-                        &ctx_hash,
-                        current_space.as_deref(),
-                        current_file.as_deref(),
-                        3,
-                    );
-                    for scan in scans {
-                        if scan.intensity > 0.1 {
-                            let level_tag = match scan.level {
-                                thronglets::pheromone::AbstractionLevel::Typed => "pattern",
-                                thronglets::pheromone::AbstractionLevel::Universal => "universal",
-                                _ => continue, // only surface abstract levels
-                            };
-                            let score = 220 + (scan.intensity * 40.0).round() as i32;
-                            signals.push(Signal {
-                                kind: SignalKind::History,
-                                score,
-                                body: format!(
-                                    "  \u{1f30a} {level_tag}: {} ({:.0}% success across projects)",
-                                    scan.capability,
-                                    scan.valence * 100.0,
-                                ),
-                                candidate: None,
-                            });
-                        }
+                let scan_request = thronglets::pheromone_socket::ScanRequest {
+                    context_hash: ctx_hash,
+                    space: current_space.clone(),
+                    file_path: current_file.clone(),
+                    limit: 3,
+                };
+
+                // Try live socket first (hot field, ~1ms), fall back to disk (stale, ~10ms)
+                let scans: Vec<thronglets::pheromone_socket::ScanResult> =
+                    thronglets::pheromone_socket::query(&dir, &scan_request)
+                        .unwrap_or_else(|| {
+                            let field_path = dir.join("pheromone-field.v1.json");
+                            if field_path.exists()
+                                && let Ok(data) = std::fs::read_to_string(&field_path)
+                                && let Ok(snapshot) = serde_json::from_str::<
+                                    thronglets::pheromone::FieldSnapshot,
+                                >(&data)
+                            {
+                                let field = PheromoneField::new();
+                                field.restore(&snapshot);
+                                field
+                                    .scan_with_fallback(
+                                        &ctx_hash,
+                                        current_space.as_deref(),
+                                        current_file.as_deref(),
+                                        3,
+                                    )
+                                    .into_iter()
+                                    .map(|s| thronglets::pheromone_socket::ScanResult {
+                                        capability: s.capability,
+                                        intensity: s.intensity,
+                                        valence: s.valence,
+                                        latency: s.latency,
+                                        total_excitations: s.total_excitations,
+                                        source_count: s.source_count,
+                                        context_similarity: s.context_similarity,
+                                        level: s.level,
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            }
+                        });
+
+                for scan in scans {
+                    if scan.intensity > 0.1 {
+                        let level_tag = match scan.level {
+                            thronglets::pheromone::AbstractionLevel::Typed => "pattern",
+                            thronglets::pheromone::AbstractionLevel::Universal => "universal",
+                            _ => continue,
+                        };
+                        let score = 220 + (scan.intensity * 40.0).round() as i32;
+                        signals.push(Signal {
+                            kind: SignalKind::History,
+                            score,
+                            body: format!(
+                                "  \u{1f30a} {level_tag}: {} ({:.0}% success across projects)",
+                                scan.capability,
+                                scan.valence * 100.0,
+                            ),
+                            candidate: None,
+                        });
                     }
                 }
             }
@@ -3703,6 +3746,12 @@ async fn main() {
 
             // Background pulse emitter (fail-open: no-op if env vars missing)
             maybe_spawn_pulse(&dir, &store);
+
+            // Field socket: prehook queries the live field via IPC
+            let _field_socket = thronglets::pheromone_socket::start_listener(
+                Arc::clone(&field),
+                &dir,
+            );
 
             let ctx = Arc::new(thronglets::http::HttpContext {
                 identity: Arc::new(identity),
