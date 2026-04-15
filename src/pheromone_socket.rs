@@ -76,33 +76,33 @@ pub fn start_listener(field: Arc<PheromoneField>, data_dir: &Path) -> SocketGuar
                 let (reader, mut writer) = stream.into_split();
                 let mut lines = BufReader::new(reader).lines();
 
-                if let Ok(Some(line)) = lines.next_line().await {
-                    if let Ok(req) = serde_json::from_str::<ScanRequest>(&line) {
-                        let scans = field.scan_with_fallback(
-                            &req.context_hash,
-                            req.space.as_deref(),
-                            req.file_path.as_deref(),
-                            req.limit,
-                        );
+                if let Ok(Some(line)) = lines.next_line().await
+                    && let Ok(req) = serde_json::from_str::<ScanRequest>(&line)
+                {
+                    let scans = field.scan_with_fallback(
+                        &req.context_hash,
+                        req.space.as_deref(),
+                        req.file_path.as_deref(),
+                        req.limit,
+                    );
 
-                        let results: Vec<ScanResult> = scans
-                            .into_iter()
-                            .map(|s| ScanResult {
-                                capability: s.capability,
-                                intensity: s.intensity,
-                                valence: s.valence,
-                                latency: s.latency,
-                                total_excitations: s.total_excitations,
-                                source_count: s.source_count,
-                                context_similarity: s.context_similarity,
-                                level: s.level,
-                            })
-                            .collect();
+                    let results: Vec<ScanResult> = scans
+                        .into_iter()
+                        .map(|s| ScanResult {
+                            capability: s.capability,
+                            intensity: s.intensity,
+                            valence: s.valence,
+                            latency: s.latency,
+                            total_excitations: s.total_excitations,
+                            source_count: s.source_count,
+                            context_similarity: s.context_similarity,
+                            level: s.level,
+                        })
+                        .collect();
 
-                        if let Ok(mut json) = serde_json::to_vec(&results) {
-                            json.push(b'\n');
-                            let _ = writer.write_all(&json).await;
-                        }
+                    if let Ok(mut json) = serde_json::to_vec(&results) {
+                        json.push(b'\n');
+                        let _ = writer.write_all(&json).await;
                     }
                 }
             });

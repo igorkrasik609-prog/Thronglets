@@ -54,7 +54,7 @@ thronglets join
 
 `start` configures the local substrate automatically:
 - **PostToolUse / hook**: records traces + workspace state + feedback tracking
-- **PreToolUse / prehook**: injects sparse signals before high-impact tools
+- **PreToolUse / prehook**: injects sparse signals before high-impact tools (queries live field via Unix socket IPC, falls back to disk)
 - **SessionStart**: records lifecycle trace, emits presence, surfaces active avoid signals as briefing
 - **SessionEnd**: records session closure trace
 - **SubagentStart**: records multi-agent lifecycle trace with agent type and id

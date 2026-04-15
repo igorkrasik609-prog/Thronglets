@@ -75,6 +75,8 @@ FieldKey = (capability, bucket, level)
 
 **Scan fallback**: `scan_with_fallback()` walks Concrete → Project → Typed → Universal, stopping at the first level with strong signals (intensity > 0.5). Specific experience takes priority; abstract patterns fill gaps.
 
+**Field IPC**: Long-running processes (MCP, HTTP, run) serve the live pheromone field over a Unix domain socket (`{data_dir}/field.sock`). The prehook queries the hot field via socket (~1ms) instead of loading a stale JSON snapshot from disk (~10ms). Falls back to disk when no socket is available. Protocol: one JSON line in, one JSON line out, then close. Defined in `pheromone_socket.rs`.
+
 **P2P sync**: Only Level 2-3 flow between nodes via gossipsub field snapshots. Level 0-1 stay local — specific experience doesn't travel. Remote snapshots are discounted (0.7x) to prevent single-node dominance.
 
 **Level 2 bucketing**: `TargetKind` × language → 16-bit bucket. `TargetKind` classifies file paths into semantic roles (SourceFile, TestFile, ConfigFile, BuildOutput, Documentation, Schema). Defined in `target_kind.rs`.

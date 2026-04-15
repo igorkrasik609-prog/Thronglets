@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Field IPC** — long-running processes (MCP, HTTP, run) now serve the live pheromone field over a Unix domain socket (`field.sock`). Prehook queries the hot field via socket (~1ms) instead of loading stale JSON from disk. Falls back to disk when no socket is available. New module: `pheromone_socket.rs`.
+
 ## v1.0.0 — 2026-04-15
 
 - **Abstraction levels** — pheromone field gains a fourth dimension: `AbstractionLevel`. `FieldKey` becomes `(capability, bucket, level)` where level ∈ {Concrete, Project, Typed, Universal}. One trace excites all four levels simultaneously with the same physics (decay, Hebbian coupling, carrying capacity, corroboration). Space isolation is explained as Level 1 — not deleted, not preserved, *named*.
