@@ -1,5 +1,6 @@
 use crate::continuity::is_continuity_capability;
 use crate::identity::{IdentityBinding, NodeIdentity};
+use ed25519_dalek::Signer as _;
 use crate::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use crate::network_state::NetworkSnapshot;
 use crate::pheromone::PheromoneField;
@@ -83,6 +84,10 @@ struct NetworkRuntimeLoop {
     event_rx: mpsc::Receiver<NetworkEvent>,
     command_tx: mpsc::Sender<NetworkCommand>,
     options: NetworkRuntimeOptions,
+    /// Node public key for snapshot signing.
+    node_pubkey: [u8; 32],
+    /// Secret key bytes for snapshot signing (32 bytes, ed25519).
+    secret_key_bytes: [u8; 32],
 }
 
 pub async fn start_network_runtime(
@@ -136,6 +141,8 @@ pub async fn start_network_runtime(
         event_rx,
         command_tx: task_command_tx,
         options: request.options,
+        node_pubkey: request.identity.public_key_bytes(),
+        secret_key_bytes: request.identity.secret_key_bytes(),
     };
 
     tokio::spawn(async move {
@@ -298,7 +305,7 @@ impl NetworkRuntimeLoop {
                 }
                 _ = wait_on_interval(self.options.publish_summaries, &mut field_sync_interval) => {
                     if let Some(ref f) = self.field {
-                        publish_field_snapshot(f, &self.command_tx).await;
+                        publish_field_snapshot(f, &self.command_tx, self.node_pubkey, self.secret_key_bytes).await;
                     }
                 }
             }
@@ -510,15 +517,24 @@ async fn publish_local_traces(store: &TraceStore, command_tx: &mpsc::Sender<Netw
 async fn publish_field_snapshot(
     field: &PheromoneField,
     command_tx: &mpsc::Sender<NetworkCommand>,
+    node_pubkey: [u8; 32],
+    secret_key_bytes: [u8; 32],
 ) {
-    let snapshot = field.publishable_snapshot();
+    let mut snapshot = field.publishable_snapshot();
     if snapshot.points.is_empty() && snapshot.couplings.is_empty() {
         return;
     }
+
+    // Sign the snapshot with our node identity
+    snapshot.node_pubkey = node_pubkey;
+    let signable = snapshot.signable_bytes();
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret_key_bytes);
+    snapshot.signature = signing_key.sign(&signable).to_bytes().to_vec();
+
     info!(
         points = snapshot.points.len(),
         couplings = snapshot.couplings.len(),
-        "Publishing field snapshot (Level 2-3) to network"
+        "Publishing signed field snapshot (Level 2-3) to network"
     );
     let _ = command_tx
         .send(NetworkCommand::PublishFieldSnapshot(Box::new(snapshot)))

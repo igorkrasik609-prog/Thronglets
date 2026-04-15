@@ -180,7 +180,7 @@ pub fn record_trace(
 
     // Excite pheromone field if available
     if let Some(field) = ctx.field {
-        field.excite(&trace);
+        field.excite_with_space(&trace, space.as_deref());
     }
 
     // ── Outcome reflexivity: auto-avoid on repeated failures ──

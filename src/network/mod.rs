@@ -295,14 +295,17 @@ pub async fn start(
                             let is_field_msg = message.topic == gossipsub::IdentTopic::new(FIELD_TOPIC).hash();
                             if is_field_msg {
                                 match serde_json::from_slice::<FieldSnapshot>(&message.data) {
-                                    Ok(snapshot) => {
-                                        debug!(points = snapshot.points.len(), "Received field snapshot from network");
+                                    Ok(snapshot) if snapshot.verify() => {
+                                        debug!(points = snapshot.points.len(), "Received valid field snapshot from network");
                                         let _ = event_tx
                                             .send(NetworkEvent::FieldSnapshotReceived {
                                                 snapshot: Box::new(snapshot),
                                                 source_peer: propagation_source,
                                             })
                                             .await;
+                                    }
+                                    Ok(_) => {
+                                        warn!("Received field snapshot with invalid signature, dropping");
                                     }
                                     Err(e) => {
                                         warn!(%e, "Failed to deserialize field snapshot");

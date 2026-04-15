@@ -439,6 +439,64 @@ pub struct FieldSnapshot {
     /// to gauge the source field's load factor.
     #[serde(default)]
     pub total_intensity: f64,
+    /// Public key of the node that produced this snapshot (32 bytes).
+    #[serde(default)]
+    pub node_pubkey: [u8; 32],
+    /// Ed25519 signature over the snapshot content (64 bytes).
+    #[serde(default)]
+    pub signature: Vec<u8>,
+}
+
+/// Domain separator for field snapshot signatures.
+const FIELD_SNAPSHOT_SIGN_TAG: &[u8] = b"thronglets.field_snapshot.v1";
+
+impl FieldSnapshot {
+    /// Compute the signable byte representation of this snapshot.
+    pub(crate) fn signable_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(FIELD_SNAPSHOT_SIGN_TAG);
+        buf.extend_from_slice(&(self.points.len() as u32).to_le_bytes());
+        for p in &self.points {
+            buf.extend_from_slice(p.capability.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(&p.bucket.to_le_bytes());
+            buf.extend_from_slice(&p.intensity.to_le_bytes());
+            buf.extend_from_slice(&p.last_excited.to_le_bytes());
+            buf.push(p.level as u8);
+        }
+        buf.extend_from_slice(&(self.couplings.len() as u32).to_le_bytes());
+        for c in &self.couplings {
+            buf.extend_from_slice(c.predecessor.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(c.successor.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(&c.weight.to_le_bytes());
+            buf.push(c.level as u8);
+        }
+        buf.extend_from_slice(&self.total_intensity.to_le_bytes());
+        buf.extend_from_slice(&self.node_pubkey);
+        buf
+    }
+
+    /// Sign this snapshot with the given node identity.
+    pub fn sign(&mut self, identity: &crate::identity::NodeIdentity) {
+        self.node_pubkey = identity.public_key_bytes();
+        let signable = self.signable_bytes();
+        let sig = identity.sign(&signable);
+        self.signature = sig.to_bytes().to_vec();
+    }
+
+    /// Verify the signature on this snapshot.
+    pub fn verify(&self) -> bool {
+        if self.node_pubkey == [0u8; 32] || self.signature.len() != 64 {
+            return false;
+        }
+        let signable = self.signable_bytes();
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        crate::identity::NodeIdentity::verify(&self.node_pubkey, &signable, &sig)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -595,7 +653,7 @@ impl FieldInner {
     /// Same physics, four levels. The field naturally produces correct behavior:
     /// - Level 0 points are sparse → low corroboration → weak signals
     /// - Level 3 points are dense → high corroboration → strong signals
-    fn excite_node(&mut self, trace: &Trace) -> FieldDelta {
+    fn excite_node(&mut self, trace: &Trace, space: Option<&str>) -> FieldDelta {
         use crate::target_kind;
 
         let cap = normalize_capability(&trace.capability);
@@ -624,18 +682,8 @@ impl FieldInner {
         // ── Compute keys for all four levels ──
         let concrete_bucket = context_bucket(&trace.context_hash);
 
-        // Level 1 (Project): from space string if available
-        let space = trace.context_text.as_deref()
-            .and_then(|ct| {
-                if ct.starts_with('{') {
-                    // JSON context — extract space field
-                    serde_json::from_str::<serde_json::Value>(ct).ok()
-                        .and_then(|v| v.get("space")?.as_str().map(String::from))
-                } else {
-                    None
-                }
-            });
-        let project_bucket = space.as_deref().map(target_kind::space_bucket);
+        // Level 1 (Project): from space parameter (passed by caller)
+        let project_bucket = space.map(target_kind::space_bucket);
 
         // Level 2 (Typed): from file path in context
         let file_path = trace.context_text.as_deref()
@@ -741,8 +789,15 @@ impl PheromoneField {
     /// Also detects Hebbian co-excitations: scans nodes' last_excited
     /// to find capabilities within the coupling window. O(capabilities).
     pub fn excite(&self, trace: &Trace) -> FieldDelta {
+        self.excite_with_space(trace, None)
+    }
+
+    /// Excite the field with a trace, optionally providing the project space.
+    /// Space enables Level 1 (Project) excitation — without it, only
+    /// Concrete, Typed, and Universal levels fire.
+    pub fn excite_with_space(&self, trace: &Trace, space: Option<&str>) -> FieldDelta {
         let mut inner = self.inner.write().unwrap();
-        let delta = inner.excite_node(trace);
+        let delta = inner.excite_node(trace, space);
 
         // Hebbian: detect co-excitations per level.
         // For each (capability, level) pair, find max(last_excited).
@@ -1239,6 +1294,8 @@ impl PheromoneField {
             points,
             couplings,
             total_intensity: inner.current_total_intensity(now_ms),
+            node_pubkey: [0u8; 32],
+            signature: Vec::new(),
         }
     }
 
@@ -1342,6 +1399,8 @@ impl PheromoneField {
             points,
             couplings,
             total_intensity: inner.current_total_intensity(now_ms),
+            node_pubkey: [0u8; 32],
+            signature: Vec::new(),
         }
     }
 
@@ -1363,23 +1422,28 @@ impl PheromoneField {
                 .entry(key)
                 .or_insert_with(|| FieldPoint::new(now_ms));
 
-            // Merge: take max intensity (CRDT-like), blend valence
+            // Merge: compare against decayed (current) local intensity
+            let local_intensity = point.current_intensity(now_ms);
             let remote_intensity = entry.intensity * trust_discount;
-            if remote_intensity > point.intensity {
-                let total = point.intensity + remote_intensity;
+            if remote_intensity > local_intensity {
+                let total = local_intensity + remote_intensity;
                 if total > 0.0 {
                     point.valence =
-                        (point.valence * point.intensity + entry.valence * remote_intensity)
+                        (point.valence * local_intensity + entry.valence * remote_intensity)
                             / total;
                     point.latency =
-                        (point.latency * point.intensity + entry.latency * remote_intensity)
+                        (point.latency * local_intensity + entry.latency * remote_intensity)
+                            / total;
+                    point.variance =
+                        (point.variance * local_intensity + entry.variance * remote_intensity)
                             / total;
                 }
                 point.intensity = remote_intensity;
                 point.last_excited = point.last_excited.max(entry.last_excited);
             }
 
-            // Merge sources
+            // Evidence merges unconditionally
+            point.total_excitations = point.total_excitations.max(entry.total_excitations);
             for src in &entry.source_hashes {
                 if !point.sources.contains(src) {
                     point.sources.push(*src);
@@ -1558,7 +1622,7 @@ impl PheromoneField {
             {
                 let mut inner = self.inner.write().unwrap();
                 for trace in &traces {
-                    inner.excite_node(trace);
+                    inner.excite_node(trace, None);
                     count += 1;
                 }
             }
@@ -2483,7 +2547,7 @@ mod tests {
 
         // Create remote with a Concrete-level entry (shouldn't be in publishable_snapshot,
         // but test defense-in-depth)
-        let mut fake_snapshot = FieldSnapshot {
+        let fake_snapshot = FieldSnapshot {
             points: vec![FieldSnapshotEntry {
                 capability: "cap/local".to_string(),
                 bucket: 0,
@@ -2499,6 +2563,8 @@ mod tests {
             }],
             couplings: vec![],
             total_intensity: 100.0,
+            node_pubkey: [0u8; 32],
+            signature: Vec::new(),
         };
 
         field.apply_remote_snapshot(&fake_snapshot, 0.7);
@@ -2546,5 +2612,166 @@ mod tests {
 
         assert!(a_knows_other, "field A should learn about cap/other");
         assert!(b_knows_converge, "field B should learn about cap/converge");
+    }
+
+    // ── Fix 1: Space → Level 1 ──
+
+    #[test]
+    fn excite_with_space_populates_project_level() {
+        let field = PheromoneField::new();
+        let t = make_trace("tool:edit", "fix bug", Outcome::Succeeded, 100);
+        field.excite_with_space(&t, Some("my-project"));
+
+        let result = field.aggregate_at_level("tool:edit", AbstractionLevel::Project);
+        assert!(result.is_some(), "Level 1 should have data when space provided");
+        assert!(result.unwrap().intensity > 0.0);
+    }
+
+    #[test]
+    fn excite_without_space_skips_project_level() {
+        let field = PheromoneField::new();
+        let t = make_trace("tool:edit", "fix bug", Outcome::Succeeded, 100);
+        field.excite(&t); // no space
+
+        let result = field.aggregate_at_level("tool:edit", AbstractionLevel::Project);
+        assert!(result.is_none(), "Level 1 should be empty without space");
+    }
+
+    // ── Fix 2: Signed Field Snapshots ──
+
+    #[test]
+    fn field_snapshot_sign_verify_roundtrip() {
+        let field = PheromoneField::new();
+        let t = make_trace("tool:exec", "build", Outcome::Succeeded, 50);
+        field.excite(&t);
+
+        let identity = crate::identity::NodeIdentity::generate();
+        let mut snapshot = field.publishable_snapshot();
+        snapshot.sign(&identity);
+
+        assert!(snapshot.verify(), "Signed snapshot should verify");
+
+        // Tamper with total_intensity → signature invalid
+        snapshot.total_intensity += 1.0;
+        assert!(!snapshot.verify(), "Tampered snapshot should fail verify");
+    }
+
+    #[test]
+    fn field_snapshot_unsigned_rejected() {
+        let snapshot = FieldSnapshot {
+            points: vec![],
+            couplings: vec![],
+            total_intensity: 0.0,
+            node_pubkey: [0u8; 32],
+            signature: Vec::new(),
+        };
+        assert!(!snapshot.verify(), "Zero pubkey should fail verify");
+    }
+
+    // ── Fix 3: Correct Remote Merge ──
+
+    #[test]
+    fn apply_remote_uses_decayed_intensity() {
+        let field = PheromoneField::new();
+
+        // Excite locally with a trace timestamped in the past
+        let mut old_trace = make_trace("tool:search", "find", Outcome::Succeeded, 100);
+        // Set timestamp 7 days ago so it decays significantly
+        old_trace.timestamp = old_trace.timestamp.saturating_sub(7 * 24 * 3600 * 1000);
+        field.excite(&old_trace);
+
+        let pre = field.aggregate_at_level("tool:search", AbstractionLevel::Universal);
+        assert!(pre.is_some());
+
+        // Remote snapshot with fresh, moderate intensity
+        let snapshot = FieldSnapshot {
+            points: vec![FieldSnapshotEntry {
+                capability: "tool:search".into(),
+                bucket: 0,
+                intensity: 0.5,
+                valence: 0.9,
+                latency: 50.0,
+                variance: 0.1,
+                last_excited: chrono::Utc::now().timestamp_millis() as u64,
+                total_excitations: 5,
+                source_count: 2,
+                source_hashes: vec![[1; 8]],
+                level: AbstractionLevel::Universal,
+            }],
+            couplings: vec![],
+            total_intensity: 0.5,
+            node_pubkey: [0u8; 32],
+            signature: Vec::new(),
+        };
+
+        field.apply_remote_snapshot(&snapshot, 0.7);
+
+        let post = field.aggregate_at_level("tool:search", AbstractionLevel::Universal).unwrap();
+        // Remote valence (0.9) should dominate since local decayed below remote*0.7
+        assert!(post.valence > 0.8, "Remote valence should dominate after merge, got {}", post.valence);
+    }
+
+    #[test]
+    fn apply_remote_merges_total_excitations() {
+        let field = PheromoneField::new();
+        let t = make_trace("tool:read", "check", Outcome::Succeeded, 100);
+        field.excite(&t); // 1 excitation locally
+
+        let snapshot = FieldSnapshot {
+            points: vec![FieldSnapshotEntry {
+                capability: "tool:read".into(),
+                bucket: 0,
+                intensity: 0.01, // low — won't win intensity battle
+                valence: 0.5,
+                latency: 100.0,
+                variance: 0.0,
+                last_excited: chrono::Utc::now().timestamp_millis() as u64,
+                total_excitations: 42,
+                source_count: 1,
+                source_hashes: vec![],
+                level: AbstractionLevel::Universal,
+            }],
+            couplings: vec![],
+            total_intensity: 0.01,
+            node_pubkey: [0u8; 32],
+            signature: Vec::new(),
+        };
+
+        field.apply_remote_snapshot(&snapshot, 0.7);
+
+        let post = field.aggregate_at_level("tool:read", AbstractionLevel::Universal).unwrap();
+        assert_eq!(post.total_excitations, 42, "total_excitations should merge unconditionally via max");
+    }
+
+    #[test]
+    fn apply_remote_merges_variance() {
+        let field = PheromoneField::new();
+
+        // Remote snapshot with high intensity and known variance
+        let snapshot = FieldSnapshot {
+            points: vec![FieldSnapshotEntry {
+                capability: "tool:edit".into(),
+                bucket: 0,
+                intensity: 2.0,
+                valence: 0.8,
+                latency: 150.0,
+                variance: 0.42,
+                last_excited: chrono::Utc::now().timestamp_millis() as u64,
+                total_excitations: 10,
+                source_count: 3,
+                source_hashes: vec![[2; 8]],
+                level: AbstractionLevel::Universal,
+            }],
+            couplings: vec![],
+            total_intensity: 2.0,
+            node_pubkey: [0u8; 32],
+            signature: Vec::new(),
+        };
+
+        // No local point — remote wins automatically, variance should be set
+        field.apply_remote_snapshot(&snapshot, 0.7);
+
+        let post = field.aggregate_at_level("tool:edit", AbstractionLevel::Universal).unwrap();
+        assert!(post.variance > 0.0, "Variance should be merged from remote, got {}", post.variance);
     }
 }

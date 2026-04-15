@@ -3376,6 +3376,7 @@ async fn main() {
                 for scan in scans {
                     if scan.intensity > 0.1 {
                         let level_tag = match scan.level {
+                            thronglets::pheromone::AbstractionLevel::Project => "project",
                             thronglets::pheromone::AbstractionLevel::Typed => "pattern",
                             thronglets::pheromone::AbstractionLevel::Universal => "universal",
                             _ => continue,
