@@ -416,7 +416,7 @@ pub struct CouplingSnapshotEntry {
 }
 
 /// Result of scanning the field near a context.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FieldScan {
     pub capability: String,
     pub intensity: f64,

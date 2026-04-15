@@ -7,7 +7,7 @@
 //! Protocol: one JSON line in, one JSON line out, then close.
 //! Socket path: `{data_dir}/field.sock`
 
-use crate::pheromone::{AbstractionLevel, PheromoneField};
+use crate::pheromone::{FieldScan, PheromoneField};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,18 +29,6 @@ pub struct ScanRequest {
     pub space: Option<String>,
     pub file_path: Option<String>,
     pub limit: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanResult {
-    pub capability: String,
-    pub intensity: f64,
-    pub valence: f64,
-    pub latency: f64,
-    pub total_excitations: u64,
-    pub source_count: u32,
-    pub context_similarity: f64,
-    pub level: AbstractionLevel,
 }
 
 // ── Server (long-running process) ───────────────────────────
@@ -86,21 +74,7 @@ pub fn start_listener(field: Arc<PheromoneField>, data_dir: &Path) -> SocketGuar
                         req.limit,
                     );
 
-                    let results: Vec<ScanResult> = scans
-                        .into_iter()
-                        .map(|s| ScanResult {
-                            capability: s.capability,
-                            intensity: s.intensity,
-                            valence: s.valence,
-                            latency: s.latency,
-                            total_excitations: s.total_excitations,
-                            source_count: s.source_count,
-                            context_similarity: s.context_similarity,
-                            level: s.level,
-                        })
-                        .collect();
-
-                    if let Ok(mut json) = serde_json::to_vec(&results) {
+                    if let Ok(mut json) = serde_json::to_vec(&scans) {
                         json.push(b'\n');
                         let _ = writer.write_all(&json).await;
                     }
@@ -125,7 +99,7 @@ impl Drop for SocketGuard {
 
 /// Query the field via Unix socket. Returns None if the socket
 /// is not available or the query times out (~50ms budget).
-pub fn query(data_dir: &Path, request: &ScanRequest) -> Option<Vec<ScanResult>> {
+pub fn query(data_dir: &Path, request: &ScanRequest) -> Option<Vec<FieldScan>> {
     let path = socket_path(data_dir);
     if !path.exists() {
         return None;

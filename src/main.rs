@@ -3350,7 +3350,7 @@ async fn main() {
                 };
 
                 // Try live socket first (hot field, ~1ms), fall back to disk (stale, ~10ms)
-                let scans: Vec<thronglets::pheromone_socket::ScanResult> =
+                let scans: Vec<thronglets::pheromone::FieldScan> =
                     thronglets::pheromone_socket::query(&dir, &scan_request)
                         .unwrap_or_else(|| {
                             let field_path = dir.join("pheromone-field.v1.json");
@@ -3362,25 +3362,12 @@ async fn main() {
                             {
                                 let field = PheromoneField::new();
                                 field.restore(&snapshot);
-                                field
-                                    .scan_with_fallback(
-                                        &ctx_hash,
-                                        current_space.as_deref(),
-                                        current_file.as_deref(),
-                                        3,
-                                    )
-                                    .into_iter()
-                                    .map(|s| thronglets::pheromone_socket::ScanResult {
-                                        capability: s.capability,
-                                        intensity: s.intensity,
-                                        valence: s.valence,
-                                        latency: s.latency,
-                                        total_excitations: s.total_excitations,
-                                        source_count: s.source_count,
-                                        context_similarity: s.context_similarity,
-                                        level: s.level,
-                                    })
-                                    .collect()
+                                field.scan_with_fallback(
+                                    &ctx_hash,
+                                    current_space.as_deref(),
+                                    current_file.as_deref(),
+                                    3,
+                                )
                             } else {
                                 Vec::new()
                             }
