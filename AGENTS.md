@@ -44,6 +44,7 @@ Rust binary (v1.0.0)
 ├── trace/            — Atomic execution record (outcome, latency, context, signatures)
 ├── storage/          — SQLite trace store with TTL and context bucketing
 ├── pheromone.rs      — Stigmergic field (4-level abstraction, decay, Hebbian coupling, P2P sync)
+├── pheromone_socket.rs — Unix socket IPC: prehook queries live field from MCP/HTTP/run process
 ├── target_kind.rs    — Semantic file classification for Level 2 bucket computation
 ├── signals/          — Signal ranking: avoid / do next / maybe also / context
 ├── posts/            — Signal posting and querying
