@@ -170,6 +170,7 @@ GET  /v1/status — Node info: version, node_id, trace_count
 
 ## Key Concepts
 
+- **Abstraction levels**: field operates at 4 levels — Concrete (exact context), Project (space), Typed (file type × language), Universal (pure capability). One trace excites all 4. Level 2-3 sync via P2P; Level 0-1 stay local.
 - **SimHash**: 128-bit context fingerprints for semantic similarity without embeddings
 - **Content-addressed**: sha256(content + signature), automatic dedup
 - **Cross-model**: model_id enables Claude/GPT/Gemini collective intelligence

@@ -39,11 +39,12 @@ Lifecycle events reframed:
 ## Architecture
 
 ```
-Rust binary (v0.9.3)
+Rust binary (v1.0.0)
 ├── service.rs        — Shared business logic (single source of truth for all operations)
 ├── trace/            — Atomic execution record (outcome, latency, context, signatures)
 ├── storage/          — SQLite trace store with TTL and context bucketing
-├── pheromone.rs      — Stigmergic field (collective memory with decay + Hebbian coupling)
+├── pheromone.rs      — Stigmergic field (4-level abstraction, decay, Hebbian coupling, P2P sync)
+├── target_kind.rs    — Semantic file classification for Level 2 bucket computation
 ├── signals/          — Signal ranking: avoid / do next / maybe also / context
 ├── posts/            — Signal posting and querying
 ├── eval.rs           — Signal quality evaluation and baseline comparison
@@ -68,16 +69,22 @@ Rust binary (v0.9.3)
 └── main.rs:Ingest    — Psyche export pipe ingestion (`psyche emit | thronglets ingest`)
 ```
 
-## Space Isolation (v0.9.2)
+## Abstraction Levels (v1.0)
 
-Signals must have scope. Space isolation ensures each project's traces, signals, and errors stay within their own namespace.
+The pheromone field operates across four abstraction levels. One trace excites all four levels simultaneously — same physics, different granularity.
 
-- **`derive_space(payload)`** in `hook_support.rs` — extracts project identity from cwd (last 2 path components, e.g. `Desktop/Thronglets`). Explicit `space` in hook payload takes priority.
-- **Write-side**: PostToolUse tags traces with `current_space`. Psyche bridge derives space from cwd (not hardcoded).
-- **Read-side**: PreToolUse queries signals within scope. `RecentError` carries `space: Option<String>` — prehook filters by it.
+| Level | Name | Bucket Source | P2P | Purpose |
+|-------|------|---------------|-----|---------|
+| 0 | Concrete | SimHash(context) | Local | Exact context match |
+| 1 | Project | hash(space) | Local | = space isolation (v0.9.2) |
+| 2 | Typed | TargetKind × language | Sync | Cross-project patterns |
+| 3 | Universal | fixed 0 | Sync | Pure capability knowledge |
+
+- **Space = Level 1**. `derive_space(payload)` in `hook_support.rs` extracts project identity from cwd. This naturally maps to Level 1 bucket. PreToolUse's 7 signal paths query Level 0-1 via space-scoped APIs.
+- **Scan fallback**: `scan_with_fallback()` walks Concrete → Project → Typed → Universal. Stops at first level with strong signals (intensity > 0.5). Prehook uses this when all 7 concrete paths produce no signal.
+- **P2P**: Only Level 2-3 sync between nodes via `thronglets/field/v1` gossipsub topic. Remote snapshots discounted 0.7x. Level 0-1 never leave the device.
+- **TargetKind** (`target_kind.rs`): Classifies file paths into semantic roles (SourceFile, TestFile, ConfigFile, BuildOutput, Documentation, Schema) for Level 2 bucket computation.
 - **Legacy compat**: Errors with `space: None` (pre-isolation) remain visible to all spaces.
-
-Sigil (identity) and Space (context) are orthogonal dimensions: Sigil = who, Space = where. A Sigil in different spaces sees different signals but remains the same identity.
 
 ## Capability Normalization (v0.9.3)
 

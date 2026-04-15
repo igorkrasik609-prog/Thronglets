@@ -20,6 +20,7 @@ pub mod pulse;
 pub mod service;
 pub mod signals;
 pub mod storage;
+pub mod target_kind;
 pub mod trace;
 pub mod update;
 pub mod workspace;

@@ -529,9 +529,14 @@ pub fn presence_feed(
 pub fn resolve(ctx: &Ctx, context_str: &str, limit: usize) -> Result<Value, String> {
     let context_hash = simhash(context_str);
 
-    // Primary: pheromone field scan (if available)
+    // Primary: pheromone field scan with level fallback (if available)
     if let Some(field) = ctx.field {
-        let scans = field.scan(&context_hash, 6, limit);
+        let scans = field.scan_with_fallback(
+            &context_hash,
+            None, // no space — let fallback walk all levels
+            crate::target_kind::extract_file_path(context_str),
+            limit,
+        );
         if !scans.is_empty() {
             let capabilities: Vec<Value> = scans
                 .iter()
@@ -551,6 +556,7 @@ pub fn resolve(ctx: &Ctx, context_str: &str, limit: usize) -> Result<Value, Stri
                         "total_traces": s.total_excitations,
                         "field_intensity": round2(s.intensity),
                         "source_count": s.source_count,
+                        "level": format!("{:?}", s.level),
                     })
                 })
                 .collect();

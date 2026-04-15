@@ -17,11 +17,15 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::pheromone::FieldSnapshot;
 use crate::storage::AggregateStats;
 use crate::trace::Trace;
 
 /// Topic name for the global trace gossip channel.
 const TRACE_TOPIC: &str = "thronglets/traces/v1";
+
+/// Topic name for field snapshot gossip (Level 2-3 only).
+const FIELD_TOPIC: &str = "thronglets/field/v1";
 
 /// DHT key prefix for capability summaries.
 const DHT_CAP_PREFIX: &str = "/thronglets/cap/v1/";
@@ -51,6 +55,11 @@ pub enum NetworkEvent {
     /// A trace was received from the network (already deserialized).
     TraceReceived {
         trace: Box<Trace>,
+        source_peer: PeerId,
+    },
+    /// A field snapshot was received from the network (Level 2-3 only).
+    FieldSnapshotReceived {
+        snapshot: Box<FieldSnapshot>,
         source_peer: PeerId,
     },
     /// Current NAT reachability state as observed from transport events.
@@ -96,6 +105,8 @@ pub enum NetworkCommand {
         capability: String,
         reply: tokio::sync::oneshot::Sender<Option<DhtCapabilitySummary>>,
     },
+    /// Publish a field snapshot (Level 2-3) to the gossip network.
+    PublishFieldSnapshot(Box<FieldSnapshot>),
 }
 
 /// Build a space-specific gossipsub topic name.
@@ -167,9 +178,11 @@ pub async fn start(
     )
     .map_err(|e| format!("gossipsub behaviour error: {e}"))?;
 
-    // Subscribe to the trace topic
+    // Subscribe to the trace topic and field snapshot topic
     let topic = gossipsub::IdentTopic::new(TRACE_TOPIC);
     gossipsub_behaviour.subscribe(&topic)?;
+    let field_topic = gossipsub::IdentTopic::new(FIELD_TOPIC);
+    gossipsub_behaviour.subscribe(&field_topic)?;
 
     // Build Kademlia
     let kademlia = kad::Behaviour::new(local_peer_id, kad::store::MemoryStore::new(local_peer_id));
@@ -279,22 +292,40 @@ pub async fn start(
                                 ..
                             }
                         )) => {
-                            match serde_json::from_slice::<Trace>(&message.data) {
-                                Ok(trace) => {
-                                    if trace.verify() && trace.verify_id() {
-                                        debug!(trace_id = ?&trace.id[..4], "Received valid trace from network");
+                            let is_field_msg = message.topic == gossipsub::IdentTopic::new(FIELD_TOPIC).hash();
+                            if is_field_msg {
+                                match serde_json::from_slice::<FieldSnapshot>(&message.data) {
+                                    Ok(snapshot) => {
+                                        debug!(points = snapshot.points.len(), "Received field snapshot from network");
                                         let _ = event_tx
-                                            .send(NetworkEvent::TraceReceived {
-                                                trace: Box::new(trace),
+                                            .send(NetworkEvent::FieldSnapshotReceived {
+                                                snapshot: Box::new(snapshot),
                                                 source_peer: propagation_source,
                                             })
                                             .await;
-                                    } else {
-                                        warn!("Received invalid trace from network, dropping");
+                                    }
+                                    Err(e) => {
+                                        warn!(%e, "Failed to deserialize field snapshot");
                                     }
                                 }
-                                Err(e) => {
-                                    warn!(%e, "Failed to deserialize gossip message as Trace");
+                            } else {
+                                match serde_json::from_slice::<Trace>(&message.data) {
+                                    Ok(trace) => {
+                                        if trace.verify() && trace.verify_id() {
+                                            debug!(trace_id = ?&trace.id[..4], "Received valid trace from network");
+                                            let _ = event_tx
+                                                .send(NetworkEvent::TraceReceived {
+                                                    trace: Box::new(trace),
+                                                    source_peer: propagation_source,
+                                                })
+                                                .await;
+                                        } else {
+                                            warn!("Received invalid trace from network, dropping");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(%e, "Failed to deserialize gossip message as Trace");
+                                    }
                                 }
                             }
                         }
@@ -582,6 +613,23 @@ pub async fn start(
                                 kad::RecordKey::new(&key_str),
                             );
                             pending_dht_queries.insert(query_id, (capability, reply));
+                        }
+                        NetworkCommand::PublishFieldSnapshot(snapshot) => {
+                            match serde_json::to_vec(&*snapshot) {
+                                Ok(data) => {
+                                    let topic = gossipsub::IdentTopic::new(FIELD_TOPIC);
+                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                        warn!(%e, "Failed to publish field snapshot");
+                                    } else {
+                                        debug!(
+                                            points = snapshot.points.len(),
+                                            couplings = snapshot.couplings.len(),
+                                            "Published field snapshot to network"
+                                        );
+                                    }
+                                }
+                                Err(e) => warn!(%e, "Failed to serialize field snapshot"),
+                            }
                         }
                     }
                 }

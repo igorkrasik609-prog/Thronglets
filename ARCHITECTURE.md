@@ -50,6 +50,35 @@ Lifecycle events reframed:
 
 The evolution target function = spherical coverage of the intelligence field (not individual survival).
 
+## Abstraction Levels (v1.0)
+
+The pheromone field operates across four abstraction levels — a single dimension on `FieldKey` that resolves the tension between context boundaries and knowledge flow:
+
+```
+FieldKey = (capability, bucket, level)
+```
+
+| Level | Name | Scope | P2P Sync | Example |
+|-------|------|-------|----------|---------|
+| 0 | **Concrete** | Exact context | No | "tool:edit on src/main.rs in Desktop/Thronglets" |
+| 1 | **Project** | Project (= space) | No | "tool:edit in Desktop/Thronglets" |
+| 2 | **Typed** | File type × language | Yes | "tool:edit on Rust source files" |
+| 3 | **Universal** | Pure capability | Yes | "tool:edit" |
+
+**One trace excites all four levels simultaneously.** Same physics (decay, Hebbian coupling, carrying capacity, corroboration) at every level — the physics produces correct behavior automatically:
+
+- Level 0 is sparse → low corroboration → weak signals (correct: specific experience shouldn't generalize)
+- Level 3 is dense → high corroboration → strong signals (correct: universal patterns are more reliable)
+- Carrying capacity creates natural competition between levels
+
+**Space isolation is Level 1** — not a separate mechanism. It was always an abstraction level; v1.0 names it.
+
+**Scan fallback**: `scan_with_fallback()` walks Concrete → Project → Typed → Universal, stopping at the first level with strong signals (intensity > 0.5). Specific experience takes priority; abstract patterns fill gaps.
+
+**P2P sync**: Only Level 2-3 flow between nodes via gossipsub field snapshots. Level 0-1 stay local — specific experience doesn't travel. Remote snapshots are discounted (0.7x) to prevent single-node dominance.
+
+**Level 2 bucketing**: `TargetKind` × language → 16-bit bucket. `TargetKind` classifies file paths into semantic roles (SourceFile, TestFile, ConfigFile, BuildOutput, Documentation, Schema). Defined in `target_kind.rs`.
+
 ## Capability Normalization (v0.9.3)
 
 Different agents name the same actions differently. The pheromone field normalizes these to canonical forms so multi-agent traces converge to shared field points:

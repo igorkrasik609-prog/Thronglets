@@ -20,6 +20,10 @@ const FIRST_CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FIRST_CONNECTION_GRACE_AFTER_CONNECT: Duration = Duration::from_secs(2);
 const DEFAULT_PUBLIC_BOOTSTRAP_SEEDS: &[&str] = &["/ip4/47.93.32.88/tcp/4001"];
 
+/// Trust discount for remote field snapshots.
+/// Remote intensity is multiplied by this factor to prevent single-node dominance.
+const DEFAULT_TRUST_DISCOUNT: f64 = 0.7;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InitialConnectionAttempt {
     pub connected_once: bool,
@@ -238,6 +242,9 @@ impl NetworkRuntimeLoop {
         // Field self-evolution: diffusion + coupling decay every 5 minutes
         let mut field_tick_interval = tokio::time::interval(Duration::from_secs(300));
         field_tick_interval.tick().await;
+        // Field snapshot P2P sync: publish Level 2-3 every 5 minutes
+        let mut field_sync_interval = tokio::time::interval(Duration::from_secs(300));
+        field_sync_interval.tick().await;
 
         loop {
             tokio::select! {
@@ -287,6 +294,11 @@ impl NetworkRuntimeLoop {
                                 "Pheromone field tick"
                             );
                         }
+                    }
+                }
+                _ = wait_on_interval(self.options.publish_summaries, &mut field_sync_interval) => {
+                    if let Some(ref f) = self.field {
+                        publish_field_snapshot(f, &self.command_tx).await;
                     }
                 }
             }
@@ -388,6 +400,19 @@ fn handle_network_event(
                 }
             }
         }
+        NetworkEvent::FieldSnapshotReceived { snapshot, source_peer } => {
+            if let Some(f) = field {
+                let point_count = snapshot.points.len();
+                let coupling_count = snapshot.couplings.len();
+                f.apply_remote_snapshot(&snapshot, DEFAULT_TRUST_DISCOUNT);
+                info!(
+                    peer=%source_peer,
+                    points = point_count,
+                    couplings = coupling_count,
+                    "Applied remote field snapshot"
+                );
+            }
+        }
         NetworkEvent::NatStatusChanged { degraded_nat } => {
             if degraded_nat {
                 network_snapshot.mark_nat_degraded();
@@ -480,6 +505,24 @@ async fn publish_local_traces(store: &TraceStore, command_tx: &mpsc::Sender<Netw
             let _ = store.mark_published(&published_ids);
         }
     }
+}
+
+async fn publish_field_snapshot(
+    field: &PheromoneField,
+    command_tx: &mpsc::Sender<NetworkCommand>,
+) {
+    let snapshot = field.publishable_snapshot();
+    if snapshot.points.is_empty() && snapshot.couplings.is_empty() {
+        return;
+    }
+    info!(
+        points = snapshot.points.len(),
+        couplings = snapshot.couplings.len(),
+        "Publishing field snapshot (Level 2-3) to network"
+    );
+    let _ = command_tx
+        .send(NetworkCommand::PublishFieldSnapshot(Box::new(snapshot)))
+        .await;
 }
 
 fn trace_author_peer_id(trace: &Trace) -> Option<libp2p::PeerId> {

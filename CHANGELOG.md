@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v1.0.0 — 2026-04-15
+
+- **Abstraction levels** — pheromone field gains a fourth dimension: `AbstractionLevel`. `FieldKey` becomes `(capability, bucket, level)` where level ∈ {Concrete, Project, Typed, Universal}. One trace excites all four levels simultaneously with the same physics (decay, Hebbian coupling, carrying capacity, corroboration). Space isolation is explained as Level 1 — not deleted, not preserved, *named*.
+- **Multi-level excitation** — `excite()` writes to four levels per trace. Level 0 (Concrete) uses SimHash context bucket, Level 1 (Project) uses space hash, Level 2 (Typed) uses TargetKind × language hash, Level 3 (Universal) uses fixed bucket 0. Hebbian coupling forms per-level — cross-project patterns emerge naturally at Level 2-3.
+- **Scan fallback** — `scan_with_fallback()` walks Concrete → Project → Typed → Universal, stopping at the first level with strong signals (intensity > 0.5). Prehook loads persisted field from disk when all 7 concrete signal paths produce no result, surfacing abstract patterns as low-priority fallback signals.
+- **P2P field sync** — Level 2-3 field state syncs between nodes via `thronglets/field/v1` gossipsub topic. `publishable_snapshot()` filters to syncable levels; `apply_remote_snapshot()` merges with 0.7x trust discount. Level 0-1 never leave the device. Fixes the v0.9.2 crack where remote traces without space info polluted local project-scoped state.
+- **TargetKind** — new module (`target_kind.rs`) classifies file paths into semantic roles (SourceFile, TestFile, ConfigFile, BuildOutput, Documentation, Schema) and detects programming language. Used for Level 2 bucket computation.
+- **Service layer** — `resolve()` now uses `scan_with_fallback()` for multi-level field queries. Response includes `level` field showing which abstraction level the result came from.
+
 ## v0.9.3 — 2026-04-14
 
 - **Capability normalization** — pheromone field now normalizes agent-specific capability URIs to canonical forms (`claude-code/Edit`, `codex/edit`, `openclaw/Edit` → `tool:edit`). Multi-agent traces converge to shared field points, enabling cross-agent Hebbian coupling, corroboration, and carrying capacity pressure. Normalization happens at the field layer (`pheromone.rs`), not at storage — traces preserve original URIs for audit.

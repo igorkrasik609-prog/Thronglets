@@ -3321,6 +3321,51 @@ async fn main() {
             }
             profiler.stage_or_skip("presence", presence_checked);
 
+            // ── Field fallback: abstract patterns from Level 2-3 ──
+            // When concrete paths (Level 0-1) found nothing strong,
+            // load the persisted field and scan Typed/Universal levels.
+            let has_strong_signal = signals
+                .iter()
+                .any(|s| !matches!(s.kind, SignalKind::History) || s.score >= 300);
+            let field_fallback_checked = !has_strong_signal && !hook_context.is_empty();
+            if field_fallback_checked {
+                let field_path = dir.join("pheromone-field.v1.json");
+                if field_path.exists()
+                    && let Ok(data) = std::fs::read_to_string(&field_path)
+                    && let Ok(snapshot) = serde_json::from_str::<thronglets::pheromone::FieldSnapshot>(&data)
+                {
+                    let field = PheromoneField::new();
+                    field.restore(&snapshot);
+                    let scans = field.scan_with_fallback(
+                        &ctx_hash,
+                        current_space.as_deref(),
+                        current_file.as_deref(),
+                        3,
+                    );
+                    for scan in scans {
+                        if scan.intensity > 0.1 {
+                            let level_tag = match scan.level {
+                                thronglets::pheromone::AbstractionLevel::Typed => "pattern",
+                                thronglets::pheromone::AbstractionLevel::Universal => "universal",
+                                _ => continue, // only surface abstract levels
+                            };
+                            let score = 220 + (scan.intensity * 40.0).round() as i32;
+                            signals.push(Signal {
+                                kind: SignalKind::History,
+                                score,
+                                body: format!(
+                                    "  \u{1f30a} {level_tag}: {} ({:.0}% success across projects)",
+                                    scan.capability,
+                                    scan.valence * 100.0,
+                                ),
+                                candidate: None,
+                            });
+                        }
+                    }
+                }
+            }
+            profiler.stage_or_skip("field_fallback", field_fallback_checked);
+
             // History is a fallback when we don't already know a likely next move.
             let has_higher_priority_signal = signals
                 .iter()
