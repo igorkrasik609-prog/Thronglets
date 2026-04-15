@@ -268,10 +268,7 @@ impl AnchorClient {
     /// Returns balances from the Cosmos bank module REST endpoint.
     /// Returns an empty vec if the chain is unreachable.
     pub fn query_balance(&self, address: &str) -> Vec<ChainBalance> {
-        let url = format!(
-            "{}/cosmos/bank/v1beta1/balances/{}",
-            self.rpc_url, address
-        );
+        let url = format!("{}/cosmos/bank/v1beta1/balances/{}", self.rpc_url, address);
         let resp = match reqwest::blocking::Client::new()
             .get(&url)
             .timeout(std::time::Duration::from_secs(5))

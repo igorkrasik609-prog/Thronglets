@@ -311,10 +311,7 @@ mod tests {
 
     #[test]
     fn extract_path_from_plain_text() {
-        assert_eq!(
-            extract_file_path("edit src/main.rs"),
-            Some("src/main.rs")
-        );
+        assert_eq!(extract_file_path("edit src/main.rs"), Some("src/main.rs"));
         assert_eq!(
             extract_file_path("Read /Users/foo/bar.py"),
             Some("/Users/foo/bar.py")

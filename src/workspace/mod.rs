@@ -7,8 +7,8 @@
 
 mod hints;
 
-use crate::signals::{Recommendation, RecommendationKind, SignalKind, StepAction, StepCandidate};
 use crate::posts::DERIVED_GUIDANCE_EPOCH;
+use crate::signals::{Recommendation, RecommendationKind, SignalKind, StepAction, StepCandidate};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -192,7 +192,6 @@ pub struct SpaceEmergenceSummary {
     pub feedback_by_source_kind: BTreeMap<String, SpaceFeedbackSummary>,
 }
 
-
 /// AI-facing repair hint with an explicit ranking score.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairHint {
@@ -270,7 +269,10 @@ impl WorkspaceState {
         }
     }
 
-    pub(crate) fn repair_confidence(weighted_support: f64, count: u32) -> Option<(&'static str, i32)> {
+    pub(crate) fn repair_confidence(
+        weighted_support: f64,
+        count: u32,
+    ) -> Option<(&'static str, i32)> {
         if weighted_support >= 2.2 || count >= 3 {
             Some(("high", 290))
         } else if weighted_support >= 1.2 || count >= 2 {
@@ -362,9 +364,7 @@ impl WorkspaceState {
         report
     }
 
-    pub fn ensure_current_derived_guidance_epoch(
-        &mut self,
-    ) -> Option<DerivedGuidanceResetReport> {
+    pub fn ensure_current_derived_guidance_epoch(&mut self) -> Option<DerivedGuidanceResetReport> {
         self.ensure_derived_guidance_epoch(DERIVED_GUIDANCE_EPOCH)
     }
 
@@ -697,7 +697,13 @@ impl WorkspaceState {
     }
 
     /// Record an error from a PostToolUse hook.
-    pub fn record_error(&mut self, tool: &str, context: String, error_snippet: String, space: Option<String>) {
+    pub fn record_error(
+        &mut self,
+        tool: &str,
+        context: String,
+        error_snippet: String,
+        space: Option<String>,
+    ) {
         let now = chrono::Utc::now().timestamp_millis();
         let context_hash = Some(crate::context::simhash(&context));
         self.recent_errors.push_front(RecentError {
@@ -851,10 +857,12 @@ impl WorkspaceState {
                 continue;
             }
             let space = event.space.clone().unwrap_or_else(|| "global".to_string());
-            let entry = grouped_feedback.entry(space).or_insert(SpaceFeedbackSummary {
-                positive_24h: 0,
-                negative_24h: 0,
-            });
+            let entry = grouped_feedback
+                .entry(space)
+                .or_insert(SpaceFeedbackSummary {
+                    positive_24h: 0,
+                    negative_24h: 0,
+                });
             let source_entry =
                 by_source_kind
                     .entry(event.source_kind.clone())
@@ -1067,7 +1075,6 @@ impl WorkspaceState {
         }
     }
 
-
     /// Record a tool call in the action sequence.
     pub fn record_action(
         &mut self,
@@ -1100,7 +1107,6 @@ impl WorkspaceState {
         self.recent_actions.truncate(MAX_RECENT_ACTIONS);
         self.updated_ms = now;
     }
-
 }
 
 /// Extract file path from tool_input if the tool operates on a file.
@@ -1182,7 +1188,12 @@ mod tests {
     fn record_error_adds_and_truncates() {
         let mut ws = make_ws();
         for i in 0..15 {
-            ws.record_error("Bash", format!("ctx{i}"), format!("err{i}"), Some("test/project".into()));
+            ws.record_error(
+                "Bash",
+                format!("ctx{i}"),
+                format!("err{i}"),
+                Some("test/project".into()),
+            );
         }
         assert_eq!(ws.recent_errors.len(), MAX_RECENT_ERRORS);
         assert_eq!(ws.recent_errors[0].error_snippet, "err14");
@@ -1409,14 +1420,8 @@ mod tests {
         assert_eq!(summary.false_consensus_spaces_24h, 1);
         assert_eq!(summary.recoverable_spaces_24h, 1);
         assert!(summary.cross_space_contamination_rate > 0.0);
-        assert_eq!(
-            summary.space_feedback["space-alpha"].positive_24h,
-            1
-        );
-        assert_eq!(
-            summary.space_feedback["space-beta"].negative_24h,
-            1
-        );
+        assert_eq!(summary.space_feedback["space-alpha"].positive_24h, 1);
+        assert_eq!(summary.space_feedback["space-beta"].negative_24h, 1);
 
         // Per-source-kind breakdown: both events come from "preparation"
         assert_eq!(summary.feedback_by_source_kind.len(), 1);
@@ -1867,7 +1872,10 @@ mod tests {
         assert_eq!(report.pending_recommendation_feedback_cleared, 1);
         assert_eq!(report.recent_recommendation_feedback_cleared, 1);
         assert_eq!(report.recent_interventions_cleared, 1);
-        assert_eq!(ws.derived_guidance_epoch.as_deref(), Some(DERIVED_GUIDANCE_EPOCH));
+        assert_eq!(
+            ws.derived_guidance_epoch.as_deref(),
+            Some(DERIVED_GUIDANCE_EPOCH)
+        );
         assert!(ws.recent_recommendation_emissions.is_empty());
         assert!(ws.pending_recommendation_feedback.is_empty());
         assert!(ws.recent_recommendation_feedback.is_empty());
@@ -1897,7 +1905,10 @@ mod tests {
             .filter(|name| name.starts_with("workspace.json.corrupt."))
             .collect();
         assert_eq!(backups.len(), 1);
-        assert!(!path.exists(), "corrupt workspace.json should be moved aside");
+        assert!(
+            !path.exists(),
+            "corrupt workspace.json should be moved aside"
+        );
     }
 
     #[test]

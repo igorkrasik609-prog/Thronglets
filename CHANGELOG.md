@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+## v1.0.1 — 2026-04-16
+
+- **Architecture refactor** — `main.rs` reduced from 4985 lines to 26. All command handlers extracted into `src/cmd/` module tree (9 submodules grouped by resource pattern). CLI data definitions moved to `src/cli.rs`. Two-tier context pattern (`BaseCtx` / `FullCtx`) cleanly separates identity-free and identity-required commands. Zero behavior change.
 - **Field IPC** — long-running processes (MCP, HTTP, run) now serve the live pheromone field over a Unix domain socket (`field.sock`). Prehook queries the hot field via socket (~1ms) instead of loading stale JSON from disk. Falls back to disk when no socket is available. New module: `pheromone_socket.rs`.
+- **cargo fmt** — applied `rustfmt` across entire codebase.
 
 ## v1.0.0 — 2026-04-15
 

@@ -1,6 +1,5 @@
 use crate::continuity::is_continuity_capability;
 use crate::identity::{IdentityBinding, NodeIdentity};
-use ed25519_dalek::Signer as _;
 use crate::network::{NetworkCommand, NetworkConfig, NetworkEvent};
 use crate::network_state::NetworkSnapshot;
 use crate::pheromone::PheromoneField;
@@ -8,6 +7,7 @@ use crate::posts::is_signal_capability;
 use crate::presence::is_presence_capability;
 use crate::storage::TraceStore;
 use crate::trace::Trace;
+use ed25519_dalek::Signer as _;
 use libp2p::Multiaddr;
 use std::error::Error;
 use std::future::pending;
@@ -407,7 +407,10 @@ fn handle_network_event(
                 }
             }
         }
-        NetworkEvent::FieldSnapshotReceived { snapshot, source_peer } => {
+        NetworkEvent::FieldSnapshotReceived {
+            snapshot,
+            source_peer,
+        } => {
             if let Some(f) = field {
                 let point_count = snapshot.points.len();
                 let coupling_count = snapshot.couplings.len();
@@ -592,8 +595,7 @@ mod tests {
     use super::{
         DEFAULT_PUBLIC_BOOTSTRAP_SEEDS, effective_bootstrap_seeds,
         maybe_promote_joined_primary_peer, maybe_promote_same_owner_trace_source,
-        publish_local_traces,
-        normalize_dialable_peer_address, observe_reusable_peer_address,
+        normalize_dialable_peer_address, observe_reusable_peer_address, publish_local_traces,
     };
     use crate::context::simhash;
     use crate::identity::{IdentityBinding, NodeIdentity};
@@ -768,8 +770,12 @@ mod tests {
             identity.public_key_bytes(),
             |msg| identity.sign(msg),
         );
-        store.insert_with_space(&accepted, Some("space-accepted")).unwrap();
-        store.insert_with_space(&rejected, Some("space-rejected")).unwrap();
+        store
+            .insert_with_space(&accepted, Some("space-accepted"))
+            .unwrap();
+        store
+            .insert_with_space(&rejected, Some("space-rejected"))
+            .unwrap();
 
         let (tx, mut rx) = mpsc::channel::<NetworkCommand>(8);
         let accepted_id = accepted.id;

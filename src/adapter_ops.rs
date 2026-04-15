@@ -16,7 +16,7 @@ pub(crate) fn collect_restart_commands(
     values
 }
 
-pub(crate) fn selected_adapters(target: super::AdapterArg) -> Vec<AdapterKind> {
+pub(crate) fn selected_adapters(target: crate::cli::AdapterArg) -> Vec<AdapterKind> {
     [
         AdapterKind::Claude,
         AdapterKind::Codex,
@@ -29,14 +29,14 @@ pub(crate) fn selected_adapters(target: super::AdapterArg) -> Vec<AdapterKind> {
     .collect()
 }
 
-pub(crate) fn selected_known_adapters(target: super::AdapterArg) -> Vec<AdapterKind> {
+pub(crate) fn selected_known_adapters(target: crate::cli::AdapterArg) -> Vec<AdapterKind> {
     selected_adapters(target)
         .into_iter()
         .filter(|adapter| !matches!(adapter, AdapterKind::Generic))
         .collect()
 }
 
-pub(crate) fn selected_restart_adapters(target: super::AdapterArg) -> Vec<AdapterKind> {
+pub(crate) fn selected_restart_adapters(target: crate::cli::AdapterArg) -> Vec<AdapterKind> {
     selected_known_adapters(target)
         .into_iter()
         .filter(|adapter| {
@@ -49,7 +49,7 @@ pub(crate) fn selected_restart_adapters(target: super::AdapterArg) -> Vec<Adapte
 }
 
 pub(crate) fn summarize_doctor_reports(
-    target: super::AdapterArg,
+    target: crate::cli::AdapterArg,
     reports: Vec<AdapterDoctor>,
 ) -> DoctorData {
     let healthy = !doctor_should_fail(target, &reports);
@@ -203,7 +203,7 @@ pub(crate) fn summarize_runtime_ready_results(
 }
 
 pub(crate) fn apply_selected_adapters(
-    target: super::AdapterArg,
+    target: crate::cli::AdapterArg,
     home_dir: &Path,
     data_dir: &Path,
     bin_path: &Path,
@@ -244,7 +244,7 @@ pub(crate) fn apply_selected_adapters(
                 });
             }
             AdapterKind::Codex => {
-                let force = !matches!(target, super::AdapterArg::All);
+                let force = !matches!(target, crate::cli::AdapterArg::All);
                 if let Some(result) = install_codex(home_dir, data_dir, bin_path, force)? {
                     set_restart_pending(data_dir, agent, true)?;
                     let mut changed = Vec::new();
@@ -285,7 +285,7 @@ pub(crate) fn apply_selected_adapters(
                 }
             }
             AdapterKind::Cursor => {
-                let force = !matches!(target, super::AdapterArg::All);
+                let force = !matches!(target, crate::cli::AdapterArg::All);
                 if let Some(result) = install_cursor(home_dir, data_dir, bin_path, force)? {
                     set_restart_pending(data_dir, agent, true)?;
                     let mut changed = Vec::new();
@@ -320,7 +320,7 @@ pub(crate) fn apply_selected_adapters(
                 }
             }
             AdapterKind::OpenClaw => {
-                let force = !matches!(target, super::AdapterArg::All);
+                let force = !matches!(target, crate::cli::AdapterArg::All);
                 if let Some(result) = install_openclaw(home_dir, data_dir, bin_path, true, force)? {
                     set_restart_pending(data_dir, agent, true)?;
                     let mut changed = Vec::new();
@@ -366,7 +366,7 @@ pub(crate) fn apply_selected_adapters(
 }
 
 pub(crate) fn bootstrap_selected_adapters(
-    target: super::AdapterArg,
+    target: crate::cli::AdapterArg,
     home_dir: &Path,
     data_dir: &Path,
     bin_path: &Path,
@@ -420,7 +420,7 @@ pub(crate) fn bootstrap_selected_adapters(
 }
 
 pub(crate) fn clear_selected_restart_state(
-    target: super::AdapterArg,
+    target: crate::cli::AdapterArg,
     data_dir: &Path,
 ) -> std::io::Result<ClearRestartData> {
     let mut results = Vec::new();
@@ -442,7 +442,7 @@ pub(crate) fn clear_selected_restart_state(
 }
 
 pub(crate) fn mark_selected_runtime_ready(
-    target: super::AdapterArg,
+    target: crate::cli::AdapterArg,
     data_dir: &Path,
 ) -> std::io::Result<RuntimeReadyData> {
     let mut results = Vec::new();
@@ -463,19 +463,24 @@ pub(crate) fn mark_selected_runtime_ready(
     Ok(summarize_runtime_ready_results(results))
 }
 
-pub(crate) fn doctor_should_fail(target: super::AdapterArg, reports: &[AdapterDoctor]) -> bool {
+pub(crate) fn doctor_should_fail(
+    target: crate::cli::AdapterArg,
+    reports: &[AdapterDoctor],
+) -> bool {
     reports.iter().any(|report| match target {
-        super::AdapterArg::All => report.present && !report.healthy,
+        crate::cli::AdapterArg::All => report.present && !report.healthy,
         _ => report.agent != AdapterKind::Generic.key() && !report.healthy,
     })
 }
 
 pub(crate) fn doctor_report_requires_action(
-    target: super::AdapterArg,
+    target: crate::cli::AdapterArg,
     report: &AdapterDoctor,
 ) -> bool {
     match target {
-        super::AdapterArg::All => report.present && (!report.healthy || report.restart_pending),
+        crate::cli::AdapterArg::All => {
+            report.present && (!report.healthy || report.restart_pending)
+        }
         _ => {
             report.agent != AdapterKind::Generic.key()
                 && (!report.healthy || report.restart_pending)

@@ -11,14 +11,14 @@ use crate::continuity::{
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::pheromone::PheromoneField;
 use crate::posts::{
-    SignalPostKind, SignalScopeFilter, SignalTraceConfig, create_auto_signal_trace,
-    create_feed_reinforcement_traces, create_query_reinforcement_traces, create_signal_trace,
-    filter_signal_feed_results, is_signal_capability, summarize_recent_signal_feed,
-    summarize_signal_traces, DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS,
+    DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, SignalPostKind, SignalScopeFilter, SignalTraceConfig,
+    create_auto_signal_trace, create_feed_reinforcement_traces, create_query_reinforcement_traces,
+    create_signal_trace, filter_signal_feed_results, is_signal_capability,
+    summarize_recent_signal_feed, summarize_signal_traces,
 };
 use crate::presence::{
-    PresenceTraceConfig, create_presence_trace, is_presence_capability, summarize_recent_presence,
-    DEFAULT_PRESENCE_TTL_MINUTES,
+    DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace,
+    is_presence_capability, summarize_recent_presence,
 };
 use crate::storage::TraceStore;
 use crate::trace::{MethodCompliance, Outcome, Trace};
@@ -677,7 +677,10 @@ pub fn evaluate(ctx: &Ctx, capability: &str, limit: usize) -> Result<Value, Stri
             } else {
                 0.0
             };
-            (*model, json!({ "success_rate": round2(rate), "count": total }))
+            (
+                *model,
+                json!({ "success_rate": round2(rate), "count": total }),
+            )
         })
         .collect();
 

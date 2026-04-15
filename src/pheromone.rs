@@ -180,8 +180,7 @@ impl FieldPoint {
 
     fn effective_decay_lambda(&self) -> f64 {
         // ln(1)=0, ln(10)≈2.3, ln(100)≈4.6 → factor: 1.0, 1.35, 1.69
-        let reinforcement_factor =
-            1.0 + (self.total_excitations as f64).ln().max(0.0) * 0.15;
+        let reinforcement_factor = 1.0 + (self.total_excitations as f64).ln().max(0.0) * 0.15;
         DECAY_LAMBDA / reinforcement_factor
     }
 
@@ -268,8 +267,19 @@ impl FieldPoint {
 /// Project:  project scope ("Desktop/Thronglets") — space isolation lives here
 /// Typed:    file-type × language ("SourceFile:rust") — crosses projects
 /// Universal: pure capability — the most abstract, densest layer
-#[derive(Debug, Default, Clone, Copy, Hash, Eq, PartialEq, PartialOrd, Ord)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    Hash,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum AbstractionLevel {
     #[default]
@@ -686,7 +696,9 @@ impl FieldInner {
         let project_bucket = space.map(target_kind::space_bucket);
 
         // Level 2 (Typed): from file path in context
-        let file_path = trace.context_text.as_deref()
+        let file_path = trace
+            .context_text
+            .as_deref()
             .and_then(target_kind::extract_file_path);
         let typed_bucket = file_path
             .map(target_kind::typed_bucket)
@@ -694,13 +706,26 @@ impl FieldInner {
 
         // Excite each level with its own corroboration bonus
         let keys: [(FieldKey, bool); 4] = [
-            (FieldKey::at_level(&cap, concrete_bucket, AbstractionLevel::Concrete), true),
             (
-                FieldKey::at_level(&cap, project_bucket.unwrap_or(-1), AbstractionLevel::Project),
+                FieldKey::at_level(&cap, concrete_bucket, AbstractionLevel::Concrete),
+                true,
+            ),
+            (
+                FieldKey::at_level(
+                    &cap,
+                    project_bucket.unwrap_or(-1),
+                    AbstractionLevel::Project,
+                ),
                 project_bucket.is_some(),
             ),
-            (FieldKey::at_level(&cap, typed_bucket, AbstractionLevel::Typed), true),
-            (FieldKey::at_level(&cap, 0, AbstractionLevel::Universal), true),
+            (
+                FieldKey::at_level(&cap, typed_bucket, AbstractionLevel::Typed),
+                true,
+            ),
+            (
+                FieldKey::at_level(&cap, 0, AbstractionLevel::Universal),
+                true,
+            ),
         ];
 
         let mut total_deposited = 0.0;
@@ -712,11 +737,7 @@ impl FieldInner {
             }
 
             // Per-level corroboration
-            let prior_source_count = self
-                .nodes
-                .get(key)
-                .map(|p| p.source_count)
-                .unwrap_or(0);
+            let prior_source_count = self.nodes.get(key).map(|p| p.source_count).unwrap_or(0);
             let corroboration = if prior_source_count > 1 {
                 1.0 + (prior_source_count as f64).ln() * 0.1
             } else {
@@ -844,7 +865,12 @@ impl PheromoneField {
         bucket_radius: i64,
         limit: usize,
     ) -> Vec<FieldScan> {
-        self.scan_at_level(context_hash, bucket_radius, limit, AbstractionLevel::Concrete)
+        self.scan_at_level(
+            context_hash,
+            bucket_radius,
+            limit,
+            AbstractionLevel::Concrete,
+        )
     }
 
     /// Scan the field near a context hash at a specific abstraction level.
@@ -984,7 +1010,11 @@ impl PheromoneField {
 
         let levels: [(AbstractionLevel, i64, bool); 4] = [
             (AbstractionLevel::Concrete, concrete_bucket, true),
-            (AbstractionLevel::Project, project_bucket.unwrap_or(-1), project_bucket.is_some()),
+            (
+                AbstractionLevel::Project,
+                project_bucket.unwrap_or(-1),
+                project_bucket.is_some(),
+            ),
             (AbstractionLevel::Typed, typed_bucket, true),
             (AbstractionLevel::Universal, 0, true),
         ];
@@ -1057,7 +1087,14 @@ impl PheromoneField {
             // Surface Hebbian-coupled capabilities at this level
             let primaries: Vec<(String, f64, f64, f64)> = level_results
                 .values()
-                .map(|s| (s.capability.clone(), s.intensity, s.valence, s.context_similarity))
+                .map(|s| {
+                    (
+                        s.capability.clone(),
+                        s.intensity,
+                        s.valence,
+                        s.context_similarity,
+                    )
+                })
                 .collect();
             for (pcap, pi, pv, ps) in &primaries {
                 for (ek, edge) in &inner.edges {
@@ -1074,24 +1111,29 @@ impl PheromoneField {
                     if cw < COUPLING_PRUNE_THRESHOLD {
                         continue;
                     }
-                    level_results.insert(partner.to_string(), FieldScan {
-                        capability: partner.to_string(),
-                        intensity: pi * cw,
-                        valence: *pv,
-                        latency: 0.0,
-                        variance: 0.0,
-                        total_excitations: 0,
-                        source_count: 0,
-                        context_similarity: ps * cw,
-                        level,
-                    });
+                    level_results.insert(
+                        partner.to_string(),
+                        FieldScan {
+                            capability: partner.to_string(),
+                            intensity: pi * cw,
+                            valence: *pv,
+                            latency: 0.0,
+                            variance: 0.0,
+                            total_excitations: 0,
+                            source_count: 0,
+                            context_similarity: ps * cw,
+                            level,
+                        },
+                    );
                 }
             }
 
             all_results.extend(level_results.into_values());
 
             // Early stop if we found strong signals at this level
-            let has_strong = all_results.iter().any(|r| r.intensity > STRONG_SIGNAL_THRESHOLD);
+            let has_strong = all_results
+                .iter()
+                .any(|r| r.intensity > STRONG_SIGNAL_THRESHOLD);
             if has_strong {
                 break;
             }
@@ -1318,9 +1360,7 @@ impl PheromoneField {
                     variance: entry.variance,
                     last_excited: entry.last_excited,
                     total_excitations: entry.total_excitations,
-                    source_count: entry
-                        .source_count
-                        .max(entry.source_hashes.len() as u32),
+                    source_count: entry.source_count.max(entry.source_hashes.len() as u32),
                     sources: entry.source_hashes.clone(),
                 },
             );
@@ -1428,15 +1468,15 @@ impl PheromoneField {
             if remote_intensity > local_intensity {
                 let total = local_intensity + remote_intensity;
                 if total > 0.0 {
-                    point.valence =
-                        (point.valence * local_intensity + entry.valence * remote_intensity)
-                            / total;
-                    point.latency =
-                        (point.latency * local_intensity + entry.latency * remote_intensity)
-                            / total;
-                    point.variance =
-                        (point.variance * local_intensity + entry.variance * remote_intensity)
-                            / total;
+                    point.valence = (point.valence * local_intensity
+                        + entry.valence * remote_intensity)
+                        / total;
+                    point.latency = (point.latency * local_intensity
+                        + entry.latency * remote_intensity)
+                        / total;
+                    point.variance = (point.variance * local_intensity
+                        + entry.variance * remote_intensity)
+                        / total;
                 }
                 point.intensity = remote_intensity;
                 point.last_excited = point.last_excited.max(entry.last_excited);
@@ -1788,7 +1828,11 @@ mod tests {
         let t = make_trace("test/cap", "context", Outcome::Succeeded, 100);
         field.excite(&t);
         // Multi-level excitation: Concrete + Typed + Universal (no space → no Project)
-        assert!(field.len() >= 3, "expected ≥3 points across levels, got {}", field.len());
+        assert!(
+            field.len() >= 3,
+            "expected ≥3 points across levels, got {}",
+            field.len()
+        );
 
         {
             let mut inner = field.inner.write().unwrap();
@@ -1826,7 +1870,10 @@ mod tests {
         field.excite(&t);
 
         let before_len = field.len();
-        assert!(before_len >= 3, "multi-level excitation should create ≥3 points");
+        assert!(
+            before_len >= 3,
+            "multi-level excitation should create ≥3 points"
+        );
 
         let result = field.tick();
         assert!(result.diffused > 0);
@@ -1904,7 +1951,10 @@ mod tests {
         // Verify the Concrete-level edge exists
         let inner = field.inner.read().unwrap();
         let key = EdgeKey::at_level("cap/alpha", "cap/beta", AbstractionLevel::Concrete);
-        let edge = inner.edges.get(&key).expect("Concrete-level edge should exist");
+        let edge = inner
+            .edges
+            .get(&key)
+            .expect("Concrete-level edge should exist");
         assert!(
             (edge.weight - COUPLING_LEARN_RATE).abs() < 0.01,
             "edge weight should be ~{COUPLING_LEARN_RATE}, got {}",
@@ -1926,17 +1976,28 @@ mod tests {
         // All edges should be first→second (at various levels), never reversed
         assert!(!edges.is_empty(), "should have at least one edge");
         for (pred, succ, _w) in &edges {
-            assert_eq!(pred, "tool:first", "predecessor should be the first-excited cap");
-            assert_eq!(succ, "tool:second", "successor should be the second-excited cap");
+            assert_eq!(
+                pred, "tool:first",
+                "predecessor should be the first-excited cap"
+            );
+            assert_eq!(
+                succ, "tool:second",
+                "successor should be the second-excited cap"
+            );
         }
 
         // Reverse edge should NOT exist at any level
         let inner = field.inner.read().unwrap();
-        for level in [AbstractionLevel::Concrete, AbstractionLevel::Typed, AbstractionLevel::Universal] {
+        for level in [
+            AbstractionLevel::Concrete,
+            AbstractionLevel::Typed,
+            AbstractionLevel::Universal,
+        ] {
             let reverse_key = EdgeKey::at_level("cap/second", "cap/first", level);
             assert!(
                 inner.edges.get(&reverse_key).is_none(),
-                "reverse edge should not exist at {:?}", level
+                "reverse edge should not exist at {:?}",
+                level
             );
         }
     }
@@ -2053,7 +2114,10 @@ mod tests {
         field.excite(&t2);
 
         let snapshot = field.snapshot();
-        assert!(snapshot.couplings.len() >= 1, "snapshot should preserve ≥1 coupling");
+        assert!(
+            snapshot.couplings.len() >= 1,
+            "snapshot should preserve ≥1 coupling"
+        );
 
         let field2 = PheromoneField::new();
         field2.restore(&snapshot);
@@ -2305,21 +2369,44 @@ mod tests {
         let field = PheromoneField::new();
 
         // Two agents, same action, same context — different capability URIs
-        let t_claude = make_trace("claude-code/Edit", "edit file: main.rs", Outcome::Succeeded, 50);
-        let t_codex = make_trace_with_seed("codex/edit", "edit file: main.rs", Outcome::Succeeded, 50, 2);
+        let t_claude = make_trace(
+            "claude-code/Edit",
+            "edit file: main.rs",
+            Outcome::Succeeded,
+            50,
+        );
+        let t_codex = make_trace_with_seed(
+            "codex/edit",
+            "edit file: main.rs",
+            Outcome::Succeeded,
+            50,
+            2,
+        );
 
         field.excite(&t_claude);
         field.excite(&t_codex);
 
         // Both should land in the same Concrete-level field point (tool:edit)
-        let agg = field.aggregate("tool:edit").expect("normalized aggregate should exist");
-        assert_eq!(agg.total_excitations, 2, "both traces should contribute to same Concrete field point");
-        assert_eq!(agg.source_count, 2, "two distinct sources should be tracked");
+        let agg = field
+            .aggregate("tool:edit")
+            .expect("normalized aggregate should exist");
+        assert_eq!(
+            agg.total_excitations, 2,
+            "both traces should contribute to same Concrete field point"
+        );
+        assert_eq!(
+            agg.source_count, 2,
+            "two distinct sources should be tracked"
+        );
 
         // Also verify convergence at Universal level
-        let agg_uni = field.aggregate_at_level("tool:edit", AbstractionLevel::Universal)
+        let agg_uni = field
+            .aggregate_at_level("tool:edit", AbstractionLevel::Universal)
             .expect("Universal aggregate should exist");
-        assert_eq!(agg_uni.total_excitations, 2, "Universal level should also converge");
+        assert_eq!(
+            agg_uni.total_excitations, 2,
+            "Universal level should also converge"
+        );
         assert_eq!(agg_uni.source_count, 2);
     }
 
@@ -2339,9 +2426,15 @@ mod tests {
             "urn:thronglets:lifecycle:session-start"
         );
         // MCP tools pass through
-        assert_eq!(normalize_capability("mcp:psyche/process_input"), "mcp:psyche/process_input");
+        assert_eq!(
+            normalize_capability("mcp:psyche/process_input"),
+            "mcp:psyche/process_input"
+        );
         // Unknown single-segment pass through
-        assert_eq!(normalize_capability("data-asset-management"), "data-asset-management");
+        assert_eq!(
+            normalize_capability("data-asset-management"),
+            "data-asset-management"
+        );
     }
 
     // ── Multi-level excitation tests (Phase 2) ──────────────
@@ -2349,15 +2442,29 @@ mod tests {
     #[test]
     fn excite_creates_points_at_all_levels() {
         let field = PheromoneField::new();
-        let t = make_trace("claude-code/Edit", "edit src/main.rs", Outcome::Succeeded, 100);
+        let t = make_trace(
+            "claude-code/Edit",
+            "edit src/main.rs",
+            Outcome::Succeeded,
+            100,
+        );
         field.excite(&t);
 
         // Should have points at Concrete, Typed, and Universal
         // (no Project because test traces lack space JSON)
         let inner = field.inner.read().unwrap();
-        let has_concrete = inner.nodes.keys().any(|k| k.level == AbstractionLevel::Concrete);
-        let has_typed = inner.nodes.keys().any(|k| k.level == AbstractionLevel::Typed);
-        let has_universal = inner.nodes.keys().any(|k| k.level == AbstractionLevel::Universal);
+        let has_concrete = inner
+            .nodes
+            .keys()
+            .any(|k| k.level == AbstractionLevel::Concrete);
+        let has_typed = inner
+            .nodes
+            .keys()
+            .any(|k| k.level == AbstractionLevel::Typed);
+        let has_universal = inner
+            .nodes
+            .keys()
+            .any(|k| k.level == AbstractionLevel::Universal);
 
         assert!(has_concrete, "should have Concrete point");
         assert!(has_typed, "should have Typed point");
@@ -2409,7 +2516,10 @@ mod tests {
 
         // Project should be None (no space in plain text context)
         let p = field.aggregate_at_level("cap/iso", AbstractionLevel::Project);
-        assert!(p.is_none(), "Project level should be empty without space JSON");
+        assert!(
+            p.is_none(),
+            "Project level should be empty without space JSON"
+        );
     }
 
     #[test]
@@ -2421,15 +2531,25 @@ mod tests {
         field.excite(&t2);
 
         let inner = field.inner.read().unwrap();
-        let concrete_edges: Vec<_> = inner.edges.keys()
+        let concrete_edges: Vec<_> = inner
+            .edges
+            .keys()
             .filter(|k| k.level == AbstractionLevel::Concrete)
             .collect();
-        let universal_edges: Vec<_> = inner.edges.keys()
+        let universal_edges: Vec<_> = inner
+            .edges
+            .keys()
             .filter(|k| k.level == AbstractionLevel::Universal)
             .collect();
 
-        assert!(!concrete_edges.is_empty(), "should have Concrete-level edges");
-        assert!(!universal_edges.is_empty(), "should have Universal-level edges");
+        assert!(
+            !concrete_edges.is_empty(),
+            "should have Concrete-level edges"
+        );
+        assert!(
+            !universal_edges.is_empty(),
+            "should have Universal-level edges"
+        );
     }
 
     // ── scan_with_fallback tests (Phase 3) ──────────────────
@@ -2439,7 +2559,12 @@ mod tests {
         let field = PheromoneField::new();
         // Build strong Concrete signal
         for _ in 0..5 {
-            let t = make_trace("cap/strong", "specific context xyz", Outcome::Succeeded, 100);
+            let t = make_trace(
+                "cap/strong",
+                "specific context xyz",
+                Outcome::Succeeded,
+                100,
+            );
             field.excite(&t);
         }
 
@@ -2448,7 +2573,9 @@ mod tests {
         assert!(!results.is_empty());
         // Concrete results should dominate
         assert!(
-            results.iter().any(|r| r.level == AbstractionLevel::Concrete),
+            results
+                .iter()
+                .any(|r| r.level == AbstractionLevel::Concrete),
             "strong signal should come from Concrete level"
         );
     }
@@ -2469,7 +2596,10 @@ mod tests {
         assert!(
             results.iter().any(|r| r.level >= AbstractionLevel::Typed),
             "fallback should reach Typed or Universal: {:?}",
-            results.iter().map(|r| (&r.capability, r.level)).collect::<Vec<_>>()
+            results
+                .iter()
+                .map(|r| (&r.capability, r.level))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2484,8 +2614,14 @@ mod tests {
         for r in &results {
             // Every result should have a valid level
             assert!(
-                matches!(r.level, AbstractionLevel::Concrete | AbstractionLevel::Typed | AbstractionLevel::Universal),
-                "unexpected level: {:?}", r.level
+                matches!(
+                    r.level,
+                    AbstractionLevel::Concrete
+                        | AbstractionLevel::Typed
+                        | AbstractionLevel::Universal
+                ),
+                "unexpected level: {:?}",
+                r.level
             );
         }
     }
@@ -2502,7 +2638,10 @@ mod tests {
         let p2p = field.publishable_snapshot();
 
         // Full snapshot has all levels, P2P only has Typed + Universal
-        assert!(full.points.len() > p2p.points.len(), "P2P snapshot should be smaller");
+        assert!(
+            full.points.len() > p2p.points.len(),
+            "P2P snapshot should be smaller"
+        );
         for entry in &p2p.points {
             assert!(
                 entry.level.is_syncable(),
@@ -2541,7 +2680,8 @@ mod tests {
         let local = make_trace("cap/local", "my ctx", Outcome::Succeeded, 100);
         field.excite(&local);
 
-        let concrete_before = field.aggregate_at_level("cap/local", AbstractionLevel::Concrete)
+        let concrete_before = field
+            .aggregate_at_level("cap/local", AbstractionLevel::Concrete)
             .map(|a| a.total_excitations)
             .unwrap_or(0);
 
@@ -2569,7 +2709,8 @@ mod tests {
 
         field.apply_remote_snapshot(&fake_snapshot, 0.7);
 
-        let concrete_after = field.aggregate_at_level("cap/local", AbstractionLevel::Concrete)
+        let concrete_after = field
+            .aggregate_at_level("cap/local", AbstractionLevel::Concrete)
             .map(|a| a.total_excitations)
             .unwrap_or(0);
 
@@ -2623,7 +2764,10 @@ mod tests {
         field.excite_with_space(&t, Some("my-project"));
 
         let result = field.aggregate_at_level("tool:edit", AbstractionLevel::Project);
-        assert!(result.is_some(), "Level 1 should have data when space provided");
+        assert!(
+            result.is_some(),
+            "Level 1 should have data when space provided"
+        );
         assert!(result.unwrap().intensity > 0.0);
     }
 
@@ -2706,9 +2850,15 @@ mod tests {
 
         field.apply_remote_snapshot(&snapshot, 0.7);
 
-        let post = field.aggregate_at_level("tool:search", AbstractionLevel::Universal).unwrap();
+        let post = field
+            .aggregate_at_level("tool:search", AbstractionLevel::Universal)
+            .unwrap();
         // Remote valence (0.9) should dominate since local decayed below remote*0.7
-        assert!(post.valence > 0.8, "Remote valence should dominate after merge, got {}", post.valence);
+        assert!(
+            post.valence > 0.8,
+            "Remote valence should dominate after merge, got {}",
+            post.valence
+        );
     }
 
     #[test]
@@ -2739,8 +2889,13 @@ mod tests {
 
         field.apply_remote_snapshot(&snapshot, 0.7);
 
-        let post = field.aggregate_at_level("tool:read", AbstractionLevel::Universal).unwrap();
-        assert_eq!(post.total_excitations, 42, "total_excitations should merge unconditionally via max");
+        let post = field
+            .aggregate_at_level("tool:read", AbstractionLevel::Universal)
+            .unwrap();
+        assert_eq!(
+            post.total_excitations, 42,
+            "total_excitations should merge unconditionally via max"
+        );
     }
 
     #[test]
@@ -2771,7 +2926,13 @@ mod tests {
         // No local point — remote wins automatically, variance should be set
         field.apply_remote_snapshot(&snapshot, 0.7);
 
-        let post = field.aggregate_at_level("tool:edit", AbstractionLevel::Universal).unwrap();
-        assert!(post.variance > 0.0, "Variance should be merged from remote, got {}", post.variance);
+        let post = field
+            .aggregate_at_level("tool:edit", AbstractionLevel::Universal)
+            .unwrap();
+        assert!(
+            post.variance > 0.0,
+            "Variance should be merged from remote, got {}",
+            post.variance
+        );
     }
 }

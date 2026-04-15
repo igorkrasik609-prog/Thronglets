@@ -5,10 +5,10 @@ use thronglets::ambient::{
 };
 use thronglets::context::simhash;
 use thronglets::continuity::{ContinuityEvent, ContinuityTaxonomy, ExternalContinuityInput};
-use thronglets::identity::NodeIdentity;
 use thronglets::identity::IdentityBinding;
+use thronglets::identity::NodeIdentity;
 use thronglets::pheromone::PheromoneField;
-use thronglets::pulse::{PulseEmitter, PRESENCE_DIMENSION_NAME, VIABILITY_DIMENSION_NAME};
+use thronglets::pulse::{PRESENCE_DIMENSION_NAME, PulseEmitter, VIABILITY_DIMENSION_NAME};
 use thronglets::service::{self, Ctx, RecordTraceReq};
 use thronglets::storage::TraceStore;
 use thronglets::trace::{MethodCompliance, Outcome, Trace};
@@ -99,7 +99,13 @@ fn regression_corpus_record_trace_scopes_storage_and_rejects_invalid_continuity(
     assert_eq!(trace.trace.capability, "tool:Edit");
 
     let matching = store
-        .query_similar_failed_traces(&simhash("repair flaky login flow"), 0, 24, 10, Some("psyche"))
+        .query_similar_failed_traces(
+            &simhash("repair flaky login flow"),
+            0,
+            24,
+            10,
+            Some("psyche"),
+        )
         .unwrap();
     assert_eq!(matching.len(), 1);
 
@@ -169,15 +175,23 @@ fn regression_corpus_duplicate_ui_repair_never_hardens_noncompliant_success() {
         None,
         Some(AmbientTurnGoal::Repair),
         4,
-        &hard_task_policy("reuse existing shared components instead of hand-writing duplicate page UI"),
+        &hard_task_policy(
+            "reuse existing shared components instead of hand-writing duplicate page UI",
+        ),
     );
 
-    assert!(priors.iter().all(|prior| prior.kind != "success-prior"), "{priors:#?}");
+    assert!(
+        priors.iter().all(|prior| prior.kind != "success-prior"),
+        "{priors:#?}"
+    );
     let conflict = priors
         .iter()
         .find(|prior| prior.policy_state == Some(AmbientPolicyState::PolicyConflict))
         .expect("expected policy conflict");
-    assert!(conflict.summary.contains("policy conflict"), "{conflict:#?}");
+    assert!(
+        conflict.summary.contains("policy conflict"),
+        "{conflict:#?}"
+    );
 }
 
 #[test]
@@ -212,7 +226,9 @@ fn regression_corpus_repair_prefers_conflict_visibility_over_false_confidence() 
         None,
         Some(AmbientTurnGoal::Repair),
         4,
-        &hard_task_policy("reuse existing shared components instead of hand-writing duplicate page UI"),
+        &hard_task_policy(
+            "reuse existing shared components instead of hand-writing duplicate page UI",
+        ),
     );
 
     let first = priors.first().expect("expected at least one prior");
@@ -261,7 +277,9 @@ fn regression_corpus_explore_keeps_reversible_nonconsensus_probe_available() {
         .find(|prior| prior.kind == "success-prior")
         .expect("expected a success prior");
     assert!(
-        success.summary.contains("non-exclusive baseline during exploration"),
+        success
+            .summary
+            .contains("non-exclusive baseline during exploration"),
         "{success:#?}"
     );
     assert!(

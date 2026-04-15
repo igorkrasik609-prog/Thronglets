@@ -295,7 +295,8 @@ fn hook_persists_space_for_lazy_trace_queries() {
 
     WorkspaceState::default().save(data_dir.path());
 
-    let wrong_space = r#"{"tool_name":"Bash","space":"other-space","tool_input":{"command":"cargo test"}}"#;
+    let wrong_space =
+        r#"{"tool_name":"Bash","space":"other-space","tool_input":{"command":"cargo test"}}"#;
     let output = run_bin(
         &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
         Some(wrong_space),
@@ -308,7 +309,8 @@ fn hook_persists_space_for_lazy_trace_queries() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
 
-    let right_space = r#"{"tool_name":"Bash","space":"psyche","tool_input":{"command":"cargo test"}}"#;
+    let right_space =
+        r#"{"tool_name":"Bash","space":"psyche","tool_input":{"command":"cargo test"}}"#;
     let output = run_bin(
         &["--data-dir", data_dir.path().to_str().unwrap(), "prehook"],
         Some(right_space),

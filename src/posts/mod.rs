@@ -387,7 +387,10 @@ pub fn is_legacy_auto_signal_trace(trace: &Trace) -> bool {
             decoded.derived_guidance_epoch.as_deref(),
             decoded.derived_guidance_source.as_deref(),
         ),
-        (Some(DERIVED_GUIDANCE_EPOCH), Some(AUTO_DERIVED_SIGNAL_SOURCE))
+        (
+            Some(DERIVED_GUIDANCE_EPOCH),
+            Some(AUTO_DERIVED_SIGNAL_SOURCE)
+        )
     )
 }
 

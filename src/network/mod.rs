@@ -63,9 +63,7 @@ pub enum NetworkEvent {
         source_peer: PeerId,
     },
     /// Current NAT reachability state as observed from transport events.
-    NatStatusChanged {
-        degraded_nat: bool,
-    },
+    NatStatusChanged { degraded_nat: bool },
 }
 
 /// A capability summary retrieved from the DHT.

@@ -136,10 +136,17 @@ pub fn host_history_priors_for_context(
     goal: Option<AmbientTurnGoal>,
     active_policy: &[ActivePolicyRule],
 ) -> Vec<AmbientPriorProjection> {
-    ambient_priors_for_context_with_policy(store, context_hash, space, goal, PREHOOK_MAX_HINTS, active_policy)
-        .into_iter()
-        .filter(|prior| matches!(prior.kind, "mixed-residue" | "success-prior"))
-        .collect()
+    ambient_priors_for_context_with_policy(
+        store,
+        context_hash,
+        space,
+        goal,
+        PREHOOK_MAX_HINTS,
+        active_policy,
+    )
+    .into_iter()
+    .filter(|prior| matches!(prior.kind, "mixed-residue" | "success-prior"))
+    .collect()
 }
 
 pub fn ambient_priors_for_context_with_policy(
@@ -217,8 +224,11 @@ pub fn ambient_priors_for_context_with_policy(
         });
     }
 
-    let convergence_threshold =
-        success_prior_threshold(goal, total_failures as usize, stats.success_noncompliant as usize);
+    let convergence_threshold = success_prior_threshold(
+        goal,
+        total_failures as usize,
+        stats.success_noncompliant as usize,
+    );
     if can_form_success_prior(stats, hard_policy_active, convergence_threshold) {
         let compliant_success = stats.success_compliant;
         let confidence = (0.56 + (compliant_success.min(6) as f32) * 0.06).min(0.92);
@@ -343,8 +353,7 @@ fn can_form_success_prior(
     if compliant < threshold || compliant == 0 {
         return false;
     }
-    compliant > stats.success_noncompliant as usize
-        && compliant > stats.total_failure() as usize
+    compliant > stats.success_noncompliant as usize && compliant > stats.total_failure() as usize
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -464,7 +473,10 @@ mod tests {
         let priors = ambient_priors_for_context(&store, &simhash(ctx), None, None, 3);
         let stable = priors.iter().find(|prior| prior.kind == "success-prior");
         assert!(stable.is_some(), "{priors:#?}");
-        assert_eq!(stable.unwrap().policy_state, Some(AmbientPolicyState::StablePath));
+        assert_eq!(
+            stable.unwrap().policy_state,
+            Some(AmbientPolicyState::StablePath)
+        );
     }
 
     #[test]
@@ -484,10 +496,16 @@ mod tests {
         }
 
         let priors = ambient_priors_for_context(&store, &simhash(ctx), None, None, 3);
-        assert!(priors.iter().all(|prior| prior.kind != "success-prior"), "{priors:#?}");
+        assert!(
+            priors.iter().all(|prior| prior.kind != "success-prior"),
+            "{priors:#?}"
+        );
         let mixed = priors.iter().find(|prior| prior.kind == "mixed-residue");
         assert!(mixed.is_some(), "{priors:#?}");
-        assert_eq!(mixed.unwrap().policy_state, Some(AmbientPolicyState::MethodConflict));
+        assert_eq!(
+            mixed.unwrap().policy_state,
+            Some(AmbientPolicyState::MethodConflict)
+        );
     }
 
     #[test]
@@ -552,10 +570,12 @@ mod tests {
         );
         let stable = priors.iter().find(|prior| prior.kind == "success-prior");
         assert!(stable.is_some(), "{priors:#?}");
-        assert!(stable
-            .unwrap()
-            .summary
-            .contains("non-exclusive baseline during exploration"));
+        assert!(
+            stable
+                .unwrap()
+                .summary
+                .contains("non-exclusive baseline during exploration")
+        );
         assert!(stable.unwrap().confidence <= 0.68);
     }
 

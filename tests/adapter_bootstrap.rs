@@ -573,7 +573,10 @@ fn codex_mcp_contact_auto_clears_restart_pending() {
         let _ = child.wait();
     }
 
-    assert!(cleared, "restart_pending was not cleared within 4s of MCP contact");
+    assert!(
+        cleared,
+        "restart_pending was not cleared within 4s of MCP contact"
+    );
 }
 
 #[test]

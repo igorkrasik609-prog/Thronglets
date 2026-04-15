@@ -27,7 +27,9 @@ fn now_secs() -> u64 {
 
 fn compare_semver(a: &str, b: &str) -> std::cmp::Ordering {
     let parse = |s: &str| -> Vec<u64> {
-        s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect()
+        s.split('.')
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
     };
     let (pa, pb) = (parse(a), parse(b));
     for i in 0..3 {

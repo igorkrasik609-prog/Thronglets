@@ -39,8 +39,24 @@ Lifecycle events reframed:
 ## Architecture
 
 ```
-Rust binary (v1.0.0)
+Rust binary (v1.0.1)
+├── main.rs           — CLI entry point (~25 lines: parse + dispatch)
+├── cli.rs            — CLI data definitions (Commands enum, arg types, clap derive)
+├── cmd/              — Command handlers (grouped by resource pattern)
+│   ├── mod.rs        — Dispatch routing, context types (BaseCtx/FullCtx), helper functions
+│   ├── eval.rs       — EvalSignals, EvalEmergence, ReleaseCheck, ProfileSummary, ProfileCheck
+│   ├── priors.rs     — Version, AmbientPriors, RebuildPriors
+│   ├── setup.rs      — Setup, Detect, InstallPlan, ApplyPlan, Doctor, Bootstrap, ClearRestart, RuntimeReady
+│   ├── onboard.rs    — Start, Share, Join, ConnectionExport, ConnectionJoin, ConnectionInspect
+│   ├── substrate.rs  — Record, Query, SignalPost, SignalQuery, SignalFeed, PresencePing, PresenceFeed, Space
+│   ├── hooks.rs      — Hook, Prehook, LifecycleHook, Ingest (+ Psyche bridge)
+│   ├── daemon.rs     — Run, Mcp, Serve (async long-running)
+│   └── inspect.rs    — Id, OwnerBind, AuthorizationCheck, Anchor, Pulse, Peers, NetCheck, Status
 ├── service.rs        — Shared business logic (single source of truth for all operations)
+├── responses.rs      — CLI response types (Summary/Data structs)
+├── render.rs         — CLI text rendering functions
+├── adapter_ops.rs    — Adapter detect/install/doctor/bootstrap operations
+├── hook_support.rs   — Hook/prehook helpers, profiler, release checks
 ├── trace/            — Atomic execution record (outcome, latency, context, signatures)
 ├── storage/          — SQLite trace store with TTL and context bucketing
 ├── pheromone.rs      — Stigmergic field (4-level abstraction, decay, Hebbian coupling, P2P sync)
@@ -61,13 +77,7 @@ Rust binary (v1.0.0)
 ├── workspace/        — Workspace state tracking (mod.rs: state + mutations, hints.rs: read-only hint generation)
 ├── mcp/              — MCP server (JSON-RPC 2.0) — thin protocol adapter
 ├── http/             — HTTP/REST server — thin protocol adapter
-├── anchor/           — Oasyce chain integration for trace anchoring (optional upgrade layer)
-├── main.rs           — CLI entry point + command dispatch
-├── responses.rs      — CLI response types (Summary/Data structs)
-├── render.rs         — CLI text rendering functions
-├── adapter_ops.rs    — Adapter detect/install/doctor/bootstrap operations
-├── hook_support.rs   — Hook/prehook helpers, profiler, release checks
-└── main.rs:Ingest    — Psyche export pipe ingestion (`psyche emit | thronglets ingest`)
+└── anchor/           — Oasyce chain integration for trace anchoring (optional upgrade layer)
 ```
 
 ## Abstraction Levels (v1.0)

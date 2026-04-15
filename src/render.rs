@@ -1,5 +1,7 @@
 use crate::responses::*;
-use crate::setup_support::{AdapterApplyResult, AdapterDetection, AdapterDoctor, AdapterKind, AdapterPlan};
+use crate::setup_support::{
+    AdapterApplyResult, AdapterDetection, AdapterDoctor, AdapterKind, AdapterPlan,
+};
 use thronglets::continuity::ContinuitySnapshotSummary;
 use thronglets::posts::{SignalFeedResult, SignalQueryResult};
 use thronglets::presence::PresenceFeedResult;
@@ -646,7 +648,10 @@ pub(crate) fn render_version_report(data: &VersionData) {
     println!("Hint: {}", data.source_hint);
 }
 
-pub(crate) fn filter_generic_runtime_snippets(plans: &mut [AdapterPlan], runtime_key: Option<&str>) {
+pub(crate) fn filter_generic_runtime_snippets(
+    plans: &mut [AdapterPlan],
+    runtime_key: Option<&str>,
+) {
     let Some(runtime_key) = runtime_key else {
         return;
     };

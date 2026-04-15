@@ -34,11 +34,60 @@ pub struct ActivePolicySet {
 }
 
 const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "that", "this", "into", "from", "then", "them", "they", "your",
-    "their", "should", "must", "mustn", "dont", "don't", "never", "always", "prefer", "keep",
-    "avoid", "using", "use", "into", "only", "when", "what", "does", "after", "before", "have",
-    "has", "had", "will", "been", "just", "than", "then", "more", "less", "dont", "shouldn",
-    "shouldn't", "mustn't", "without", "within", "across", "same", "else", "than", "here", "there",
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "into",
+    "from",
+    "then",
+    "them",
+    "they",
+    "your",
+    "their",
+    "should",
+    "must",
+    "mustn",
+    "dont",
+    "don't",
+    "never",
+    "always",
+    "prefer",
+    "keep",
+    "avoid",
+    "using",
+    "use",
+    "into",
+    "only",
+    "when",
+    "what",
+    "does",
+    "after",
+    "before",
+    "have",
+    "has",
+    "had",
+    "will",
+    "been",
+    "just",
+    "than",
+    "then",
+    "more",
+    "less",
+    "dont",
+    "shouldn",
+    "shouldn't",
+    "mustn't",
+    "without",
+    "within",
+    "across",
+    "same",
+    "else",
+    "than",
+    "here",
+    "there",
 ];
 
 pub fn compile_active_policy(payload: &Value, tool_input: &Value) -> ActivePolicySet {
@@ -279,7 +328,9 @@ fn parse_project_rules(markdown: &str) -> Vec<ActivePolicyRule> {
 
 fn normalize_markdown_rule(line: &str) -> String {
     let without_prefix = line
-        .trim_start_matches(|c: char| c == '-' || c == '*' || c.is_ascii_digit() || c == '.' || c == ')')
+        .trim_start_matches(|c: char| {
+            c == '-' || c == '*' || c.is_ascii_digit() || c == '.' || c == ')'
+        })
         .trim();
     normalize_summary(without_prefix)
 }
@@ -307,7 +358,10 @@ fn classify_project_rule(line: &str) -> Option<(PolicyStrength, String)> {
     Some((strength, line.to_string()))
 }
 
-fn relevant_rules_for_context(rules: &[ActivePolicyRule], hook_context: &str) -> Vec<ActivePolicyRule> {
+fn relevant_rules_for_context(
+    rules: &[ActivePolicyRule],
+    hook_context: &str,
+) -> Vec<ActivePolicyRule> {
     let context_tokens = tokenize(hook_context);
     let mut relevant = Vec::new();
     for rule in rules {
@@ -351,11 +405,17 @@ fn stable_rule_id(prefix: &str, summary: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(summary.as_bytes());
     let digest = hasher.finalize();
-    format!("{prefix}:{:02x}{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2], digest[3])
+    format!(
+        "{prefix}:{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    )
 }
 
 fn normalize_summary(summary: &str) -> String {
-    summary.trim().replace('`', "").replace(char::is_whitespace, " ")
+    summary
+        .trim()
+        .replace('`', "")
+        .replace(char::is_whitespace, " ")
 }
 
 fn tokenize(text: &str) -> HashSet<String> {
@@ -410,7 +470,11 @@ do not parse code fences
         );
         assert_eq!(rules.len(), 3);
         assert_eq!(rules[0].strength, PolicyStrength::Hard);
-        assert!(rules.iter().any(|rule| rule.summary.contains("shared components")));
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.summary.contains("shared components"))
+        );
     }
 
     #[test]
@@ -469,15 +533,17 @@ do not parse code fences
         );
 
         assert!(
-            set.all_rules.iter().any(|rule|
-                rule.scope == PolicyScope::Task
+            set.all_rules
+                .iter()
+                .any(|rule| rule.scope == PolicyScope::Task
                     && rule.strength == PolicyStrength::Hard
-                    && rule.summary.contains("reuse existing shared components")
-            ),
+                    && rule.summary.contains("reuse existing shared components")),
             "{set:#?}"
         );
         assert!(
-            set.relevant_rules.iter().any(|rule| rule.summary.contains("reuse existing shared components")),
+            set.relevant_rules
+                .iter()
+                .any(|rule| rule.summary.contains("reuse existing shared components")),
             "{set:#?}"
         );
     }

@@ -586,8 +586,10 @@ impl TraceStore {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let candidates =
-            Self::collect_traces(&mut stmt, params![bucket_lo, bucket_hi, cutoff_ms, query_limit, space])?;
+        let candidates = Self::collect_traces(
+            &mut stmt,
+            params![bucket_lo, bucket_hi, cutoff_ms, query_limit, space],
+        )?;
 
         let mut stats = ContextResidueStats::default();
         let mut success_sessions = std::collections::HashSet::new();
@@ -610,7 +612,12 @@ impl TraceStore {
                 continue;
             }
 
-            match (trace.outcome, trace.method_compliance.unwrap_or(crate::trace::MethodCompliance::Unknown)) {
+            match (
+                trace.outcome,
+                trace
+                    .method_compliance
+                    .unwrap_or(crate::trace::MethodCompliance::Unknown),
+            ) {
                 (Outcome::Succeeded, crate::trace::MethodCompliance::Compliant) => {
                     stats.success_compliant += 1;
                 }
@@ -623,7 +630,10 @@ impl TraceStore {
                 (Outcome::Failed | Outcome::Timeout, crate::trace::MethodCompliance::Compliant) => {
                     stats.failure_compliant += 1;
                 }
-                (Outcome::Failed | Outcome::Timeout, crate::trace::MethodCompliance::Noncompliant) => {
+                (
+                    Outcome::Failed | Outcome::Timeout,
+                    crate::trace::MethodCompliance::Noncompliant,
+                ) => {
                     stats.failure_noncompliant += 1;
                 }
                 (Outcome::Failed | Outcome::Timeout, crate::trace::MethodCompliance::Unknown) => {
@@ -885,7 +895,8 @@ impl TraceStore {
         local_device_identity: &str,
         local_node_pubkey: [u8; 32],
     ) -> rusqlite::Result<Option<String>> {
-        let traces = self.query_recent_signal_traces(hours, Some(SignalPostKind::PsycheState), 32, None)?;
+        let traces =
+            self.query_recent_signal_traces(hours, Some(SignalPostKind::PsycheState), 32, None)?;
         for trace in traces {
             let is_local = trace.device_identity.as_deref() == Some(local_device_identity)
                 || trace.node_pubkey == local_node_pubkey;
@@ -1070,8 +1081,9 @@ impl TraceStore {
     /// Query traces that haven't been published to the P2P network yet.
     pub fn unpublished_traces(&self, limit: usize) -> rusqlite::Result<Vec<Trace>> {
         let conn = self.conn.lock().unwrap();
-        let sql =
-            format!("SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1");
+        let sql = format!(
+            "SELECT {TRACE_SELECT_COLUMNS} FROM traces WHERE published = 0 ORDER BY timestamp DESC LIMIT ?1"
+        );
         let mut stmt = conn.prepare(&sql)?;
         Self::collect_traces(&mut stmt, params![limit as i64])
     }
@@ -1133,11 +1145,8 @@ impl TraceStore {
     /// Count total traces that have been anchored on-chain.
     pub fn anchored_count(&self) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM anchored_traces",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM anchored_traces", [], |row| row.get(0))?;
         Ok(count as u64)
     }
 

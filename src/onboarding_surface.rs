@@ -11,10 +11,11 @@ use thronglets::presence::is_presence_capability;
 use thronglets::storage::TraceStore;
 use thronglets::workspace::{self, WorkspaceState};
 
+use crate::BootstrapSummary;
+use crate::cli::DEFAULT_CONNECTION_FILE_NAME;
 use crate::setup_support::{
     AdapterDetection, AdapterDoctor, AdapterKind, detect_adapter, doctor_adapter,
 };
-use crate::{BootstrapSummary, DEFAULT_CONNECTION_FILE_NAME};
 
 #[derive(Serialize)]
 pub(crate) struct OnboardingSummary {

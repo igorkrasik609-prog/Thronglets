@@ -191,8 +191,8 @@ impl PulseEmitter {
             "signatures": [sig_b64]
         });
 
-        let signed_tx_bytes = serde_json::to_vec(&signed_tx)
-            .map_err(|e| PulseError::Serialization(e.to_string()))?;
+        let signed_tx_bytes =
+            serde_json::to_vec(&signed_tx).map_err(|e| PulseError::Serialization(e.to_string()))?;
 
         let tx_hash = hex_encode(&Sha256::digest(&signed_tx_bytes));
 
@@ -255,11 +255,7 @@ impl PulseEmitter {
 
 /// Run the pulse loop as a background task. Emits a pulse every `interval`.
 /// Designed to be spawned via `tokio::task::spawn_blocking` or in a dedicated thread.
-pub fn pulse_loop(
-    emitter: PulseEmitter,
-    identity: Arc<NodeIdentity>,
-    store: Arc<TraceStore>,
-) {
+pub fn pulse_loop(emitter: PulseEmitter, identity: Arc<NodeIdentity>, store: Arc<TraceStore>) {
     tracing::info!(
         sigil_id = %emitter.sigil_id,
         interval_secs = emitter.interval.as_secs(),
@@ -295,7 +291,9 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::posts::{SignalPostKind, SignalTraceConfig, create_signal_trace};
-    use crate::presence::{DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace};
+    use crate::presence::{
+        DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace,
+    };
 
     #[test]
     fn emitter_stores_config() {

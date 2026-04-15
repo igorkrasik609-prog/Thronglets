@@ -143,17 +143,21 @@ fn handle_post_trace(ctx: &HttpContext, body: &str) -> String {
         space: args["space"].as_str().map(String::from),
         agent_id: args["agent_id"].as_str().map(String::from),
         sigil_id: args["sigil_id"].as_str().map(String::from),
-        method_compliance: args["method_compliance"].as_str().and_then(MethodCompliance::parse),
+        method_compliance: args["method_compliance"]
+            .as_str()
+            .and_then(MethodCompliance::parse),
     };
 
     match service::record_trace(&svc_ctx(ctx), req, external_continuity) {
         Ok(service::RecordResult::Trace(out)) => json!({
             "recorded": true, "trace_id": out.trace_id, "capability": out.capability,
-        }).to_string(),
+        })
+        .to_string(),
         Ok(service::RecordResult::Continuity(out)) => json!({
             "recorded": true, "trace_id": out.trace_id, "capability": out.capability,
             "external_continuity": out.external_continuity,
-        }).to_string(),
+        })
+        .to_string(),
         Err(e) => json!({"error": e}).to_string(),
     }
 }
@@ -186,7 +190,9 @@ fn handle_post_signal(ctx: &HttpContext, body: &str) -> String {
         session_id: args["session_id"].as_str().map(str::to_string),
         agent_id: args["agent_id"].as_str().map(str::to_string),
         sigil_id: args["sigil_id"].as_str().map(str::to_string),
-        ttl_hours: args["ttl_hours"].as_u64().map(|v| v.min(u32::MAX as u64) as u32),
+        ttl_hours: args["ttl_hours"]
+            .as_u64()
+            .map(|v| v.min(u32::MAX as u64) as u32),
     };
 
     match service::post_signal(&svc_ctx(ctx), req) {
@@ -208,7 +214,9 @@ fn handle_post_presence(ctx: &HttpContext, body: &str) -> String {
         session_id: args["session_id"].as_str().map(str::to_string),
         sigil_id: args["sigil_id"].as_str().map(str::to_string),
         capability: args["capability"].as_str().map(str::to_string),
-        ttl_minutes: args["ttl_minutes"].as_u64().map(|v| v.min(u32::MAX as u64) as u32),
+        ttl_minutes: args["ttl_minutes"]
+            .as_u64()
+            .map(|v| v.min(u32::MAX as u64) as u32),
     };
 
     match service::ping_presence(&svc_ctx(ctx), req) {
@@ -229,9 +237,15 @@ fn handle_post_ambient_priors(ctx: &HttpContext, body: &str) -> String {
 fn handle_get_query(ctx: &HttpContext, path: &str) -> String {
     let params = parse_query_params(path);
     let context_str = params.get("context").map(String::as_str).unwrap_or("");
-    let intent = params.get("intent").map(String::as_str).unwrap_or("explore");
+    let intent = params
+        .get("intent")
+        .map(String::as_str)
+        .unwrap_or("explore");
     let capability = params.get("capability").map(String::as_str).unwrap_or("");
-    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10);
+    let limit: usize = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
 
     let svc = svc_ctx(ctx);
     match intent {
@@ -263,7 +277,10 @@ fn handle_get_signals(ctx: &HttpContext, path: &str) -> String {
 
 fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
     let params = parse_query_params(path);
-    let hours: u32 = params.get("hours").and_then(|s| s.parse().ok()).unwrap_or(24);
+    let hours: u32 = params
+        .get("hours")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24);
     let kind = match params.get("kind") {
         Some(value) => match SignalPostKind::parse(value) {
             Some(kind) => Some(kind),
@@ -278,10 +295,19 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
         },
         None => SignalScopeFilter::All,
     };
-    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10);
+    let limit: usize = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
     let space = params.get("space").map(String::as_str);
 
-    let req = service::SignalFeedReq { hours, kind, scope, limit, space };
+    let req = service::SignalFeedReq {
+        hours,
+        kind,
+        scope,
+        limit,
+        space,
+    };
     match service::signal_feed(&svc_ctx(ctx), req) {
         Ok(data) => data.to_string(),
         Err(e) => json!({"error": e}).to_string(),
@@ -290,8 +316,14 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
 
 fn handle_get_presence_feed(ctx: &HttpContext, path: &str) -> String {
     let params = parse_query_params(path);
-    let hours: u32 = params.get("hours").and_then(|s| s.parse().ok()).unwrap_or(1);
-    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10);
+    let hours: u32 = params
+        .get("hours")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let limit: usize = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
     let space = params.get("space").map(String::as_str);
 
     match service::presence_feed(&svc_ctx(ctx), hours, limit, space) {
@@ -309,10 +341,18 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
         },
         None => None,
     };
-    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(5);
+    let limit: usize = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
     let space = params.get("space").map(String::as_str);
 
-    let req = service::QuerySignalsReq { context: context_str, kind, limit, space };
+    let req = service::QuerySignalsReq {
+        context: context_str,
+        kind,
+        limit,
+        space,
+    };
     match service::query_signals(&svc_ctx(ctx), req) {
         Ok(data) => data.to_string(),
         Err(e) => json!({"error": e}).to_string(),

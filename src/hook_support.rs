@@ -4,13 +4,14 @@ use std::time::Instant;
 use crate::responses::ReleaseBaselineCheck;
 use thronglets::active_policy::{ActivePolicySet, PolicyStrength};
 use thronglets::ambient::{AmbientPolicyState, AmbientPriorProjection};
+use thronglets::context::simhash;
 use thronglets::continuity::{
-    ContinuityEvent, ContinuityTaxonomy, ExternalContinuityInput,
-    ExternalContinuityRecordConfig, record_external_continuity,
+    ContinuityEvent, ContinuityTaxonomy, ExternalContinuityInput, ExternalContinuityRecordConfig,
+    record_external_continuity,
 };
 use thronglets::eval::{
-    EvalBaselineComparison, EvalCheckStatus, EvalCheckThresholds, EvalConfig,
-    LocalFeedbackSummary, SignalEvalSummary, evaluate_signal_quality,
+    EvalBaselineComparison, EvalCheckStatus, EvalCheckThresholds, EvalConfig, LocalFeedbackSummary,
+    SignalEvalSummary, evaluate_signal_quality,
 };
 use thronglets::identity::{IdentityBinding, NodeIdentity};
 use thronglets::posts::{
@@ -18,7 +19,6 @@ use thronglets::posts::{
 };
 use thronglets::presence::summarize_recent_presence;
 use thronglets::signals::{Recommendation, Signal, SignalKind, StepCandidate};
-use thronglets::context::simhash;
 use thronglets::storage::TraceStore;
 use thronglets::trace::Outcome;
 
@@ -224,7 +224,7 @@ pub(crate) fn active_policy_signal(active_policy: &ActivePolicySet) -> Option<Si
 pub(crate) fn co_edit_signals(
     store: &TraceStore,
     current_file: &str,
-    recent_actions: &std::collections::VecDeque<crate::workspace::RecentAction>,
+    recent_actions: &std::collections::VecDeque<thronglets::workspace::RecentAction>,
     session_id: Option<&str>,
     space: Option<&str>,
 ) -> Vec<Signal> {
@@ -235,7 +235,7 @@ pub(crate) fn co_edit_signals(
 
     // Find other files edited in the same session
     let mut co_files: Vec<String> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for action in recent_actions {
         if action.session_id.as_deref() == Some(session_id)
             && matches!(action.tool.as_str(), "Edit" | "Write")
@@ -427,10 +427,7 @@ impl PrehookProfiler {
             format!("stdout_bytes={stdout_bytes}"),
             format!("output_mode={}", profile_output_mode(recommendations)),
             format!("decision_path={}", profile_decision_path(recommendations)),
-            format!(
-                "evidence_scope={}",
-                profile_evidence_scope(recommendations)
-            ),
+            format!("evidence_scope={}", profile_evidence_scope(recommendations)),
             format!("file_guidance_gate={file_guidance_gate}"),
             format!("collective_queries_used={collective_queries_used}"),
             format!("total_us={}", self.started_at.elapsed().as_micros()),
@@ -493,11 +490,7 @@ pub(crate) fn profile_evidence_scope(recommendations: &[Recommendation]) -> &'st
 }
 
 pub(crate) fn profile_file_guidance_gate(supports_file_guidance: bool) -> &'static str {
-    if supports_file_guidance {
-        "open"
-    } else {
-        "na"
-    }
+    if supports_file_guidance { "open" } else { "na" }
 }
 
 pub(crate) fn strip_check_header(rendered: &str) -> String {
@@ -619,7 +612,7 @@ pub(crate) fn release_baseline_check(
 
     let mut violations = Vec::new();
     if let Some(delta) = comparison.local_retention_delta_tenths_pp
-        && delta < -super::RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP
+        && delta < -crate::cmd::RELEASE_MAX_LOCAL_RETENTION_DROP_TENTHS_PP
     {
         violations.push(format!(
             "local edit retention regressed by {}",
@@ -627,7 +620,7 @@ pub(crate) fn release_baseline_check(
         ));
     }
     if comparison.failed_command_rate_delta_tenths_pp
-        > super::RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP
+        > crate::cmd::RELEASE_MAX_FAILED_COMMAND_RATE_RISE_TENTHS_PP
     {
         violations.push(format!(
             "failed command rate regressed by {}",
@@ -635,7 +628,7 @@ pub(crate) fn release_baseline_check(
         ));
     }
     if let Some(delta) = comparison.first_successful_change_latency_avg_delta_ms
-        && delta > super::RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS
+        && delta > crate::cmd::RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS
     {
         violations.push(format!(
             "first successful change latency avg regressed by {}",
@@ -643,7 +636,7 @@ pub(crate) fn release_baseline_check(
         ));
     }
     if let Some(delta) = comparison.first_successful_change_latency_p50_delta_ms
-        && delta > super::RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS
+        && delta > crate::cmd::RELEASE_MAX_FIRST_CHANGE_LATENCY_RISE_MS
     {
         violations.push(format!(
             "first successful change latency p50 regressed by {}",
@@ -706,14 +699,12 @@ pub(crate) fn run_release_doctor_section(
     home_dir: &Path,
     data_dir: &Path,
 ) -> (&'static str, bool, String, serde_json::Value) {
-    let reports: Vec<_> = crate::adapter_ops::selected_adapters(super::AdapterArg::All)
+    let reports: Vec<_> = crate::adapter_ops::selected_adapters(crate::cli::AdapterArg::All)
         .into_iter()
-        .map(|adapter| {
-            crate::setup_support::doctor_adapter(home_dir, data_dir, adapter)
-        })
+        .map(|adapter| crate::setup_support::doctor_adapter(home_dir, data_dir, adapter))
         .collect();
     let summary =
-        crate::adapter_ops::summarize_doctor_reports(super::AdapterArg::All, reports);
+        crate::adapter_ops::summarize_doctor_reports(crate::cli::AdapterArg::All, reports);
     let status = if summary.summary.status == "healthy" {
         "PASS"
     } else {
@@ -739,9 +730,7 @@ pub(crate) fn run_release_doctor_section(
     )
 }
 
-pub(crate) fn load_eval_baseline(
-    path: &Path,
-) -> Result<SignalEvalSummary, String> {
+pub(crate) fn load_eval_baseline(path: &Path) -> Result<SignalEvalSummary, String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|err| format!("read baseline {}: {err}", path.display()))?;
     serde_json::from_str(&raw).map_err(|err| format!("parse baseline {}: {err}", path.display()))
@@ -848,19 +837,14 @@ pub(crate) fn bridge_psyche_exports(
 
 fn extract_thronglets_exports(response: &serde_json::Value) -> Vec<serde_json::Value> {
     // Direct access — MCP responses may arrive as parsed JSON objects
-    if let Some(arr) = response
-        .get("throngletsExports")
-        .and_then(|v| v.as_array())
-    {
+    if let Some(arr) = response.get("throngletsExports").and_then(|v| v.as_array()) {
         return arr.clone();
     }
 
     // String response — parse and retry
     if let Some(s) = response.as_str()
         && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
-        && let Some(arr) = parsed
-            .get("throngletsExports")
-            .and_then(|v| v.as_array())
+        && let Some(arr) = parsed.get("throngletsExports").and_then(|v| v.as_array())
     {
         return arr.clone();
     }
@@ -998,19 +982,31 @@ mod tests {
         use thronglets::continuity::{ContinuityEvent, ContinuityTaxonomy};
         assert_eq!(
             map_continuity_event("relation-milestone"),
-            Some((ContinuityTaxonomy::Coordination, ContinuityEvent::RelationMilestone))
+            Some((
+                ContinuityTaxonomy::Coordination,
+                ContinuityEvent::RelationMilestone
+            ))
         );
         assert_eq!(
             map_continuity_event("open-loop-anchor"),
-            Some((ContinuityTaxonomy::Coordination, ContinuityEvent::OpenLoopAnchor))
+            Some((
+                ContinuityTaxonomy::Coordination,
+                ContinuityEvent::OpenLoopAnchor
+            ))
         );
         assert_eq!(
             map_continuity_event("continuity-anchor"),
-            Some((ContinuityTaxonomy::Continuity, ContinuityEvent::ContinuityAnchor))
+            Some((
+                ContinuityTaxonomy::Continuity,
+                ContinuityEvent::ContinuityAnchor
+            ))
         );
         assert_eq!(
             map_continuity_event("writeback-calibration"),
-            Some((ContinuityTaxonomy::Calibration, ContinuityEvent::WritebackCalibration))
+            Some((
+                ContinuityTaxonomy::Calibration,
+                ContinuityEvent::WritebackCalibration
+            ))
         );
         assert!(map_continuity_event("self-state").is_none());
         assert!(map_continuity_event("unknown").is_none());
@@ -1031,7 +1027,10 @@ mod tests {
     #[test]
     fn build_relation_milestone_summary() {
         let export = json!({"kind": "relation-milestone", "phase": "familiar", "trust": 50.5, "intimacy": 30.1});
-        assert_eq!(build_export_summary(&export), "phase=familiar trust=50.5 intimacy=30.1");
+        assert_eq!(
+            build_export_summary(&export),
+            "phase=familiar trust=50.5 intimacy=30.1"
+        );
     }
 
     #[test]
@@ -1100,6 +1099,9 @@ mod tests {
 
         // Both produce valid summaries
         assert_eq!(build_export_summary(&exports[0]), "flowing, attuned");
-        assert_eq!(build_export_summary(&exports[1]), "phase=familiar trust=50.5 intimacy=30.1");
+        assert_eq!(
+            build_export_summary(&exports[1]),
+            "phase=familiar trust=50.5 intimacy=30.1"
+        );
     }
 }

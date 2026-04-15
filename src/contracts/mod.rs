@@ -18,4 +18,3 @@ pub const GIT_HISTORY_MAX_ENTRIES: usize = 5;
 
 /// Stable header for injected output.
 pub const PREHOOK_HEADER: &str = "[thronglets]";
-

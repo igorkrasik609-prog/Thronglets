@@ -23,9 +23,7 @@ use crate::identity_surface::authorization_check_data;
 use crate::network::NetworkCommand;
 use crate::pheromone::PheromoneField;
 use crate::posts::{SignalPostKind, SignalScopeFilter};
-use crate::presence::{
-    PresenceTraceConfig, create_presence_trace, DEFAULT_PRESENCE_TTL_MINUTES,
-};
+use crate::presence::{DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace};
 use crate::service;
 use crate::storage::TraceStore;
 use crate::trace::MethodCompliance;
@@ -623,20 +621,39 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
     let req = service::RecordTraceReq {
         capability,
         outcome: service::parse_outcome(
-            args.get("outcome").and_then(|v| v.as_str()).unwrap_or("succeeded"),
+            args.get("outcome")
+                .and_then(|v| v.as_str())
+                .unwrap_or("succeeded"),
         ),
         latency_ms: args.get("latency_ms").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         input_size: args.get("input_size").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        context: args.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        model: args.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-        session_id: args.get("session_id").and_then(|v| v.as_str()).map(String::from),
+        context: args
+            .get("context")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        model: args
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        session_id: args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         space: args
             .get("space")
             .and_then(|v| v.as_str())
             .map(String::from)
             .or_else(crate::service::space_from_cwd),
-        agent_id: args.get("agent_id").and_then(|v| v.as_str()).map(String::from),
-        sigil_id: args.get("sigil_id").and_then(|v| v.as_str()).map(String::from),
+        agent_id: args
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        sigil_id: args
+            .get("sigil_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         method_compliance: args
             .get("method_compliance")
             .and_then(|v| v.as_str())
@@ -656,49 +673,83 @@ async fn handle_trace_record(ctx: &McpContext, id: Value, args: Value) -> JsonRp
                     })
                     .await;
             }
-            mcp_text(id, json!({
-                "recorded": true,
-                "trace_id": out.trace_id,
-                "capability": out.capability,
-            }))
+            mcp_text(
+                id,
+                json!({
+                    "recorded": true,
+                    "trace_id": out.trace_id,
+                    "capability": out.capability,
+                }),
+            )
         }
-        Ok(service::RecordResult::Continuity(out)) => {
-            mcp_text(id, json!({
+        Ok(service::RecordResult::Continuity(out)) => mcp_text(
+            id,
+            json!({
                 "recorded": true,
                 "trace_id": out.trace_id,
                 "capability": out.capability,
                 "external_continuity": out.external_continuity,
-            }))
-        }
+            }),
+        ),
         Err(e) => JsonRpcResponse::error(id, -32000, e),
     }
 }
 
 async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
-    let kind = match args.get("kind").and_then(|v| v.as_str()).and_then(SignalPostKind::parse) {
+    let kind = match args
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .and_then(SignalPostKind::parse)
+    {
         Some(kind) => kind,
         None => return JsonRpcResponse::error(id, -32602, "Missing or invalid field: kind".into()),
     };
     let context = match args.get("context").and_then(|v| v.as_str()) {
         Some(v) => v,
-        None => return JsonRpcResponse::error(id, -32602, "Missing required field: context".into()),
+        None => {
+            return JsonRpcResponse::error(id, -32602, "Missing required field: context".into());
+        }
     };
     let message = match args.get("message").and_then(|v| v.as_str()) {
         Some(v) => v,
-        None => return JsonRpcResponse::error(id, -32602, "Missing required field: message".into()),
+        None => {
+            return JsonRpcResponse::error(id, -32602, "Missing required field: message".into());
+        }
     };
 
     let req = service::PostSignalReq {
         kind,
         context: context.to_string(),
         message: message.to_string(),
-        tool_name: args.get("tool_name").and_then(|v| v.as_str()).map(str::to_string),
-        space: args.get("space").and_then(|v| v.as_str()).map(str::to_string),
-        model: args.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-        session_id: args.get("session_id").and_then(|v| v.as_str()).map(str::to_string),
-        agent_id: args.get("agent_id").and_then(|v| v.as_str()).map(str::to_string),
-        sigil_id: args.get("sigil_id").and_then(|v| v.as_str()).map(str::to_string),
-        ttl_hours: args.get("ttl_hours").and_then(|v| v.as_u64()).map(|v| v.min(u32::MAX as u64) as u32),
+        tool_name: args
+            .get("tool_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        space: args
+            .get("space")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        model: args
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        session_id: args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        agent_id: args
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        sigil_id: args
+            .get("sigil_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        ttl_hours: args
+            .get("ttl_hours")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(u32::MAX as u64) as u32),
     };
 
     match service::post_signal(&svc_ctx(ctx), req) {
@@ -709,13 +760,35 @@ async fn handle_signal_post(ctx: &McpContext, id: Value, args: Value) -> JsonRpc
 
 async fn handle_presence_ping(ctx: &McpContext, id: Value, args: Value) -> JsonRpcResponse {
     let req = service::PingPresenceReq {
-        space: args.get("space").and_then(|v| v.as_str()).map(str::to_string),
-        mode: args.get("mode").and_then(|v| v.as_str()).map(str::to_string),
-        model: args.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-        session_id: args.get("session_id").and_then(|v| v.as_str()).map(str::to_string),
-        sigil_id: args.get("sigil_id").and_then(|v| v.as_str()).map(str::to_string),
-        capability: args.get("capability").and_then(|v| v.as_str()).map(str::to_string),
-        ttl_minutes: args.get("ttl_minutes").and_then(|v| v.as_u64()).map(|v| v.min(u32::MAX as u64) as u32),
+        space: args
+            .get("space")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        mode: args
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        model: args
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        session_id: args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        sigil_id: args
+            .get("sigil_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        capability: args
+            .get("capability")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        ttl_minutes: args
+            .get("ttl_minutes")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(u32::MAX as u64) as u32),
     };
 
     match service::ping_presence(&svc_ctx(ctx), req) {
@@ -872,7 +945,12 @@ fn handle_signals(
     space: Option<&str>,
     limit: usize,
 ) -> JsonRpcResponse {
-    let req = service::QuerySignalsReq { context: context_str, kind, limit, space };
+    let req = service::QuerySignalsReq {
+        context: context_str,
+        kind,
+        limit,
+        space,
+    };
     match service::query_signals(&svc_ctx(ctx), req) {
         Ok(data) => mcp_text(id, data),
         Err(e) => JsonRpcResponse::error(id, -32000, e),
@@ -924,14 +1002,23 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
     let hours = args.get("hours").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let space = args.get("space").and_then(|v| v.as_str());
-    let kind = args.get("kind").and_then(|v| v.as_str()).and_then(SignalPostKind::parse);
+    let kind = args
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .and_then(SignalPostKind::parse);
     let scope = args
         .get("scope")
         .and_then(|v| v.as_str())
         .and_then(SignalScopeFilter::parse)
         .unwrap_or(SignalScopeFilter::All);
 
-    let req = service::SignalFeedReq { hours, kind, scope, limit, space };
+    let req = service::SignalFeedReq {
+        hours,
+        kind,
+        scope,
+        limit,
+        space,
+    };
     match service::signal_feed(&svc_ctx(ctx), req) {
         Ok(data) => mcp_text(id, data),
         Err(e) => JsonRpcResponse::error(id, -32000, e),
@@ -1660,9 +1747,14 @@ mod tests {
         let parsed: Value =
             serde_json::from_str(&text).expect("ambient prior response should be valid JSON");
         let priors = parsed["priors"].as_array().unwrap();
-        assert!(priors.iter().all(|prior| prior["kind"] != "success-prior"), "{priors:#?}");
         assert!(
-            priors.iter().any(|prior| prior["policy_state"] == "policy-conflict"),
+            priors.iter().all(|prior| prior["kind"] != "success-prior"),
+            "{priors:#?}"
+        );
+        assert!(
+            priors
+                .iter()
+                .any(|prior| prior["policy_state"] == "policy-conflict"),
             "{priors:#?}"
         );
     }

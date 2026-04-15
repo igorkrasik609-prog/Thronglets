@@ -5,9 +5,7 @@
 
 use crate::signals::{StepAction, StepCandidate};
 
-use super::{
-    DangerHint, PendingFeedback, RecentError, RecentFile, RepairHint, WorkspaceState,
-};
+use super::{DangerHint, PendingFeedback, RecentError, RecentFile, RepairHint, WorkspaceState};
 
 struct RepairTrajectoryPattern {
     weighted_support: f64,

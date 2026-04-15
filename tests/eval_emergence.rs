@@ -156,13 +156,19 @@ fn eval_emergence_reports_signal_eval_and_space_contamination() {
     // Field convergence: traces replayed through pheromone field
     let fc = &parsed["field_convergence"];
     assert_eq!(fc["traces_replayed"], 18, "3 sessions × 6 traces each = 18");
-    assert!(fc["active_capabilities"].as_u64().unwrap() >= 3,
-        "should have at least 3 active capabilities (read, edit, exec)");
+    assert!(
+        fc["active_capabilities"].as_u64().unwrap() >= 3,
+        "should have at least 3 active capabilities (read, edit, exec)"
+    );
     // All traces are from one identity, so multi-source should be 0
-    assert_eq!(fc["multi_source_capabilities"], 0,
-        "single-source traces should not trigger multi-source");
-    assert!(fc["total_coupling_edges"].as_u64().unwrap() > 0,
-        "Hebbian coupling should form from co-occurring capabilities");
+    assert_eq!(
+        fc["multi_source_capabilities"], 0,
+        "single-source traces should not trigger multi-source"
+    );
+    assert!(
+        fc["total_coupling_edges"].as_u64().unwrap() > 0,
+        "Hebbian coupling should form from co-occurring capabilities"
+    );
 }
 
 #[test]
