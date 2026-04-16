@@ -10,8 +10,8 @@ pub const PREHOOK_MATCHER: &str = "Edit|Write|Bash|Agent";
 /// Keep prehook output bounded even when several signals are available.
 pub const PREHOOK_MAX_HINTS: usize = 3;
 
-/// Collective corroboration is useful, but the hot path only gets one lookup.
-pub const PREHOOK_MAX_COLLECTIVE_QUERIES: usize = 1;
+/// Secondary corroboration is useful, but the hot path only gets one lookup.
+pub const PREHOOK_MAX_SECONDARY_QUERIES: usize = 1;
 
 /// Git history is useful, but it must stay short.
 pub const GIT_HISTORY_MAX_ENTRIES: usize = 5;

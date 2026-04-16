@@ -22,7 +22,7 @@ use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::authorization_check_data;
 use crate::network::NetworkCommand;
 use crate::pheromone::PheromoneField;
-use crate::posts::{SignalPostKind, SignalScopeFilter};
+use crate::posts::SignalPostKind;
 use crate::presence::{DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace};
 use crate::service;
 use crate::storage::TraceStore;
@@ -234,10 +234,9 @@ fn tool_definitions() -> Value {
                             "enum": ["recommend", "avoid", "watch", "info", "psyche_state"],
                             "description": "Optional signal kind filter"
                         },
-                        "scope": {
-                            "type": "string",
-                            "enum": ["all", "local", "collective", "mixed"],
-                            "description": "Filter feed results by evidence scope (default: all)"
+                        "min_sources": {
+                            "type": "integer",
+                            "description": "Minimum independent source count to include (default: 0)"
                         },
                         "space": {
                             "type": "string",
@@ -318,7 +317,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "substrate_query",
-                "description": "Explicitly inspect the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, 'explore' to discover what's available, 'signals' to find explicit short messages left by other agents, or 'continuity' to query external continuity traces by taxonomy.",
+                "description": "Explicitly inspect the Thronglets substrate. Use intent 'resolve' to find capabilities for a task, 'evaluate' to get stats for a specific capability, 'explore' to discover what's available, 'signals' to find explicit short messages left by other agents, 'continuity' to query external continuity traces by taxonomy, or 'clusters' to see emergent Hebbian capability clusters.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -328,8 +327,8 @@ fn tool_definitions() -> Value {
                         },
                         "intent": {
                             "type": "string",
-                            "enum": ["resolve", "evaluate", "explore", "signals", "continuity"],
-                            "description": "Query intent: resolve (find capabilities), evaluate (get stats), explore (discover), signals (explicit short messages), continuity (external continuity traces by taxonomy)"
+                            "enum": ["resolve", "evaluate", "explore", "signals", "continuity", "clusters"],
+                            "description": "Query intent: resolve (find capabilities), evaluate (get stats), explore (discover), signals (explicit short messages), continuity (external continuity traces by taxonomy), clusters (emergent Hebbian capability clusters)"
                         },
                         "capability": {
                             "type": "string",
@@ -348,6 +347,10 @@ fn tool_definitions() -> Value {
                         "space": {
                             "type": "string",
                             "description": "Optional explicit substrate space"
+                        },
+                        "min_weight": {
+                            "type": "number",
+                            "description": "Minimum edge weight for cluster detection (used for 'clusters' intent, default: 0.05)"
                         },
                         "limit": {
                             "type": "integer",
@@ -906,11 +909,18 @@ fn handle_substrate_query(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRe
                 limit,
             )
         }
+        "clusters" => {
+            let min_weight = args
+                .get("min_weight")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            handle_clusters(ctx, id, min_weight)
+        }
         _ => JsonRpcResponse::error(
             id,
             -32602,
             format!(
-                "Unknown intent: {intent}. Use 'resolve', 'evaluate', 'explore', 'signals', or 'continuity'."
+                "Unknown intent: {intent}. Use 'resolve', 'evaluate', 'explore', 'signals', 'continuity', or 'clusters'."
             ),
         ),
     }
@@ -932,6 +942,13 @@ fn handle_evaluate(ctx: &McpContext, id: Value, capability: &str, limit: usize) 
 
 fn handle_explore(ctx: &McpContext, id: Value, context_str: &str, limit: usize) -> JsonRpcResponse {
     match service::explore(&svc_ctx(ctx), context_str, limit) {
+        Ok(data) => mcp_text(id, data),
+        Err(e) => JsonRpcResponse::error(id, -32000, e),
+    }
+}
+
+fn handle_clusters(ctx: &McpContext, id: Value, min_weight: f64) -> JsonRpcResponse {
+    match service::field_clusters(&svc_ctx(ctx), min_weight) {
         Ok(data) => mcp_text(id, data),
         Err(e) => JsonRpcResponse::error(id, -32000, e),
     }
@@ -1006,16 +1023,15 @@ fn handle_signal_feed(ctx: &McpContext, id: Value, args: Value) -> JsonRpcRespon
         .get("kind")
         .and_then(|v| v.as_str())
         .and_then(SignalPostKind::parse);
-    let scope = args
-        .get("scope")
-        .and_then(|v| v.as_str())
-        .and_then(SignalScopeFilter::parse)
-        .unwrap_or(SignalScopeFilter::All);
+    let min_sources = args
+        .get("min_sources")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
 
     let req = service::SignalFeedReq {
         hours,
         kind,
-        scope,
+        min_sources,
         limit,
         space,
     };
@@ -1651,9 +1667,6 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "avoid");
         assert_eq!(signals[0]["message"], "skip the generated lockfile");
-        assert_eq!(signals[0]["local_source_count"], 1);
-        assert_eq!(signals[0]["collective_source_count"], 0);
-        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[tokio::test]
@@ -1820,7 +1833,6 @@ mod tests {
         assert_eq!(signals[0]["model_count"], 1);
         assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["focus_tier"], "background");
-        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[tokio::test]
@@ -1879,7 +1891,6 @@ mod tests {
         assert_eq!(signals[0]["model_count"], 1);
         assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["focus_tier"], "background");
-        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[tokio::test]

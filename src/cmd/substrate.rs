@@ -1,7 +1,6 @@
 use super::*;
 
 use crate::cli::SignalKindArg;
-use crate::cli::SignalScopeArg;
 use thronglets::context::simhash;
 use thronglets::continuity::summarize_recent_continuity;
 use thronglets::posts::{
@@ -128,13 +127,7 @@ pub(crate) fn signal_query(
             space.as_deref(),
         )
         .expect("failed to query signal traces");
-    let results = summarize_signal_traces(
-        &traces,
-        &context,
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        limit,
-    );
+    let results = summarize_signal_traces(&traces, &context, limit);
     for trace in create_query_reinforcement_traces(
         &results,
         &context,
@@ -160,7 +153,7 @@ pub(crate) fn signal_feed(
     ctx: &FullCtx,
     hours: u32,
     kind: Option<SignalKindArg>,
-    scope: SignalScopeArg,
+    min_sources: u32,
     space: Option<String>,
     limit: usize,
 ) {
@@ -168,15 +161,8 @@ pub(crate) fn signal_feed(
     let traces = store
         .query_recent_signal_traces(hours, kind.map(Into::into), limit, space.as_deref())
         .expect("failed to query recent signal traces");
-    let results = filter_signal_feed_results(
-        summarize_recent_signal_feed(
-            &traces,
-            &ctx.binding.device_identity,
-            ctx.identity.public_key_bytes(),
-            limit,
-        ),
-        scope.into(),
-    );
+    let results =
+        filter_signal_feed_results(summarize_recent_signal_feed(&traces, limit), min_sources);
     for trace in create_feed_reinforcement_traces(
         &results,
         SignalTraceConfig {
@@ -264,13 +250,7 @@ pub(crate) fn presence_feed(
     let traces = store
         .query_recent_presence_traces(hours, fetch_limit)
         .expect("failed to query recent presence traces");
-    let results = summarize_recent_presence(
-        &traces,
-        space.as_deref(),
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        limit,
-    );
+    let results = summarize_recent_presence(&traces, space.as_deref(), limit);
     let data = PresenceFeedData {
         summary: PresenceSummary {
             status: if results.is_empty() {
@@ -296,22 +276,11 @@ pub(crate) fn space(ctx: &FullCtx, space: String, hours: u32, limit: usize, json
     let presence_traces = store
         .query_recent_presence_traces(hours, limit.max(1).saturating_mul(10))
         .expect("failed to query recent presence traces");
-    let sessions = summarize_recent_presence(
-        &presence_traces,
-        Some(&space),
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        limit,
-    );
+    let sessions = summarize_recent_presence(&presence_traces, Some(&space), limit);
     let signal_traces = store
         .query_recent_signal_traces(hours, None, limit, Some(&space))
         .expect("failed to query recent signal traces");
-    let signals = summarize_recent_signal_feed(
-        &signal_traces,
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        limit,
-    );
+    let signals = summarize_recent_signal_feed(&signal_traces, limit);
     for trace in create_feed_reinforcement_traces(
         &signals,
         SignalTraceConfig {

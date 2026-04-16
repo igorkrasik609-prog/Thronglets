@@ -20,7 +20,7 @@ use crate::ambient::{AmbientPriorRequest, ambient_prior_data};
 use crate::continuity::ExternalContinuityInput;
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::identity_surface::{authorization_check_data, identity_summary};
-use crate::posts::{SignalPostKind, SignalScopeFilter, is_signal_capability};
+use crate::posts::{SignalPostKind, is_signal_capability};
 use crate::presence::is_presence_capability;
 use crate::service;
 use crate::storage::TraceStore;
@@ -100,6 +100,7 @@ fn handle_http_request(ctx: &HttpContext, raw: &str) -> String {
         ("GET", "/v1/presence/feed") => handle_get_presence_feed(ctx, path),
         ("GET", "/v1/query") => handle_get_query(ctx, path),
         ("GET", "/v1/capabilities") => handle_get_capabilities(ctx),
+        ("GET", "/v1/field/clusters") => handle_get_field_clusters(ctx, path),
         ("GET", "/v1/status") => handle_get_status(ctx),
         ("GET", "/v1/authorization") => handle_get_authorization(ctx),
         _ => json!({"error": "not found", "endpoints": [
@@ -108,9 +109,10 @@ fn handle_http_request(ctx: &HttpContext, raw: &str) -> String {
             "POST /v1/presence",
             "POST /v1/ambient-priors",
             "GET /v1/signals?context=...&kind=avoid|recommend|watch|info&space=...&limit=5",
-            "GET /v1/signals/feed?hours=24&kind=avoid|recommend|watch|info&scope=all|local|collective|mixed&space=...&limit=10",
+            "GET /v1/signals/feed?hours=24&kind=avoid|recommend|watch|info&min_sources=0&space=...&limit=10",
             "GET /v1/presence/feed?hours=1&space=...&limit=10",
             "GET /v1/query?context=...&intent=resolve|evaluate|explore|signals",
+            "GET /v1/field/clusters?min_weight=0.05",
             "GET /v1/capabilities",
             "GET /v1/status",
             "GET /v1/authorization"
@@ -288,13 +290,10 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
         },
         None => None,
     };
-    let scope = match params.get("scope") {
-        Some(value) => match SignalScopeFilter::parse(value) {
-            Some(scope) => scope,
-            None => return json!({"error": format!("invalid signal scope: {value}")}).to_string(),
-        },
-        None => SignalScopeFilter::All,
-    };
+    let min_sources: u32 = params
+        .get("min_sources")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let limit: usize = params
         .get("limit")
         .and_then(|s| s.parse().ok())
@@ -304,7 +303,7 @@ fn handle_get_signal_feed(ctx: &HttpContext, path: &str) -> String {
     let req = service::SignalFeedReq {
         hours,
         kind,
-        scope,
+        min_sources,
         limit,
         space,
     };
@@ -361,6 +360,18 @@ fn handle_signals_query(ctx: &HttpContext, params: &HashMap<String, String>) -> 
 
 fn handle_get_capabilities(ctx: &HttpContext) -> String {
     match service::explore(&svc_ctx(ctx), "", 100) {
+        Ok(data) => data.to_string(),
+        Err(e) => json!({"error": e}).to_string(),
+    }
+}
+
+fn handle_get_field_clusters(ctx: &HttpContext, path: &str) -> String {
+    let params = parse_query_params(path);
+    let min_weight = params
+        .get("min_weight")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    match service::field_clusters(&svc_ctx(ctx), min_weight) {
         Ok(data) => data.to_string(),
         Err(e) => json!({"error": e}).to_string(),
     }
@@ -512,9 +523,6 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "avoid");
         assert_eq!(signals[0]["message"], "skip the generated lockfile");
-        assert_eq!(signals[0]["local_source_count"], 1);
-        assert_eq!(signals[0]["collective_source_count"], 0);
-        assert_eq!(signals[0]["evidence_scope"], "local");
 
         let query_response = parse_body(&handle_http_request(
             &ctx,
@@ -523,7 +531,6 @@ mod tests {
         let signals = query_response["signals"].as_array().unwrap();
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0]["kind"], "avoid");
-        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[test]
@@ -686,7 +693,6 @@ mod tests {
         assert_eq!(signals[0]["model_count"], 1);
         assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["focus_tier"], "background");
-        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[test]
@@ -721,7 +727,6 @@ mod tests {
         assert_eq!(signals[0]["model_count"], 1);
         assert_eq!(signals[0]["corroboration_tier"], "single_source");
         assert_eq!(signals[0]["focus_tier"], "background");
-        assert_eq!(signals[0]["evidence_scope"], "local");
     }
 
     #[test]

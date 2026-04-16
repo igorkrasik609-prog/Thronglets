@@ -439,6 +439,16 @@ pub struct FieldScan {
     pub level: AbstractionLevel,
 }
 
+/// A Hebbian cluster: capabilities that frequently co-activate.
+/// Emergent from field physics, not designed.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FieldCluster {
+    pub capabilities: Vec<String>,
+    pub total_weight: f64,
+    pub edge_count: usize,
+    pub level: u8,
+}
+
 /// Snapshot of the entire field for P2P sync.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FieldSnapshot {
@@ -795,6 +805,15 @@ impl FieldInner {
 /// RwLock: concurrent readers, exclusive writers.
 pub struct PheromoneField {
     inner: RwLock<FieldInner>,
+}
+
+/// Union-find path compression.
+fn find(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    i
 }
 
 impl PheromoneField {
@@ -1271,6 +1290,92 @@ impl PheromoneField {
         edges.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         edges.truncate(limit);
         edges
+    }
+
+    /// Read emergent structure from the Hebbian edge graph.
+    /// Returns connected components of live edges, grouped by abstraction level.
+    /// Pure read — does not modify field state.
+    pub fn clusters(&self, min_weight: f64) -> Vec<FieldCluster> {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let inner = self.inner.read().unwrap();
+        let threshold = if min_weight > 0.0 {
+            min_weight
+        } else {
+            COUPLING_PRUNE_THRESHOLD
+        };
+
+        // Group live edges by abstraction level
+        let mut level_edges: HashMap<u8, Vec<(&str, &str, f64)>> = HashMap::new();
+        for (key, edge) in &inner.edges {
+            let w = edge.current_weight(now_ms);
+            if w > threshold {
+                level_edges
+                    .entry(key.level as u8)
+                    .or_default()
+                    .push((&key.predecessor, &key.successor, w));
+            }
+        }
+
+        let mut clusters = Vec::new();
+        for (level, edges) in &level_edges {
+            // Union-find on capabilities
+            let mut cap_index: HashMap<&str, usize> = HashMap::new();
+            let mut parent: Vec<usize> = Vec::new();
+
+            for &(pred, succ, _) in edges {
+                for cap in [pred, succ] {
+                    if !cap_index.contains_key(cap) {
+                        let i = parent.len();
+                        cap_index.insert(cap, i);
+                        parent.push(i);
+                    }
+                }
+                let a = cap_index[pred];
+                let b = cap_index[succ];
+                let ra = find(&mut parent, a);
+                let rb = find(&mut parent, b);
+                if ra != rb {
+                    parent[ra] = rb;
+                }
+            }
+
+            // Collect components
+            let mut components: HashMap<usize, (Vec<&str>, f64, usize)> = HashMap::new();
+            for (&cap, &idx) in &cap_index {
+                let root = find(&mut parent, idx);
+                components
+                    .entry(root)
+                    .or_insert_with(|| (Vec::new(), 0.0, 0))
+                    .0
+                    .push(cap);
+            }
+            for &(pred, _, w) in edges {
+                let root = find(&mut parent, cap_index[pred]);
+                let entry = components.get_mut(&root).unwrap();
+                entry.1 += w;
+                entry.2 += 1;
+            }
+
+            for (_, (mut caps, total_weight, edge_count)) in components {
+                if caps.len() < 2 {
+                    continue;
+                }
+                caps.sort();
+                clusters.push(FieldCluster {
+                    capabilities: caps.into_iter().map(String::from).collect(),
+                    total_weight,
+                    edge_count,
+                    level: *level,
+                });
+            }
+        }
+
+        clusters.sort_by(|a, b| {
+            b.total_weight
+                .partial_cmp(&a.total_weight)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        clusters
     }
 
     /// Number of live field points (for diagnostics).
@@ -2933,6 +3038,76 @@ mod tests {
             post.variance > 0.0,
             "Variance should be merged from remote, got {}",
             post.variance
+        );
+    }
+
+    #[test]
+    fn clusters_finds_co_activated_capabilities() {
+        let field = PheromoneField::new();
+        // Excite 3 capabilities in sequence to create Hebbian edges
+        let t1 = make_trace("claude-code/Read", "edit file: src/main.rs", Outcome::Succeeded, 50);
+        let t2 = make_trace("claude-code/Edit", "edit file: src/main.rs", Outcome::Succeeded, 100);
+        let t3 = make_trace("claude-code/Grep", "edit file: src/main.rs", Outcome::Succeeded, 30);
+        field.excite(&t1);
+        field.excite(&t2);
+        field.excite(&t3);
+
+        let clusters = field.clusters(0.0);
+        // All three should form a single cluster at some level
+        let big = clusters.iter().find(|c| c.capabilities.len() >= 3);
+        assert!(
+            big.is_some(),
+            "Expected a cluster with 3+ capabilities, got: {:?}",
+            clusters
+        );
+        let cluster = big.unwrap();
+        assert!(cluster.capabilities.contains(&"tool:read".to_string()));
+        assert!(cluster.capabilities.contains(&"tool:edit".to_string()));
+        assert!(cluster.capabilities.contains(&"tool:search".to_string()));
+    }
+
+    #[test]
+    fn clusters_separates_disconnected_groups() {
+        let field = PheromoneField::new();
+        // Group 1: read → edit (same context)
+        let t1 = make_trace("claude-code/Read", "fix bug in parser", Outcome::Succeeded, 50);
+        let t2 = make_trace("claude-code/Edit", "fix bug in parser", Outcome::Succeeded, 100);
+        field.excite(&t1);
+        field.excite(&t2);
+
+        // Group 2: different capabilities in different context
+        let t3 = make_trace("mcp:external/a", "deploy to staging", Outcome::Succeeded, 200);
+        let t4 = make_trace("mcp:external/b", "deploy to staging", Outcome::Succeeded, 300);
+        field.excite(&t3);
+        field.excite(&t4);
+
+        let clusters = field.clusters(0.0);
+        // Should have at least 2 distinct clusters
+        assert!(
+            clusters.len() >= 2,
+            "Expected at least 2 clusters, got {} — {:?}",
+            clusters.len(),
+            clusters
+        );
+    }
+
+    #[test]
+    fn clusters_respects_min_weight() {
+        let field = PheromoneField::new();
+        let t1 = make_trace("claude-code/Read", "check tests", Outcome::Succeeded, 50);
+        let t2 = make_trace("claude-code/Edit", "check tests", Outcome::Succeeded, 100);
+        field.excite(&t1);
+        field.excite(&t2);
+
+        // With min_weight=0.0 we should see edges
+        let low = field.clusters(0.0);
+        assert!(!low.is_empty(), "Should find clusters at min_weight=0.0");
+
+        // With very high min_weight, no edges survive
+        let high = field.clusters(100.0);
+        assert!(
+            high.is_empty(),
+            "Should find no clusters at min_weight=100.0"
         );
     }
 }

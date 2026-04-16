@@ -3,7 +3,7 @@ use super::*;
 use thronglets::active_policy::{compile_active_policy, method_compliance_from_payload};
 use thronglets::context::{simhash, similarity as context_similarity};
 use thronglets::contracts::{
-    GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_COLLECTIVE_QUERIES, PREHOOK_MAX_HINTS,
+    GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_HINTS, PREHOOK_MAX_SECONDARY_QUERIES,
 };
 use thronglets::posts::SignalPostKind;
 use thronglets::presence::{
@@ -303,8 +303,8 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     let supports_file_guidance = matches!(tool_name, "Edit" | "Write") && current_file.is_some();
     profiler.stage("workspace");
 
-    let mut collective_store: Option<thronglets::storage::TraceStore> = None;
-    let mut collective_queries_remaining = PREHOOK_MAX_COLLECTIVE_QUERIES;
+    let mut secondary_store: Option<thronglets::storage::TraceStore> = None;
+    let mut secondary_queries_remaining = PREHOOK_MAX_SECONDARY_QUERIES;
 
     let mut has_recent_tool_error = false;
     let active_policy = compile_active_policy(&payload, &payload["tool_input"]);
@@ -364,15 +364,13 @@ pub(crate) fn prehook(ctx: &FullCtx) {
 
     let explicit_signals_checked = !hook_context.is_empty();
     if explicit_signals_checked
-        && let Some(store) = cached_collective_store(&mut collective_store, &ctx.dir)
+        && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
     {
         for mut sig in explicit_signals(
             store,
             &hook_context,
             &ctx_hash,
             current_space.as_deref(),
-            &ctx.binding.device_identity,
-            ctx.identity.public_key_bytes(),
         ) {
             sig.score += ws.recommendation_score_adjustment(sig.kind, current_space.as_deref());
             signals.push(sig);
@@ -384,7 +382,7 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     let has_danger = signals.iter().any(|s| matches!(s.kind, SignalKind::Danger));
     let experience_checked = explicit_signals_checked && !has_danger;
     if experience_checked
-        && let Some(store) = cached_collective_store(&mut collective_store, &ctx.dir)
+        && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
         && let Ok(failures) =
             store.query_similar_failed_traces(&ctx_hash, 48, 168, 5, current_space.as_deref())
         && !failures.is_empty()
@@ -414,7 +412,7 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     // yet settled on a stable path.
     let history_prior_checked = explicit_signals_checked && !has_danger;
     if history_prior_checked
-        && let Some(store) = cached_collective_store(&mut collective_store, &ctx.dir)
+        && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
     {
         for mut prior in thronglets::ambient::host_history_priors_for_context(
             store,
@@ -441,19 +439,19 @@ pub(crate) fn prehook(ctx: &FullCtx) {
         let mut repair_hint = repair_hint;
         repair_hint.score +=
             ws.recommendation_score_adjustment(SignalKind::Repair, current_space.as_deref());
-        if claim_collective_query(&repair_hint.candidate, &mut collective_queries_remaining)
-            && let Some(store) = cached_collective_store(&mut collective_store, &ctx.dir)
-            && let Ok(collective_sources) = store.count_repair_sources(
+        if claim_secondary_query(&repair_hint.candidate, &mut secondary_queries_remaining)
+            && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
+            && let Ok(network_sources) = store.count_repair_sources(
                 tool_name,
                 &repair_hint.candidate.steps,
                 168,
                 current_space.as_deref(),
             )
         {
-            apply_collective_sources(
+            apply_network_sources(
                 &mut repair_hint.candidate,
                 &mut repair_hint.score,
-                collective_sources,
+                network_sources,
             );
         }
 
@@ -468,7 +466,7 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     // Co-edit signals: files that are frequently edited together.
     if supports_file_guidance
         && let Some(current_file) = current_file.as_deref()
-        && let Some(store) = cached_collective_store(&mut collective_store, &ctx.dir)
+        && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
     {
         for sig in co_edit_signals(
             store,
@@ -485,14 +483,12 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     let presence_checked =
         current_space.is_some() && (!supports_file_guidance || !signals.is_empty());
     if presence_checked
-        && let Some(store) = cached_collective_store(&mut collective_store, &ctx.dir)
+        && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
         && let Some(space) = current_space.as_deref()
         && let Some(presence_signal) = presence_context_signal(
             store,
             space,
             current_session_id.as_deref(),
-            &ctx.binding.device_identity,
-            ctx.identity.public_key_bytes(),
         )
     {
         signals.push(presence_signal);
@@ -614,7 +610,7 @@ pub(crate) fn prehook(ctx: &FullCtx) {
         &recommendations,
         stdout_bytes,
         profile_file_guidance_gate(supports_file_guidance),
-        PREHOOK_MAX_COLLECTIVE_QUERIES - collective_queries_remaining,
+        PREHOOK_MAX_SECONDARY_QUERIES - secondary_queries_remaining,
     );
     // Normal state -> complete silence. Zero tokens.
 }
@@ -945,8 +941,6 @@ mod tests {
             ctx,
             &simhash(ctx),
             None,
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
         );
         assert!(!avoid_signals.is_empty());
         assert_eq!(avoid_signals[0].kind, SignalKind::Danger);
@@ -959,8 +953,6 @@ mod tests {
             ctx,
             &simhash(ctx),
             None,
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
         );
         assert!(!watch_signals.is_empty());
         assert!(watch_signals.iter().any(|s| s.body.contains("watch")));
@@ -972,8 +964,6 @@ mod tests {
             ctx,
             &simhash(ctx),
             None,
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
         );
         assert!(!rec_signals.is_empty());
         assert!(rec_signals.iter().any(|s| s.body.contains("recommended")));
@@ -1010,8 +1000,6 @@ mod tests {
             ctx,
             &simhash(ctx),
             Some("psyche"),
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
         );
         assert!(wrong_space.is_empty());
 
@@ -1021,8 +1009,6 @@ mod tests {
             ctx,
             &simhash(ctx),
             Some("other-space"),
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
         );
         assert!(!right_space.is_empty());
         assert!(right_space[0].body.contains("skip the generated lockfile"));

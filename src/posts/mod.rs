@@ -40,35 +40,6 @@ pub enum SignalPostKind {
     PsycheState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SignalScopeFilter {
-    All,
-    Local,
-    Collective,
-    Mixed,
-}
-
-impl SignalScopeFilter {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "all" => Some(Self::All),
-            "local" => Some(Self::Local),
-            "collective" => Some(Self::Collective),
-            "mixed" => Some(Self::Mixed),
-            _ => None,
-        }
-    }
-
-    pub fn matches(self, evidence_scope: &str) -> bool {
-        match self {
-            Self::All => true,
-            Self::Local => evidence_scope == "local",
-            Self::Collective => evidence_scope == "collective",
-            Self::Mixed => evidence_scope == "mixed",
-        }
-    }
-}
 
 impl SignalPostKind {
     pub fn as_str(self) -> &'static str {
@@ -146,12 +117,8 @@ pub struct SignalQueryResult {
     pub corroboration_tier: String,
     pub density_score: u8,
     pub density_tier: String,
-    pub promotion_state: String,
     pub inhibition_penalty: u8,
     pub inhibition_state: String,
-    pub local_source_count: u32,
-    pub collective_source_count: u32,
-    pub evidence_scope: String,
     pub latest_timestamp: u64,
     pub expires_at: u64,
     pub contexts: Vec<String>,
@@ -169,14 +136,10 @@ pub struct SignalFeedResult {
     pub corroboration_tier: String,
     pub density_score: u8,
     pub density_tier: String,
-    pub promotion_state: String,
     pub inhibition_penalty: u8,
     pub inhibition_state: String,
     pub focus_score: u8,
     pub focus_tier: String,
-    pub local_source_count: u32,
-    pub collective_source_count: u32,
-    pub evidence_scope: String,
     pub latest_timestamp: u64,
     pub expires_at: u64,
     pub contexts: Vec<String>,
@@ -205,8 +168,6 @@ struct SignalGroup {
     contexts: BTreeSet<String>,
     sources: BTreeSet<String>,
     models: BTreeSet<String>,
-    local_sources: BTreeSet<String>,
-    collective_sources: BTreeSet<String>,
 }
 
 pub fn is_signal_capability(capability: &str) -> bool {
@@ -397,8 +358,6 @@ pub fn is_legacy_auto_signal_trace(trace: &Trace) -> bool {
 pub fn summarize_signal_traces(
     traces: &[Trace],
     query_context: &str,
-    local_device_identity: &str,
-    local_node_pubkey: [u8; 32],
     limit: usize,
 ) -> Vec<SignalQueryResult> {
     let query_hash = simhash(query_context);
@@ -430,8 +389,6 @@ pub fn summarize_signal_traces(
             contexts: BTreeSet::new(),
             sources: BTreeSet::new(),
             models: BTreeSet::new(),
-            local_sources: BTreeSet::new(),
-            collective_sources: BTreeSet::new(),
         });
         entry.best_similarity = entry.best_similarity.max(similarity_score);
         entry.latest_timestamp = entry.latest_timestamp.max(trace.timestamp);
@@ -443,14 +400,8 @@ pub fn summarize_signal_traces(
             entry.reinforcement_count = entry.reinforcement_count.saturating_add(1);
         } else {
             entry.total_posts += 1;
-            let source = source_key(trace);
-            entry.sources.insert(source.clone());
+            entry.sources.insert(source_key(trace));
             entry.models.insert(trace.model_id.clone());
-            if is_local_source(trace, local_device_identity, &local_node_pubkey) {
-                entry.local_sources.insert(source);
-            } else {
-                entry.collective_sources.insert(source);
-            }
         }
     }
 
@@ -458,26 +409,18 @@ pub fn summarize_signal_traces(
         .into_values()
         .filter(|group| group.total_posts > 0)
         .map(|group| {
-            let local_source_count = group.local_sources.len() as u32;
-            let collective_source_count = group.collective_sources.len() as u32;
             let source_count = group.sources.len() as u32;
             let model_count = group.models.len() as u32;
-            let evidence_scope =
-                signal_evidence_scope(local_source_count, collective_source_count).to_string();
             let freshness_rank =
                 signal_freshness_rank(now_ms, group.latest_timestamp, group.expires_at);
             let decay_penalty = signal_decay_penalty(source_count, model_count, freshness_rank);
             let density_score = signal_density_score(
-                local_source_count,
-                collective_source_count,
                 source_count,
                 model_count,
-                0,
+                freshness_rank,
                 group.reinforcement_count,
             )
             .saturating_sub(decay_penalty);
-            let promotion_state =
-                signal_promotion_state(density_score, local_source_count, collective_source_count);
             SignalQueryResult {
                 kind: group.kind.as_str().to_string(),
                 message: group.message,
@@ -491,12 +434,8 @@ pub fn summarize_signal_traces(
                     .to_string(),
                 density_score,
                 density_tier: signal_density_tier(density_score).to_string(),
-                promotion_state: promotion_state.to_string(),
                 inhibition_penalty: 0,
                 inhibition_state: "none".into(),
-                local_source_count,
-                collective_source_count,
-                evidence_scope,
                 latest_timestamp: group.latest_timestamp,
                 expires_at: group.expires_at,
                 contexts: group.contexts.into_iter().take(3).collect(),
@@ -512,7 +451,6 @@ pub fn summarize_signal_traces(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.density_score.cmp(&a.density_score))
             .then_with(|| a.inhibition_penalty.cmp(&b.inhibition_penalty))
-            .then_with(|| b.collective_source_count.cmp(&a.collective_source_count))
             .then_with(|| {
                 signal_corroboration_rank(b.source_count, b.model_count)
                     .cmp(&signal_corroboration_rank(a.source_count, a.model_count))
@@ -528,8 +466,6 @@ pub fn summarize_signal_traces(
 
 pub fn summarize_recent_signal_feed(
     traces: &[Trace],
-    local_device_identity: &str,
-    local_node_pubkey: [u8; 32],
     limit: usize,
 ) -> Vec<SignalFeedResult> {
     let now_ms = now_ms();
@@ -559,8 +495,6 @@ pub fn summarize_recent_signal_feed(
             contexts: BTreeSet::new(),
             sources: BTreeSet::new(),
             models: BTreeSet::new(),
-            local_sources: BTreeSet::new(),
-            collective_sources: BTreeSet::new(),
         });
         entry.latest_timestamp = entry.latest_timestamp.max(trace.timestamp);
         entry.expires_at = entry.expires_at.max(decoded.expires_at);
@@ -571,14 +505,8 @@ pub fn summarize_recent_signal_feed(
             entry.reinforcement_count = entry.reinforcement_count.saturating_add(1);
         } else {
             entry.total_posts += 1;
-            let source = source_key(trace);
-            entry.sources.insert(source.clone());
+            entry.sources.insert(source_key(trace));
             entry.models.insert(trace.model_id.clone());
-            if is_local_source(trace, local_device_identity, &local_node_pubkey) {
-                entry.local_sources.insert(source);
-            } else {
-                entry.collective_sources.insert(source);
-            }
         }
     }
 
@@ -586,33 +514,20 @@ pub fn summarize_recent_signal_feed(
         .into_values()
         .filter(|group| group.total_posts > 0)
         .map(|group| {
-            let local_source_count = group.local_sources.len() as u32;
-            let collective_source_count = group.collective_sources.len() as u32;
             let source_count = group.sources.len() as u32;
             let model_count = group.models.len() as u32;
-            let evidence_scope =
-                signal_evidence_scope(local_source_count, collective_source_count).to_string();
             let freshness_rank =
                 signal_freshness_rank(now_ms, group.latest_timestamp, group.expires_at);
             let decay_penalty = signal_decay_penalty(source_count, model_count, freshness_rank);
             let density_score = signal_density_score(
-                local_source_count,
-                collective_source_count,
                 source_count,
                 model_count,
                 freshness_rank,
                 group.reinforcement_count,
             )
             .saturating_sub(decay_penalty);
-            let promotion_state =
-                signal_promotion_state(density_score, local_source_count, collective_source_count);
-            let focus_score = signal_focus_score(
-                collective_source_count,
-                source_count,
-                model_count,
-                freshness_rank,
-            )
-            .saturating_sub(decay_penalty);
+            let focus_score = signal_focus_score(source_count, model_count, freshness_rank)
+                .saturating_sub(decay_penalty);
             SignalFeedResult {
                 kind: group.kind.as_str().to_string(),
                 message: group.message,
@@ -625,14 +540,10 @@ pub fn summarize_recent_signal_feed(
                     .to_string(),
                 density_score,
                 density_tier: signal_density_tier(density_score).to_string(),
-                promotion_state: promotion_state.to_string(),
                 inhibition_penalty: 0,
                 inhibition_state: "none".into(),
                 focus_score,
                 focus_tier: signal_focus_tier(focus_score).to_string(),
-                local_source_count,
-                collective_source_count,
-                evidence_scope,
                 latest_timestamp: group.latest_timestamp,
                 expires_at: group.expires_at,
                 contexts: group.contexts.into_iter().take(3).collect(),
@@ -647,7 +558,6 @@ pub fn summarize_recent_signal_feed(
             .cmp(&a.focus_score)
             .then_with(|| b.density_score.cmp(&a.density_score))
             .then_with(|| a.inhibition_penalty.cmp(&b.inhibition_penalty))
-            .then_with(|| b.collective_source_count.cmp(&a.collective_source_count))
             .then_with(|| b.source_count.cmp(&a.source_count))
             .then_with(|| b.model_count.cmp(&a.model_count))
             .then_with(|| b.latest_timestamp.cmp(&a.latest_timestamp))
@@ -659,32 +569,39 @@ pub fn summarize_recent_signal_feed(
 
 pub fn filter_signal_feed_results(
     results: Vec<SignalFeedResult>,
-    scope: SignalScopeFilter,
+    min_sources: u32,
 ) -> Vec<SignalFeedResult> {
     let filtered: Vec<_> = results
         .into_iter()
-        .filter(|result| scope.matches(&result.evidence_scope))
+        .filter(|result| result.source_count >= min_sources)
         .collect();
 
-    let has_promoted = filtered
+    let has_dense = filtered
         .iter()
-        .any(|result| result.promotion_state != "none");
-    if !has_promoted {
+        .any(|result| signal_density_tier(result.density_score) == "promoted"
+            || signal_density_tier(result.density_score) == "dominant");
+    if !has_dense {
         return filtered;
     }
 
-    let mut promoted: Vec<_> = filtered
+    let mut dense: Vec<_> = filtered
         .iter()
-        .filter(|result| result.promotion_state != "none")
+        .filter(|result| {
+            let tier = signal_density_tier(result.density_score);
+            tier == "promoted" || tier == "dominant"
+        })
         .cloned()
         .collect();
     let mut background: Vec<_> = filtered
         .iter()
-        .filter(|result| result.promotion_state == "none")
+        .filter(|result| {
+            let tier = signal_density_tier(result.density_score);
+            tier != "promoted" && tier != "dominant"
+        })
         .cloned()
         .collect();
-    promoted.append(&mut background);
-    promoted
+    dense.append(&mut background);
+    dense
 }
 
 pub fn create_query_reinforcement_traces(
@@ -696,7 +613,10 @@ pub fn create_query_reinforcement_traces(
 ) -> Vec<Trace> {
     results
         .iter()
-        .filter(|result| result.promotion_state != "none")
+        .filter(|result| {
+            let tier = result.density_tier.as_str();
+            tier == "promoted" || tier == "dominant"
+        })
         .take(3)
         .filter_map(|result| {
             let kind = SignalPostKind::parse(&result.kind)?;
@@ -722,7 +642,10 @@ pub fn create_feed_reinforcement_traces(
 ) -> Vec<Trace> {
     results
         .iter()
-        .filter(|result| result.promotion_state != "none")
+        .filter(|result| {
+            let tier = result.density_tier.as_str();
+            tier == "promoted" || tier == "dominant"
+        })
         .take(3)
         .filter_map(|result| {
             let kind = SignalPostKind::parse(&result.kind)?;
@@ -775,32 +698,11 @@ fn source_key(trace: &Trace) -> String {
     }
 }
 
-fn is_local_source(
-    trace: &Trace,
-    local_device_identity: &str,
-    local_node_pubkey: &[u8; 32],
-) -> bool {
-    trace
-        .device_identity
-        .as_deref()
-        .map(|device_identity| device_identity == local_device_identity)
-        .unwrap_or(trace.node_pubkey == *local_node_pubkey)
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-fn signal_evidence_scope(local_sources: u32, collective_sources: u32) -> &'static str {
-    match (local_sources > 0, collective_sources > 0) {
-        (true, true) => "mixed",
-        (true, false) => "local",
-        (false, true) => "collective",
-        (false, false) => "unknown",
-    }
 }
 
 fn signal_corroboration_tier(source_count: u32, model_count: u32) -> &'static str {
@@ -843,27 +745,27 @@ fn signal_decay_penalty(source_count: u32, model_count: u32, freshness_rank: u8)
     }
 }
 
-fn signal_focus_score(
-    collective_source_count: u32,
-    source_count: u32,
-    model_count: u32,
-    freshness_rank: u8,
-) -> u8 {
-    collective_source_count.min(2) as u8
-        + signal_corroboration_rank(source_count, model_count)
-        + freshness_rank
+fn signal_focus_score(source_count: u32, model_count: u32, freshness_rank: u8) -> u8 {
+    let breadth = match source_count {
+        0 | 1 => 0u8,
+        2 => 1,
+        _ => 2,
+    };
+    breadth + signal_corroboration_rank(source_count, model_count) + freshness_rank
 }
 
 fn signal_density_score(
-    local_source_count: u32,
-    collective_source_count: u32,
     source_count: u32,
     model_count: u32,
     freshness_rank: u8,
     reinforcement_count: u32,
 ) -> u8 {
-    local_source_count.min(2) as u8
-        + collective_source_count.min(2) as u8
+    let resonance = match source_count {
+        0 | 1 => 0u8,
+        2 => 2,
+        _ => 3,
+    };
+    resonance
         + signal_corroboration_rank(source_count, model_count)
         + freshness_rank
         + reinforcement_count.min(2) as u8
@@ -889,24 +791,6 @@ fn signal_density_tier(density_score: u8) -> &'static str {
     }
 }
 
-fn signal_promotion_state(
-    density_score: u8,
-    local_source_count: u32,
-    collective_source_count: u32,
-) -> &'static str {
-    if signal_density_tier(density_score) == "sparse"
-        || signal_density_tier(density_score) == "candidate"
-    {
-        "none"
-    } else if collective_source_count > 0 {
-        "collective"
-    } else if local_source_count > 0 {
-        "local"
-    } else {
-        "none"
-    }
-}
-
 fn signal_focus_tier(focus_score: u8) -> &'static str {
     if focus_score >= 5 {
         "primary"
@@ -921,8 +805,11 @@ fn apply_query_avoid_inhibition(results: &mut [SignalQueryResult]) {
     let inhibition_penalty = results
         .iter()
         .filter(|result| result.kind == SignalPostKind::Avoid.as_str())
-        .filter(|result| result.promotion_state != "none")
-        .map(|result| promotion_inhibition_penalty(&result.promotion_state))
+        .filter(|result| {
+            let tier = result.density_tier.as_str();
+            tier == "promoted" || tier == "dominant"
+        })
+        .map(|result| density_inhibition_penalty(&result.density_tier))
         .max()
         .unwrap_or(0);
     if inhibition_penalty == 0 {
@@ -945,11 +832,14 @@ fn apply_feed_avoid_inhibition(results: &mut [SignalFeedResult]) {
     let avoid_results: Vec<_> = results
         .iter()
         .filter(|result| result.kind == SignalPostKind::Avoid.as_str())
-        .filter(|result| result.promotion_state != "none")
+        .filter(|result| {
+            let tier = result.density_tier.as_str();
+            tier == "promoted" || tier == "dominant"
+        })
         .map(|result| {
             (
                 result.contexts.clone(),
-                promotion_inhibition_penalty(&result.promotion_state),
+                density_inhibition_penalty(&result.density_tier),
             )
         })
         .collect();
@@ -976,18 +866,18 @@ fn apply_feed_avoid_inhibition(results: &mut [SignalFeedResult]) {
     }
 }
 
-fn promotion_inhibition_penalty(promotion_state: &str) -> u8 {
-    match promotion_state {
-        "collective" => 2,
-        "local" => 1,
+fn density_inhibition_penalty(density_tier: &str) -> u8 {
+    match density_tier {
+        "dominant" => 2,
+        "promoted" => 1,
         _ => 0,
     }
 }
 
 fn inhibition_state_label(inhibition_penalty: u8) -> &'static str {
     match inhibition_penalty {
-        2 => "collective",
-        1 => "local",
+        2 => "strong",
+        1 => "moderate",
         _ => "none",
     }
 }
@@ -1047,8 +937,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[trace_a, trace_b],
             "fix flaky ci workflow",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 1);
@@ -1058,11 +946,7 @@ mod tests {
         assert_eq!(results[0].source_count, 2);
         assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].corroboration_tier, "multi_model");
-        assert_eq!(results[0].density_tier, "promoted");
-        assert_eq!(results[0].promotion_state, "local");
-        assert_eq!(results[0].local_source_count, 2);
-        assert_eq!(results[0].collective_source_count, 0);
-        assert_eq!(results[0].evidence_scope, "local");
+        assert_eq!(results[0].density_tier, "dominant");
         assert!(results[0].expires_at >= trace_b_timestamp);
     }
 
@@ -1095,8 +979,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[psyche.clone(), thronglets.clone()],
             "repair parser regressions",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 2);
@@ -1108,8 +990,6 @@ mod tests {
         let psyche_only = summarize_signal_traces(
             &[psyche],
             "repair parser regressions",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(psyche_only.len(), 1);
@@ -1160,8 +1040,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[expired, fresh],
             "ship the current branch",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 1);
@@ -1195,8 +1073,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[legacy, current],
             "repair release flow",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 1);
@@ -1204,42 +1080,37 @@ mod tests {
     }
 
     #[test]
-    fn summarize_signal_posts_distinguishes_local_and_collective_sources() {
-        let local_identity = NodeIdentity::generate();
-        let remote_identity = NodeIdentity::generate();
+    fn summarize_signal_posts_multi_source_increases_density() {
+        let identity_a = NodeIdentity::generate();
+        let identity_b = NodeIdentity::generate();
 
-        let local = create_signal_trace(
+        let trace_a = create_signal_trace(
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            signal_config(&local_identity, "codex", "local-1"),
-            local_identity.public_key_bytes(),
-            |msg| local_identity.sign(msg),
+            signal_config(&identity_a, "codex", "session-a"),
+            identity_a.public_key_bytes(),
+            |msg| identity_a.sign(msg),
         );
-        let remote = create_signal_trace(
+        let trace_b = create_signal_trace(
             SignalPostKind::Recommend,
             "repair release flow",
             "run release-check before push",
-            signal_config(&remote_identity, "openclaw", "remote-1"),
-            remote_identity.public_key_bytes(),
-            |msg| remote_identity.sign(msg),
+            signal_config(&identity_b, "openclaw", "session-b"),
+            identity_b.public_key_bytes(),
+            |msg| identity_b.sign(msg),
         );
 
         let results = summarize_signal_traces(
-            &[local, remote],
+            &[trace_a, trace_b],
             "repair release flow",
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].local_source_count, 1);
-        assert_eq!(results[0].collective_source_count, 1);
+        assert_eq!(results[0].source_count, 2);
         assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].corroboration_tier, "multi_model");
-        assert_eq!(results[0].density_tier, "promoted");
-        assert_eq!(results[0].promotion_state, "collective");
-        assert_eq!(results[0].evidence_scope, "mixed");
+        assert_eq!(results[0].density_tier, "dominant");
     }
 
     #[test]
@@ -1291,8 +1162,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[signal, reinforcement_a, reinforcement_b],
             "repair release flow",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 1);
@@ -1301,7 +1170,6 @@ mod tests {
         assert_eq!(results[0].source_count, 1);
         assert_eq!(results[0].model_count, 1);
         assert_eq!(results[0].density_tier, "promoted");
-        assert_eq!(results[0].promotion_state, "local");
     }
 
     #[test]
@@ -1367,13 +1235,10 @@ mod tests {
         let results = summarize_signal_traces(
             &[signal, reinforcement_a, reinforcement_b],
             "repair release flow",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].density_tier, "candidate");
-        assert_eq!(results[0].promotion_state, "none");
+        assert_eq!(results[0].density_tier, "sparse");
     }
 
     #[test]
@@ -1400,8 +1265,6 @@ mod tests {
         let results = summarize_signal_traces(
             &[reinforcement],
             "ship the current branch",
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert!(results.is_empty());
@@ -1409,7 +1272,6 @@ mod tests {
 
     #[test]
     fn summarize_signal_posts_promoted_avoid_inhibits_competing_recommendation() {
-        let local_identity = NodeIdentity::generate();
         let remote_a = NodeIdentity::generate();
         let remote_b = NodeIdentity::generate();
 
@@ -1441,20 +1303,18 @@ mod tests {
         let results = summarize_signal_traces(
             &[recommend, avoid_a, avoid_b],
             "repair release flow",
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].kind, "avoid");
         assert_eq!(results[0].inhibition_state, "none");
         assert_eq!(results[1].kind, "recommend");
-        assert_eq!(results[1].inhibition_state, "collective");
+        assert_eq!(results[1].inhibition_state, "strong");
         assert_eq!(results[1].inhibition_penalty, 2);
     }
 
     #[test]
-    fn summarize_recent_signal_feed_prioritizes_collective_support() {
+    fn summarize_recent_signal_feed_prioritizes_multi_source_support() {
         let local_identity = NodeIdentity::generate();
         let remote_a = NodeIdentity::generate();
         let remote_b = NodeIdentity::generate();
@@ -1486,19 +1346,15 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[local_signal, collective_a, collective_b],
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].message, "run release-check before push");
-        assert_eq!(results[0].collective_source_count, 2);
+        assert_eq!(results[0].source_count, 2);
         assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].corroboration_tier, "multi_model");
         assert_eq!(results[0].density_tier, "dominant");
-        assert_eq!(results[0].promotion_state, "collective");
         assert_eq!(results[0].focus_tier, "primary");
-        assert_eq!(results[0].evidence_scope, "collective");
     }
 
     #[test]
@@ -1529,8 +1385,6 @@ mod tests {
         // SQL-level space filter would return only core traces
         let results = summarize_recent_signal_feed(
             &[core],
-            &identity.device_identity(),
-            identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 1);
@@ -1539,7 +1393,6 @@ mod tests {
 
     #[test]
     fn summarize_recent_signal_feed_prefers_multi_model_support_when_counts_tie() {
-        let local_identity = NodeIdentity::generate();
         let remote_a = NodeIdentity::generate();
         let remote_b = NodeIdentity::generate();
         let remote_c = NodeIdentity::generate();
@@ -1585,8 +1438,6 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[single_model_a, single_model_b, multi_model_a, multi_model_b],
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 2);
@@ -1595,15 +1446,14 @@ mod tests {
         assert_eq!(results[0].model_count, 2);
         assert_eq!(results[0].corroboration_tier, "multi_model");
         assert_eq!(results[0].density_tier, "dominant");
-        assert_eq!(results[0].promotion_state, "collective");
         assert_eq!(results[0].focus_tier, "primary");
         assert_eq!(results[1].message, "rerun the targeted test first");
         assert_eq!(results[1].source_count, 2);
         assert_eq!(results[1].model_count, 1);
         assert_eq!(results[1].corroboration_tier, "repeated_source");
         assert_eq!(results[1].density_tier, "dominant");
-        assert_eq!(results[1].promotion_state, "collective");
-        assert_eq!(results[1].focus_tier, "primary");
+        // 2 sources + 1 model + fresh: breadth(1) + corr(1) + fresh(2) = 4 → "secondary"
+        assert_eq!(results[1].focus_tier, "secondary");
     }
 
     #[test]
@@ -1669,25 +1519,23 @@ mod tests {
                 multi_model_a,
                 multi_model_b,
             ],
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].message, "run release-check before push");
-        assert_eq!(results[0].corroboration_tier, "multi_model");
+        // With pure density formula, 3 sources (repeated) outranks 2 sources (multi_model)
+        // because resonance(3)=3 + corr(1) + fresh(2) = 6 vs resonance(2)=2 + corr(2) + fresh(2) = 6
+        // tie-broken by source_count: 3 > 2
+        assert_eq!(results[0].message, "rerun the targeted test first");
+        assert_eq!(results[0].corroboration_tier, "repeated_source");
         assert_eq!(results[0].density_tier, "dominant");
-        assert_eq!(results[0].promotion_state, "collective");
-        assert_eq!(results[1].message, "rerun the targeted test first");
-        assert_eq!(results[1].corroboration_tier, "repeated_source");
+        assert_eq!(results[1].message, "run release-check before push");
+        assert_eq!(results[1].corroboration_tier, "multi_model");
         assert_eq!(results[1].density_tier, "dominant");
-        assert_eq!(results[1].promotion_state, "collective");
-        assert!(results[1].source_count > results[0].source_count);
+        assert!(results[0].source_count > results[1].source_count);
     }
 
     #[test]
     fn summarize_recent_signal_feed_prefers_fresher_signal_when_support_is_close() {
-        let local_identity = NodeIdentity::generate();
         let remote_a = NodeIdentity::generate();
         let remote_b = NodeIdentity::generate();
         let remote_c = NodeIdentity::generate();
@@ -1754,31 +1602,22 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[old_a, old_b, old_c, fresh_a, fresh_b, fresh_c],
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].message, "rerun the targeted test first");
         assert_eq!(results[0].corroboration_tier, "multi_model");
         assert_eq!(results[0].density_tier, "dominant");
-        assert_eq!(results[0].promotion_state, "collective");
         assert_eq!(results[0].focus_tier, "primary");
         assert_eq!(results[1].message, "run release-check before push");
         assert_eq!(results[1].corroboration_tier, "multi_model");
-        assert_eq!(results[1].density_tier, "promoted");
-        assert_eq!(results[1].promotion_state, "collective");
+        assert_eq!(results[1].density_tier, "dominant");
         assert_eq!(results[1].focus_tier, "secondary");
         assert_eq!(results[0].source_count, results[1].source_count);
-        assert_eq!(
-            results[0].collective_source_count,
-            results[1].collective_source_count
-        );
     }
 
     #[test]
     fn summarize_recent_signal_feed_inhibits_competing_signal_with_shared_context() {
-        let local_identity = NodeIdentity::generate();
         let remote_a = NodeIdentity::generate();
         let remote_b = NodeIdentity::generate();
         let remote_c = NodeIdentity::generate();
@@ -1810,23 +1649,21 @@ mod tests {
 
         let results = summarize_recent_signal_feed(
             &[recommend, avoid_a, avoid_b],
-            &local_identity.device_identity(),
-            local_identity.public_key_bytes(),
             10,
         );
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].kind, "avoid");
         assert_eq!(results[1].kind, "recommend");
-        assert_eq!(results[1].inhibition_state, "collective");
+        assert_eq!(results[1].inhibition_state, "strong");
         assert_eq!(results[1].inhibition_penalty, 2);
     }
 
     #[test]
-    fn filter_signal_feed_results_by_scope() {
+    fn filter_signal_feed_results_by_min_sources() {
         let results = vec![
             SignalFeedResult {
                 kind: "recommend".into(),
-                message: "local".into(),
+                message: "single source".into(),
                 space: None,
                 total_posts: 1,
                 reinforcement_count: 0,
@@ -1835,21 +1672,17 @@ mod tests {
                 corroboration_tier: "single_source".into(),
                 density_score: 0,
                 density_tier: "sparse".into(),
-                promotion_state: "none".into(),
                 inhibition_penalty: 0,
                 inhibition_state: "none".into(),
                 focus_score: 0,
                 focus_tier: "background".into(),
-                local_source_count: 1,
-                collective_source_count: 0,
-                evidence_scope: "local".into(),
                 latest_timestamp: 1,
                 expires_at: 2,
                 contexts: vec!["ctx".into()],
             },
             SignalFeedResult {
                 kind: "recommend".into(),
-                message: "collective".into(),
+                message: "multi source".into(),
                 space: None,
                 total_posts: 2,
                 reinforcement_count: 0,
@@ -1858,23 +1691,19 @@ mod tests {
                 corroboration_tier: "multi_model".into(),
                 density_score: 6,
                 density_tier: "dominant".into(),
-                promotion_state: "collective".into(),
                 inhibition_penalty: 0,
                 inhibition_state: "none".into(),
                 focus_score: 6,
                 focus_tier: "primary".into(),
-                local_source_count: 0,
-                collective_source_count: 2,
-                evidence_scope: "collective".into(),
                 latest_timestamp: 2,
                 expires_at: 3,
                 contexts: vec!["ctx".into()],
             },
         ];
 
-        let filtered = filter_signal_feed_results(results, SignalScopeFilter::Collective);
+        let filtered = filter_signal_feed_results(results, 2);
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].message, "collective");
+        assert_eq!(filtered[0].message, "multi source");
     }
 
     #[test]
@@ -1913,43 +1742,21 @@ mod tests {
     }
 
     #[test]
-    fn signal_focus_tier_prefers_collective_multi_model() {
-        assert_eq!(signal_focus_tier(signal_focus_score(2, 2, 2, 2)), "primary");
-        assert_eq!(
-            signal_focus_tier(signal_focus_score(1, 2, 1, 1)),
-            "secondary"
-        );
-        assert_eq!(
-            signal_focus_tier(signal_focus_score(0, 1, 1, 0)),
-            "background"
-        );
+    fn signal_focus_tier_prefers_multi_source_multi_model() {
+        assert_eq!(signal_focus_tier(signal_focus_score(3, 2, 2)), "primary");
+        assert_eq!(signal_focus_tier(signal_focus_score(2, 1, 1)), "secondary");
+        assert_eq!(signal_focus_tier(signal_focus_score(1, 1, 0)), "background");
     }
 
     #[test]
     fn signal_density_tier_moves_from_sparse_to_dominant() {
-        assert_eq!(
-            signal_density_tier(signal_density_score(0, 0, 1, 1, 0, 0)),
-            "sparse"
-        );
-        assert_eq!(
-            signal_density_tier(signal_density_score(1, 0, 1, 1, 0, 0)),
-            "candidate"
-        );
-        assert_eq!(
-            signal_density_tier(signal_density_score(1, 1, 2, 2, 0, 0)),
-            "promoted"
-        );
-        assert_eq!(
-            signal_density_tier(signal_density_score(1, 2, 2, 2, 1, 0)),
-            "dominant"
-        );
-    }
-
-    #[test]
-    fn signal_promotion_state_distinguishes_local_collective_and_none() {
-        assert_eq!(signal_promotion_state(0, 1, 0), "none");
-        assert_eq!(signal_promotion_state(2, 1, 0), "none");
-        assert_eq!(signal_promotion_state(3, 1, 0), "local");
-        assert_eq!(signal_promotion_state(4, 1, 1), "collective");
+        // 1 source, 1 model, stale, no reinforcement → resonance=0, corr=0, fresh=0, reinf=0 = 0
+        assert_eq!(signal_density_tier(signal_density_score(1, 1, 0, 0)), "sparse");
+        // 1 source, 1 model, fresh, no reinforcement → 0+0+2+0 = 2
+        assert_eq!(signal_density_tier(signal_density_score(1, 1, 2, 0)), "candidate");
+        // 2 sources, 2 models, stale, no reinforcement → 2+2+0+0 = 4
+        assert_eq!(signal_density_tier(signal_density_score(2, 2, 0, 0)), "promoted");
+        // 2 sources, 2 models, fresh, no reinforcement → 2+2+2+0 = 6
+        assert_eq!(signal_density_tier(signal_density_score(2, 2, 2, 0)), "dominant");
     }
 }

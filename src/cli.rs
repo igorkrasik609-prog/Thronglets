@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use thronglets::eval::EvalFocus;
 use thronglets::identity::DEFAULT_CONNECTION_FILE_TTL_HOURS;
-use thronglets::posts::{DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind, SignalScopeFilter};
+use thronglets::posts::{DEFAULT_SIGNAL_TTL_HOURS, SignalPostKind};
 use thronglets::presence::DEFAULT_PRESENCE_TTL_MINUTES;
 
 use crate::setup_support::AdapterKind;
@@ -127,24 +127,6 @@ impl From<SignalKindArg> for SignalPostKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum SignalScopeArg {
-    All,
-    Local,
-    Collective,
-    Mixed,
-}
-
-impl From<SignalScopeArg> for SignalScopeFilter {
-    fn from(value: SignalScopeArg) -> Self {
-        match value {
-            SignalScopeArg::All => SignalScopeFilter::All,
-            SignalScopeArg::Local => SignalScopeFilter::Local,
-            SignalScopeArg::Collective => SignalScopeFilter::Collective,
-            SignalScopeArg::Mixed => SignalScopeFilter::Mixed,
-        }
-    }
-}
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
@@ -373,9 +355,9 @@ pub(crate) enum Commands {
         #[arg(long, value_enum)]
         kind: Option<SignalKindArg>,
 
-        /// Filter by evidence scope.
-        #[arg(long, value_enum, default_value_t = SignalScopeArg::All)]
-        scope: SignalScopeArg,
+        /// Minimum independent source count to include.
+        #[arg(long, default_value_t = 0)]
+        min_sources: u32,
 
         /// Restrict to one explicit substrate space.
         #[arg(long)]

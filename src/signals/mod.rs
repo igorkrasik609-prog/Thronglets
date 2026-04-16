@@ -52,14 +52,8 @@ pub struct StepCandidate {
     pub confidence: String,
     pub support: u32,
     pub source_count: u32,
-    pub evidence_scope: EvidenceScope,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum EvidenceScope {
-    Local,
-    Collective,
-}
 
 impl StepAction {
     pub fn new(tool: impl Into<String>, target: Option<String>) -> Self {
@@ -90,11 +84,6 @@ impl StepCandidate {
             confidence: confidence.into(),
             support,
             source_count,
-            evidence_scope: if source_count > 1 {
-                EvidenceScope::Collective
-            } else {
-                EvidenceScope::Local
-            },
         }
     }
 
@@ -109,11 +98,6 @@ impl StepCandidate {
             confidence: confidence.into(),
             support,
             source_count,
-            evidence_scope: if source_count > 1 {
-                EvidenceScope::Collective
-            } else {
-                EvidenceScope::Local
-            },
         }
     }
 
@@ -136,23 +120,16 @@ impl StepCandidate {
         self.steps.first().and_then(|step| step.target.as_deref())
     }
 
-    pub fn upgrade_collective_sources(&mut self, collective_sources: u32) -> i32 {
-        if collective_sources <= self.source_count {
+    pub fn apply_network_sources(&mut self, network_sources: u32) -> i32 {
+        if network_sources <= self.source_count {
             return 0;
         }
-
-        self.source_count = collective_sources;
-        self.evidence_scope = EvidenceScope::Collective;
-        ((collective_sources - 1).min(2) as i32) * 10
+        self.source_count = network_sources;
+        ((network_sources - 1).min(2) as i32) * 10
     }
 
-    pub fn stability_rank(&self) -> (EvidenceScope, u32, u32, usize) {
-        (
-            self.evidence_scope,
-            self.source_count,
-            self.support,
-            self.steps.len(),
-        )
+    pub fn stability_rank(&self) -> (u32, u32, usize) {
+        (self.source_count, self.support, self.steps.len())
     }
 }
 
@@ -340,10 +317,10 @@ fn recommendation_kind(kind: SignalKind) -> RecommendationKind {
     }
 }
 
-fn candidate_rank(candidate: Option<&StepCandidate>) -> (EvidenceScope, u32, u32, usize) {
+fn candidate_rank(candidate: Option<&StepCandidate>) -> (u32, u32, usize) {
     candidate
         .map(StepCandidate::stability_rank)
-        .unwrap_or((EvidenceScope::Local, 0, 0, 0))
+        .unwrap_or((0, 0, 0))
 }
 
 fn normalize_recommendation_body(kind: RecommendationKind, body: &str) -> String {
@@ -532,21 +509,21 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_collective_sources_is_monotonic() {
+    fn apply_network_sources_is_monotonic() {
         let mut candidate = StepCandidate::single("Read", Some("mod.rs".into()), "medium", 2, 1);
 
-        assert_eq!(candidate.upgrade_collective_sources(1), 0);
+        assert_eq!(candidate.apply_network_sources(1), 0);
         assert_eq!(candidate.source_count, 1);
 
-        assert_eq!(candidate.upgrade_collective_sources(2), 10);
+        assert_eq!(candidate.apply_network_sources(2), 10);
         assert_eq!(candidate.source_count, 2);
 
-        assert_eq!(candidate.upgrade_collective_sources(4), 20);
+        assert_eq!(candidate.apply_network_sources(4), 20);
         assert_eq!(candidate.source_count, 4);
     }
 
     #[test]
-    fn rank_prefers_collective_candidate_when_scores_tie() {
+    fn rank_prefers_higher_source_count_when_scores_tie() {
         let ranked = rank(
             vec![
                 Signal::preparation_candidate(

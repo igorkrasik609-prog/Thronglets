@@ -143,11 +143,6 @@ pub(crate) fn render_signal_query_results(results: &[SignalQueryResult]) {
         } else {
             String::new()
         };
-        let promotion_suffix = if result.promotion_state != "none" {
-            format!(" promoted={}", result.promotion_state)
-        } else {
-            String::new()
-        };
         let reinforcement_suffix = if result.reinforcement_count > 0 {
             format!(" reads={}", result.reinforcement_count)
         } else {
@@ -159,18 +154,14 @@ pub(crate) fn render_signal_query_results(results: &[SignalQueryResult]) {
             String::new()
         };
         println!(
-            "    similarity={:.2} posts={} sources={}{}{}{}{}{} (local {} / collective {}) scope={} expires_in≈{}h",
+            "    similarity={:.2} posts={} sources={}{}{}{}{} expires_in≈{}h",
             result.context_similarity,
             result.total_posts,
             result.source_count,
             model_suffix,
             density_suffix,
-            promotion_suffix,
             reinforcement_suffix,
             inhibition_suffix,
-            result.local_source_count,
-            result.collective_source_count,
-            result.evidence_scope,
             signal_hours_remaining(result.expires_at)
         );
         for context in &result.contexts {
@@ -225,11 +216,6 @@ pub(crate) fn render_signal_feed_results(results: &[SignalFeedResult]) {
         } else {
             String::new()
         };
-        let promotion_suffix = if result.promotion_state != "none" {
-            format!(" promoted={}", result.promotion_state)
-        } else {
-            String::new()
-        };
         let reinforcement_suffix = if result.reinforcement_count > 0 {
             format!(" reads={}", result.reinforcement_count)
         } else {
@@ -241,18 +227,14 @@ pub(crate) fn render_signal_feed_results(results: &[SignalFeedResult]) {
             String::new()
         };
         println!(
-            "    posts={} sources={}{}{}{}{}{}{} (local {} / collective {}) scope={} expires_in≈{}h",
+            "    posts={} sources={}{}{}{}{}{} expires_in≈{}h",
             result.total_posts,
             result.source_count,
             model_suffix,
             focus_suffix,
             density_suffix,
-            promotion_suffix,
             reinforcement_suffix,
             inhibition_suffix,
-            result.local_source_count,
-            result.collective_source_count,
-            result.evidence_scope,
             signal_hours_remaining(result.expires_at)
         );
         for context in &result.contexts {
@@ -283,8 +265,7 @@ pub(crate) fn render_presence_feed_results(results: &[PresenceFeedResult]) {
             println!("    device: {device_identity}");
         }
         println!(
-            "    scope={} expires_in≈{}m",
-            result.evidence_scope,
+            "    expires_in≈{}m",
             presence_minutes_remaining(result.expires_at)
         );
     }
@@ -299,11 +280,11 @@ pub(crate) fn summarize_space_snapshot(
 ) -> SpaceSnapshotSummary {
     let promoted_signal_count = signals
         .iter()
-        .filter(|signal| signal.promotion_state != "none")
+        .filter(|signal| signal.density_tier != "sparse" && signal.density_tier != "candidate")
         .count();
     let blocked = signals.iter().any(|signal| {
         signal.kind == "avoid"
-            && (signal.promotion_state != "none" || signal.inhibition_penalty > 0)
+            && (signal.density_tier == "promoted" || signal.density_tier == "dominant" || signal.inhibition_penalty > 0)
     });
     if blocked {
         SpaceSnapshotSummary {
@@ -401,7 +382,7 @@ pub(crate) fn render_space_snapshot(data: &SpaceSnapshotData) {
         for signal in &data.signals {
             println!(
                 "    {}: {} [{}]",
-                signal.kind, signal.message, signal.promotion_state
+                signal.kind, signal.message, signal.density_tier
             );
         }
     }

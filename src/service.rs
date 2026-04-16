@@ -11,7 +11,7 @@ use crate::continuity::{
 use crate::identity::{IdentityBinding, NodeIdentity};
 use crate::pheromone::PheromoneField;
 use crate::posts::{
-    DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, SignalPostKind, SignalScopeFilter, SignalTraceConfig,
+    DEFAULT_SIGNAL_REINFORCEMENT_TTL_HOURS, SignalPostKind, SignalTraceConfig,
     create_auto_signal_trace, create_feed_reinforcement_traces, create_query_reinforcement_traces,
     create_signal_trace, filter_signal_feed_results, is_signal_capability,
     summarize_recent_signal_feed, summarize_signal_traces,
@@ -408,13 +408,7 @@ pub fn query_signals(ctx: &Ctx, req: QuerySignalsReq) -> Result<Value, String> {
         .query_signal_traces(&context_hash, req.kind, 48, req.limit, req.space)
         .map_err(|e| format!("query: {e}"))?;
 
-    let results = summarize_signal_traces(
-        &traces,
-        req.context,
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        req.limit,
-    );
+    let results = summarize_signal_traces(&traces, req.context, req.limit);
 
     // Record reinforcement traces
     let (owner, device) = sign_config(ctx);
@@ -445,7 +439,7 @@ pub fn query_signals(ctx: &Ctx, req: QuerySignalsReq) -> Result<Value, String> {
 pub struct SignalFeedReq<'a> {
     pub hours: u32,
     pub kind: Option<SignalPostKind>,
-    pub scope: SignalScopeFilter,
+    pub min_sources: u32,
     pub limit: usize,
     pub space: Option<&'a str>,
 }
@@ -456,15 +450,8 @@ pub fn signal_feed(ctx: &Ctx, req: SignalFeedReq) -> Result<Value, String> {
         .query_recent_signal_traces(req.hours, req.kind, req.limit, req.space)
         .map_err(|e| format!("query: {e}"))?;
 
-    let results = filter_signal_feed_results(
-        summarize_recent_signal_feed(
-            &traces,
-            &ctx.binding.device_identity,
-            ctx.identity.public_key_bytes(),
-            req.limit,
-        ),
-        req.scope,
-    );
+    let results =
+        filter_signal_feed_results(summarize_recent_signal_feed(&traces, req.limit), req.min_sources);
 
     // Record reinforcement traces
     let (owner, device) = sign_config(ctx);
@@ -507,13 +494,7 @@ pub fn presence_feed(
         .query_recent_presence_traces(hours, fetch_limit)
         .map_err(|e| format!("query: {e}"))?;
 
-    let results = summarize_recent_presence(
-        &traces,
-        space,
-        &ctx.binding.device_identity,
-        ctx.identity.public_key_bytes(),
-        limit,
-    );
+    let results = summarize_recent_presence(&traces, space, limit);
     let attributed = results.iter().filter(|r| r.sigil_id.is_some()).count();
     let anonymous = results.len() - attributed;
 
@@ -772,4 +753,23 @@ pub fn explore(ctx: &Ctx, context_str: &str, limit: usize) -> Result<Value, Stri
     }
 
     Ok(json!({ "capabilities": capabilities, "gaps": gaps }))
+}
+
+// ── Field Clusters ──────────────────────────────────────────
+
+pub fn field_clusters(ctx: &Ctx, min_weight: f64) -> Result<Value, String> {
+    let field = ctx.field.ok_or("field not available (local-only mode)")?;
+    let clusters = field.clusters(min_weight);
+    let cluster_json: Vec<Value> = clusters
+        .iter()
+        .map(|c| {
+            json!({
+                "capabilities": c.capabilities,
+                "total_weight": round2(c.total_weight),
+                "edge_count": c.edge_count,
+                "level": c.level,
+            })
+        })
+        .collect();
+    Ok(json!({ "clusters": cluster_json }))
 }

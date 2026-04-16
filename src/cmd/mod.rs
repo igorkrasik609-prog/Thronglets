@@ -396,10 +396,10 @@ pub(crate) async fn dispatch(cli: Cli) {
         Commands::SignalFeed {
             hours,
             kind,
-            scope,
+            min_sources,
             space,
             limit,
-        } => substrate::signal_feed(&ctx, hours, kind, scope, space, limit),
+        } => substrate::signal_feed(&ctx, hours, kind, min_sources, space, limit),
         Commands::PresencePing {
             space,
             mode,

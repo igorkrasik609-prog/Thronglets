@@ -77,12 +77,12 @@ pub(crate) fn derive_space(payload: &serde_json::Value) -> Option<String> {
     thronglets::service::space_from_cwd()
 }
 
-pub(crate) fn apply_collective_sources(
+pub(crate) fn apply_network_sources(
     candidate: &mut StepCandidate,
     score: &mut i32,
-    collective_sources: u32,
+    network_sources: u32,
 ) {
-    *score += candidate.upgrade_collective_sources(collective_sources);
+    *score += candidate.apply_network_sources(network_sources);
 }
 
 pub(crate) fn explicit_signals(
@@ -90,43 +90,30 @@ pub(crate) fn explicit_signals(
     hook_context: &str,
     context_hash: &[u8; 16],
     space: Option<&str>,
-    local_device_identity: &str,
-    local_node_pubkey: [u8; 32],
 ) -> Vec<Signal> {
     let traces = match store.query_signal_traces(context_hash, None, 48, 10, space) {
         Ok(t) => t,
         Err(_) => return Vec::new(),
     };
-    let results = summarize_signal_traces(
-        &traces,
-        hook_context,
-        local_device_identity,
-        local_node_pubkey,
-        6,
-    );
+    let results = summarize_signal_traces(&traces, hook_context, 6);
 
     let mut signals = Vec::new();
     for result in results {
         if result.density_score < 1 || result.context_similarity < 0.85 {
             continue;
         }
-        let collective_bonus = if result.promotion_state == "collective" {
-            30
-        } else {
-            0
-        };
         let density_bonus = i32::from(result.density_score) * 20;
 
         match result.kind.as_str() {
             "avoid" => {
-                let score = 300 + density_bonus + collective_bonus;
+                let score = 300 + density_bonus;
                 signals.push(Signal::danger(
                     format!("  ⚠ avoid: {}", result.message),
                     score,
                 ));
             }
             "watch" => {
-                let score = 200 + density_bonus + collective_bonus;
+                let score = 200 + density_bonus;
                 signals.push(Signal {
                     kind: SignalKind::History,
                     score,
@@ -135,7 +122,7 @@ pub(crate) fn explicit_signals(
                 });
             }
             "recommend" => {
-                let score = 150 + density_bonus + collective_bonus;
+                let score = 150 + density_bonus;
                 signals.push(Signal::preparation(
                     format!("  ✦ recommended: {}", result.message),
                     score,
@@ -281,31 +268,20 @@ pub(crate) fn presence_context_signal(
     store: &TraceStore,
     space: &str,
     current_session_id: Option<&str>,
-    local_device_identity: &str,
-    local_node_pubkey: [u8; 32],
 ) -> Option<Signal> {
     let traces = store.query_recent_presence_traces(1, 24).ok()?;
-    let active_sessions: Vec<_> = summarize_recent_presence(
-        &traces,
-        Some(space),
-        local_device_identity,
-        local_node_pubkey,
-        8,
-    )
-    .into_iter()
-    .filter(|session| {
-        current_session_id.is_none_or(|sid| session.session_id.as_deref() != Some(sid))
-    })
-    .collect();
+    let active_sessions: Vec<_> = summarize_recent_presence(&traces, Some(space), 8)
+        .into_iter()
+        .filter(|session| {
+            current_session_id.is_none_or(|sid| session.session_id.as_deref() != Some(sid))
+        })
+        .collect();
 
     if active_sessions.is_empty() {
         return None;
     }
 
     let preview_limit = 2;
-    let collective = active_sessions
-        .iter()
-        .any(|session| session.evidence_scope == "collective");
     let preview = active_sessions
         .iter()
         .take(preview_limit)
@@ -324,13 +300,13 @@ pub(crate) fn presence_context_signal(
 
     Some(Signal {
         kind: SignalKind::History,
-        score: if collective { 145 } else { 135 },
+        score: 135,
         body: format!("  active in space {space}: {preview}{suffix}"),
         candidate: None,
     })
 }
 
-pub(crate) fn claim_collective_query(
+pub(crate) fn claim_secondary_query(
     candidate: &StepCandidate,
     remaining_queries: &mut usize,
 ) -> bool {
@@ -342,7 +318,7 @@ pub(crate) fn claim_collective_query(
     true
 }
 
-pub(crate) fn cached_collective_store<'a>(
+pub(crate) fn cached_store<'a>(
     cache: &'a mut Option<TraceStore>,
     dir: &Path,
 ) -> Option<&'a TraceStore> {
@@ -415,7 +391,7 @@ impl PrehookProfiler {
         recommendations: &[Recommendation],
         stdout_bytes: usize,
         file_guidance_gate: &'static str,
-        collective_queries_used: usize,
+        secondary_queries_used: usize,
     ) {
         if !self.enabled {
             return;
@@ -427,9 +403,8 @@ impl PrehookProfiler {
             format!("stdout_bytes={stdout_bytes}"),
             format!("output_mode={}", profile_output_mode(recommendations)),
             format!("decision_path={}", profile_decision_path(recommendations)),
-            format!("evidence_scope={}", profile_evidence_scope(recommendations)),
             format!("file_guidance_gate={file_guidance_gate}"),
-            format!("collective_queries_used={collective_queries_used}"),
+            format!("secondary_queries_used={secondary_queries_used}"),
             format!("total_us={}", self.started_at.elapsed().as_micros()),
         ];
         for (name, state) in &self.stages {
@@ -474,17 +449,6 @@ pub(crate) fn profile_decision_path(recommendations: &[Recommendation]) -> &'sta
             SignalKind::Repair => "repair",
             SignalKind::Preparation | SignalKind::Adjacency => "legacy",
             SignalKind::History => "history",
-        })
-        .unwrap_or("none")
-}
-
-pub(crate) fn profile_evidence_scope(recommendations: &[Recommendation]) -> &'static str {
-    recommendations
-        .iter()
-        .find_map(|r| r.candidate.as_ref())
-        .map(|candidate| match candidate.evidence_scope {
-            thronglets::signals::EvidenceScope::Local => "local",
-            thronglets::signals::EvidenceScope::Collective => "collective",
         })
         .unwrap_or("none")
 }

@@ -42,7 +42,6 @@ pub struct PresenceFeedResult {
     pub model_id: String,
     pub session_id: Option<String>,
     pub device_identity: Option<String>,
-    pub evidence_scope: String,
     pub latest_timestamp: u64,
     pub expires_at: u64,
 }
@@ -64,7 +63,6 @@ struct PresenceGroup {
     model_id: String,
     session_id: Option<String>,
     device_identity: Option<String>,
-    evidence_scope: String,
     latest_timestamp: u64,
     expires_at: u64,
 }
@@ -109,8 +107,6 @@ pub fn create_presence_trace(
 pub fn summarize_recent_presence(
     traces: &[Trace],
     space: Option<&str>,
-    local_device_identity: &str,
-    local_node_pubkey: [u8; 32],
     limit: usize,
 ) -> Vec<PresenceFeedResult> {
     let now_ms = now_ms();
@@ -135,11 +131,6 @@ pub fn summarize_recent_presence(
             trace.session_id.clone(),
             decoded.space.clone(),
         );
-        let evidence_scope = if is_local_source(trace, local_device_identity, &local_node_pubkey) {
-            "local"
-        } else {
-            "collective"
-        };
         let entry = groups.entry(key).or_insert_with(|| PresenceGroup {
             space: decoded.space.clone(),
             mode: decoded.mode.clone(),
@@ -148,7 +139,6 @@ pub fn summarize_recent_presence(
             model_id: trace.model_id.clone(),
             session_id: trace.session_id.clone(),
             device_identity: trace.device_identity.clone(),
-            evidence_scope: evidence_scope.to_string(),
             latest_timestamp: trace.timestamp,
             expires_at: decoded.expires_at,
         });
@@ -171,7 +161,6 @@ pub fn summarize_recent_presence(
             model_id: group.model_id,
             session_id: group.session_id,
             device_identity: group.device_identity,
-            evidence_scope: group.evidence_scope,
             latest_timestamp: group.latest_timestamp,
             expires_at: group.expires_at,
         })
@@ -180,7 +169,6 @@ pub fn summarize_recent_presence(
     results.sort_by(|a, b| {
         b.latest_timestamp
             .cmp(&a.latest_timestamp)
-            .then_with(|| a.evidence_scope.cmp(&b.evidence_scope))
             .then_with(|| a.model_id.cmp(&b.model_id))
     });
     results.truncate(limit);
@@ -213,15 +201,6 @@ fn source_key(trace: &Trace) -> String {
         .device_identity
         .clone()
         .unwrap_or_else(|| hex_encode(&trace.node_pubkey))
-}
-
-fn is_local_source(
-    trace: &Trace,
-    local_device_identity: &str,
-    local_node_pubkey: &[u8; 32],
-) -> bool {
-    trace.device_identity.as_deref() == Some(local_device_identity)
-        || &trace.node_pubkey == local_node_pubkey
 }
 
 fn now_ms() -> u64 {
@@ -277,10 +256,8 @@ mod tests {
         let first = local_trace(Some("psyche"), Some("focus"), "codex", Some("s1"), "dev1");
         let mut second = local_trace(Some("psyche"), Some("review"), "codex", Some("s1"), "dev1");
         second.timestamp = first.timestamp + 10;
-        let results =
-            summarize_recent_presence(&[first, second], Some("psyche"), "dev1", [7u8; 32], 10);
+        let results = summarize_recent_presence(&[first, second], Some("psyche"), 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mode.as_deref(), Some("review"));
-        assert_eq!(results[0].evidence_scope, "local");
     }
 }
