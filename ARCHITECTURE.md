@@ -93,15 +93,11 @@ Different agents name the same actions differently. The pheromone field normaliz
 
 Normalization happens at the field layer (`pheromone.rs`), not at storage. Traces preserve original capability URIs for audit. The field sees a unified namespace — enabling corroboration, Hebbian coupling, and carrying capacity pressure to operate across agents.
 
-## Temporal Direction in Hebbian Edges (future physics)
+## Temporal Direction in Hebbian Edges (implemented)
 
-Current Hebbian coupling is symmetric — "A and B often co-occur." But causation has direction — "A causes B" is not "B causes A."
+Hebbian edges are directed: `predecessor → successor` with independent weights per direction. "A then B" and "B then A" are distinct edges. Temporal order comes from trace timestamps — the field preserves it as physics ("time has direction"), not as a designed outcome.
 
-Traces carry timestamps. "tool:exec occurred 3s before tool:read" is already in the data. But the current edge model only records co-occurrence weight, not temporal order.
-
-Adding a direction attribute to edges (which cap tends to precede which) is a physics rule ("time has direction"), not a designed outcome. Whether the field develops causal structure from that rule is the field's business — not ours to prescribe.
-
-This is the substrate condition for causal reasoning to potentially emerge. We do not design causal reasoning into the field; we provide the physics that permits it.
+Whether the field develops causal structure from directed edges is the field's business — not ours to prescribe. We provide the physics that permits it.
 
 ## First Principles
 
