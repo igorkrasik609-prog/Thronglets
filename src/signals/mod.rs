@@ -54,7 +54,6 @@ pub struct StepCandidate {
     pub source_count: u32,
 }
 
-
 impl StepAction {
     pub fn new(tool: impl Into<String>, target: Option<String>) -> Self {
         Self {

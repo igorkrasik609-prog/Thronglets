@@ -34,10 +34,10 @@ fn make_trace(
 
 fn sparse_profile_input() -> String {
     let mut lines = Vec::new();
-    lines.push("[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=40 output_mode=next-step decision_path=repair evidence_scope=collective file_guidance_gate=open collective_queries_used=0 total_us=300".to_string());
-    lines.push("[thronglets:prehook] tool=Edit emitted=1 stdout_bytes=30 output_mode=context-only decision_path=history evidence_scope=none file_guidance_gate=closed collective_queries_used=0 total_us=200".to_string());
+    lines.push("[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=40 output_mode=next-step decision_path=repair file_guidance_gate=open secondary_queries_used=0 total_us=300".to_string());
+    lines.push("[thronglets:prehook] tool=Edit emitted=1 stdout_bytes=30 output_mode=context-only decision_path=history file_guidance_gate=closed secondary_queries_used=0 total_us=200".to_string());
     for _ in 0..8 {
-        lines.push("[thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na collective_queries_used=0 total_us=100".to_string());
+        lines.push("[thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100".to_string());
     }
     format!("{}\n", lines.join("\n"))
 }

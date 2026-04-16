@@ -389,6 +389,7 @@ impl PrehookProfiler {
         &self,
         tool_name: &str,
         recommendations: &[Recommendation],
+        field_observation_count: usize,
         stdout_bytes: usize,
         file_guidance_gate: &'static str,
         secondary_queries_used: usize,
@@ -400,9 +401,16 @@ impl PrehookProfiler {
         let mut parts = vec![
             format!("tool={tool_name}"),
             format!("emitted={}", recommendations.len()),
+            format!("field_observations={field_observation_count}"),
             format!("stdout_bytes={stdout_bytes}"),
-            format!("output_mode={}", profile_output_mode(recommendations)),
-            format!("decision_path={}", profile_decision_path(recommendations)),
+            format!(
+                "output_mode={}",
+                profile_output_mode(recommendations, field_observation_count > 0)
+            ),
+            format!(
+                "decision_path={}",
+                profile_decision_path(recommendations, field_observation_count > 0)
+            ),
             format!("file_guidance_gate={file_guidance_gate}"),
             format!("secondary_queries_used={secondary_queries_used}"),
             format!("total_us={}", self.started_at.elapsed().as_micros()),
@@ -421,9 +429,16 @@ impl PrehookProfiler {
     }
 }
 
-pub(crate) fn profile_output_mode(recommendations: &[Recommendation]) -> &'static str {
+pub(crate) fn profile_output_mode(
+    recommendations: &[Recommendation],
+    has_field_observations: bool,
+) -> &'static str {
     if recommendations.is_empty() {
-        "silent"
+        if has_field_observations {
+            "field-only"
+        } else {
+            "silent"
+        }
     } else if recommendations
         .iter()
         .any(|r| r.source_kind == SignalKind::Repair)
@@ -439,7 +454,10 @@ pub(crate) fn profile_output_mode(recommendations: &[Recommendation]) -> &'stati
     }
 }
 
-pub(crate) fn profile_decision_path(recommendations: &[Recommendation]) -> &'static str {
+pub(crate) fn profile_decision_path(
+    recommendations: &[Recommendation],
+    has_field_observations: bool,
+) -> &'static str {
     recommendations
         .iter()
         .find(|r| r.source_kind == SignalKind::Repair)
@@ -450,6 +468,7 @@ pub(crate) fn profile_decision_path(recommendations: &[Recommendation]) -> &'sta
             SignalKind::Preparation | SignalKind::Adjacency => "legacy",
             SignalKind::History => "history",
         })
+        .or_else(|| has_field_observations.then_some("field"))
         .unwrap_or("none")
 }
 
@@ -901,6 +920,7 @@ fn join_string_array(value: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use thronglets::signals::RecommendationKind;
 
     #[test]
     fn extract_from_json_object() {
@@ -1021,6 +1041,25 @@ mod tests {
             build_export_summary(&export),
             "signal=warmth effect=amplified metric=trust conf=0.85"
         );
+    }
+
+    #[test]
+    fn field_only_output_profiles_as_field() {
+        assert_eq!(profile_output_mode(&[], true), "field-only");
+        assert_eq!(profile_decision_path(&[], true), "field");
+    }
+
+    #[test]
+    fn repair_path_still_wins_when_field_output_is_present() {
+        let recommendations = vec![Recommendation {
+            kind: RecommendationKind::DoNext,
+            source_kind: SignalKind::Repair,
+            body: "  repair path".into(),
+            candidate: None,
+        }];
+
+        assert_eq!(profile_output_mode(&recommendations, true), "next-step");
+        assert_eq!(profile_decision_path(&recommendations, true), "repair");
     }
 
     #[test]

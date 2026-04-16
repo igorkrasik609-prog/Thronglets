@@ -450,8 +450,10 @@ pub fn signal_feed(ctx: &Ctx, req: SignalFeedReq) -> Result<Value, String> {
         .query_recent_signal_traces(req.hours, req.kind, req.limit, req.space)
         .map_err(|e| format!("query: {e}"))?;
 
-    let results =
-        filter_signal_feed_results(summarize_recent_signal_feed(&traces, req.limit), req.min_sources);
+    let results = filter_signal_feed_results(
+        summarize_recent_signal_feed(&traces, req.limit),
+        req.min_sources,
+    );
 
     // Record reinforcement traces
     let (owner, device) = sign_config(ctx);

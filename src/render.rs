@@ -284,7 +284,9 @@ pub(crate) fn summarize_space_snapshot(
         .count();
     let blocked = signals.iter().any(|signal| {
         signal.kind == "avoid"
-            && (signal.density_tier == "promoted" || signal.density_tier == "dominant" || signal.inhibition_penalty > 0)
+            && (signal.density_tier == "promoted"
+                || signal.density_tier == "dominant"
+                || signal.inhibition_penalty > 0)
     });
     if blocked {
         SpaceSnapshotSummary {

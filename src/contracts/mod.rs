@@ -16,5 +16,8 @@ pub const PREHOOK_MAX_SECONDARY_QUERIES: usize = 1;
 /// Git history is useful, but it must stay short.
 pub const GIT_HISTORY_MAX_ENTRIES: usize = 5;
 
+/// Field observations travel beside recommendations — cap output to avoid overwhelming the agent.
+pub const FIELD_OBSERVATION_MAX: usize = 6;
+
 /// Stable header for injected output.
 pub const PREHOOK_HEADER: &str = "[thronglets]";

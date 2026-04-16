@@ -40,7 +40,6 @@ pub enum SignalPostKind {
     PsycheState,
 }
 
-
 impl SignalPostKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -464,10 +463,7 @@ pub fn summarize_signal_traces(
     results
 }
 
-pub fn summarize_recent_signal_feed(
-    traces: &[Trace],
-    limit: usize,
-) -> Vec<SignalFeedResult> {
+pub fn summarize_recent_signal_feed(traces: &[Trace], limit: usize) -> Vec<SignalFeedResult> {
     let now_ms = now_ms();
     let mut groups: HashMap<(SignalPostKind, String, Option<String>), SignalGroup> = HashMap::new();
 
@@ -576,10 +572,10 @@ pub fn filter_signal_feed_results(
         .filter(|result| result.source_count >= min_sources)
         .collect();
 
-    let has_dense = filtered
-        .iter()
-        .any(|result| signal_density_tier(result.density_score) == "promoted"
-            || signal_density_tier(result.density_score) == "dominant");
+    let has_dense = filtered.iter().any(|result| {
+        signal_density_tier(result.density_score) == "promoted"
+            || signal_density_tier(result.density_score) == "dominant"
+    });
     if !has_dense {
         return filtered;
     }
@@ -934,11 +930,7 @@ mod tests {
         );
         let trace_b_timestamp = trace_b.timestamp;
 
-        let results = summarize_signal_traces(
-            &[trace_a, trace_b],
-            "fix flaky ci workflow",
-            10,
-        );
+        let results = summarize_signal_traces(&[trace_a, trace_b], "fix flaky ci workflow", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, "avoid");
         assert_eq!(results[0].message, "skip the generated lockfile");
@@ -987,11 +979,7 @@ mod tests {
         assert!(spaces.contains(&Some("thronglets")));
 
         // When SQL pre-filters to only psyche traces, only one group remains
-        let psyche_only = summarize_signal_traces(
-            &[psyche],
-            "repair parser regressions",
-            10,
-        );
+        let psyche_only = summarize_signal_traces(&[psyche], "repair parser regressions", 10);
         assert_eq!(psyche_only.len(), 1);
         assert_eq!(psyche_only[0].space.as_deref(), Some("psyche"));
     }
@@ -1037,11 +1025,7 @@ mod tests {
             |msg| identity.sign(msg),
         );
 
-        let results = summarize_signal_traces(
-            &[expired, fresh],
-            "ship the current branch",
-            10,
-        );
+        let results = summarize_signal_traces(&[expired, fresh], "ship the current branch", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, "watch");
         assert_eq!(results[0].total_posts, 1);
@@ -1070,11 +1054,7 @@ mod tests {
         );
         assert!(!is_legacy_auto_signal_trace(&current));
 
-        let results = summarize_signal_traces(
-            &[legacy, current],
-            "repair release flow",
-            10,
-        );
+        let results = summarize_signal_traces(&[legacy, current], "repair release flow", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].message, "stable path: current derived guidance");
     }
@@ -1101,11 +1081,7 @@ mod tests {
             |msg| identity_b.sign(msg),
         );
 
-        let results = summarize_signal_traces(
-            &[trace_a, trace_b],
-            "repair release flow",
-            10,
-        );
+        let results = summarize_signal_traces(&[trace_a, trace_b], "repair release flow", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source_count, 2);
         assert_eq!(results[0].model_count, 2);
@@ -1262,11 +1238,7 @@ mod tests {
             |msg| identity.sign(msg),
         );
 
-        let results = summarize_signal_traces(
-            &[reinforcement],
-            "ship the current branch",
-            10,
-        );
+        let results = summarize_signal_traces(&[reinforcement], "ship the current branch", 10);
         assert!(results.is_empty());
     }
 
@@ -1300,11 +1272,8 @@ mod tests {
             |msg| remote_b.sign(msg),
         );
 
-        let results = summarize_signal_traces(
-            &[recommend, avoid_a, avoid_b],
-            "repair release flow",
-            10,
-        );
+        let results =
+            summarize_signal_traces(&[recommend, avoid_a, avoid_b], "repair release flow", 10);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].kind, "avoid");
         assert_eq!(results[0].inhibition_state, "none");
@@ -1344,10 +1313,7 @@ mod tests {
             |msg| remote_b.sign(msg),
         );
 
-        let results = summarize_recent_signal_feed(
-            &[local_signal, collective_a, collective_b],
-            10,
-        );
+        let results = summarize_recent_signal_feed(&[local_signal, collective_a, collective_b], 10);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].message, "run release-check before push");
         assert_eq!(results[0].source_count, 2);
@@ -1383,10 +1349,7 @@ mod tests {
         );
 
         // SQL-level space filter would return only core traces
-        let results = summarize_recent_signal_feed(
-            &[core],
-            10,
-        );
+        let results = summarize_recent_signal_feed(&[core], 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].space.as_deref(), Some("core"));
     }
@@ -1600,10 +1563,8 @@ mod tests {
             |msg| remote_e.sign(msg),
         );
 
-        let results = summarize_recent_signal_feed(
-            &[old_a, old_b, old_c, fresh_a, fresh_b, fresh_c],
-            10,
-        );
+        let results =
+            summarize_recent_signal_feed(&[old_a, old_b, old_c, fresh_a, fresh_b, fresh_c], 10);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].message, "rerun the targeted test first");
         assert_eq!(results[0].corroboration_tier, "multi_model");
@@ -1647,10 +1608,7 @@ mod tests {
             |msg| remote_c.sign(msg),
         );
 
-        let results = summarize_recent_signal_feed(
-            &[recommend, avoid_a, avoid_b],
-            10,
-        );
+        let results = summarize_recent_signal_feed(&[recommend, avoid_a, avoid_b], 10);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].kind, "avoid");
         assert_eq!(results[1].kind, "recommend");
@@ -1751,12 +1709,24 @@ mod tests {
     #[test]
     fn signal_density_tier_moves_from_sparse_to_dominant() {
         // 1 source, 1 model, stale, no reinforcement → resonance=0, corr=0, fresh=0, reinf=0 = 0
-        assert_eq!(signal_density_tier(signal_density_score(1, 1, 0, 0)), "sparse");
+        assert_eq!(
+            signal_density_tier(signal_density_score(1, 1, 0, 0)),
+            "sparse"
+        );
         // 1 source, 1 model, fresh, no reinforcement → 0+0+2+0 = 2
-        assert_eq!(signal_density_tier(signal_density_score(1, 1, 2, 0)), "candidate");
+        assert_eq!(
+            signal_density_tier(signal_density_score(1, 1, 2, 0)),
+            "candidate"
+        );
         // 2 sources, 2 models, stale, no reinforcement → 2+2+0+0 = 4
-        assert_eq!(signal_density_tier(signal_density_score(2, 2, 0, 0)), "promoted");
+        assert_eq!(
+            signal_density_tier(signal_density_score(2, 2, 0, 0)),
+            "promoted"
+        );
         // 2 sources, 2 models, fresh, no reinforcement → 2+2+2+0 = 6
-        assert_eq!(signal_density_tier(signal_density_score(2, 2, 2, 0)), "dominant");
+        assert_eq!(
+            signal_density_tier(signal_density_score(2, 2, 2, 0)),
+            "dominant"
+        );
     }
 }

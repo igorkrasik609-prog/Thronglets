@@ -16,19 +16,31 @@ In Sigil terms:
 
 Thronglets is NOT a messaging system. Messages are transient; shared state is persistent and bidirectionally mutable.
 
-## Field Evolution (2026-04-11)
+## Stigmergic Intelligence (2026-04-16, replaces Field Evolution)
 
-**进化的是场，不是个体。** Thronglets的已有机制就IS进化机制：
+**进化在场层面可观测，通过个体运作。** 正向强化 + 衰减 = 选择。不需要显式失败信号。
 
-| Mechanism | Evolution Role |
+Multi-level selection model:
+
+| Level | Role | Analogy |
+|---|---|---|
+| **Field point** (capability × bucket) | Replicator — unit of selection | Gene |
+| **Sigil/Loop** (individual) | Vehicle — executes actions, produces traces | Organism |
+| **Field** (aggregate) | Population — where evolution is observable | Species |
+
+旧表述"进化的是场不是个体"跳过了一个层次。场是基因组（种群），field point是基因（复制子），个体是载体。
+
+Stigmergic mechanisms (not features — these ARE the evolutionary physics):
+
+| Mechanism | Role |
 |---|---|
-| **Hebbian co-edit** | 强化学习 — 共同出现的模式被加强 |
-| **Pheromone decay** | 自然遗忘 — 无用信息被淘汰 |
-| **Carrying capacity** | 选择压力 — 新信息的写入成本随场密度增长 |
-| **Corroboration bonus** | 多源验证 — 被多个agent确认的信息更持久 |
-| **Outcome-weighted deposits** | 适者生存 — 成功trace沉积更多 |
+| **Hebbian co-edit** | 突触强化 — 共激活的capability形成edge |
+| **Pheromone decay** | 自然遗忘 — 蚂蚁不标记错误路径，未被强化的路径自然消失 |
+| **Carrying capacity** | 竞争压力 — 场容量有限，新deposit成本随密度增长 |
+| **Corroboration bonus** | 共振 — 多源确认的field point更持久 |
+| **Outcome-weighted deposits** | 梯度形成 — 成功trace 1.0 vs 未成功trace 0.1 |
 
-选择压力是场自身的Hebbian动力学，不需要外部法官。球形智能的目标函数 = 场的维度覆盖度。
+**Core insight**: 梯度（值之间的差异）IS信息。水往低处流，落差决定流速。不需要二分法（正确/错误），只需要强化差异。
 
 Lifecycle events reframed:
 - DISSOLVE = 场的突触修剪（修剪低效/沉默节点）

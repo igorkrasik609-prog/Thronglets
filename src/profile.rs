@@ -18,6 +18,7 @@ pub struct PrehookProfileSample {
     pub decision_path: String,
     pub file_guidance_gate: String,
     pub secondary_queries_used: usize,
+    pub field_observations: usize,
     pub total_us: u128,
 }
 
@@ -78,6 +79,7 @@ pub fn parse_prehook_profile_line(line: &str) -> Option<PrehookProfileSample> {
     let mut decision_path = None;
     let mut file_guidance_gate = None;
     let mut secondary_queries_used = None;
+    let mut field_observations = None;
     let mut total_us = None;
 
     for field in body.split_whitespace() {
@@ -92,6 +94,7 @@ pub fn parse_prehook_profile_line(line: &str) -> Option<PrehookProfileSample> {
             "decision_path" => decision_path = Some(value.to_string()),
             "file_guidance_gate" => file_guidance_gate = Some(value.to_string()),
             "secondary_queries_used" => secondary_queries_used = value.parse().ok(),
+            "field_observations" => field_observations = value.parse().ok(),
             "total_us" => total_us = value.parse().ok(),
             _ => {}
         }
@@ -105,6 +108,7 @@ pub fn parse_prehook_profile_line(line: &str) -> Option<PrehookProfileSample> {
         decision_path: decision_path?,
         file_guidance_gate: file_guidance_gate?,
         secondary_queries_used: secondary_queries_used?,
+        field_observations: field_observations.unwrap_or(0),
         total_us: total_us?,
     })
 }
@@ -167,6 +171,8 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
         }
     }
 
+    let saturated_samples = *emitted_counts.get(&PREHOOK_MAX_HINTS).unwrap_or(&0);
+
     Some(PrehookProfileSummary {
         samples: sample_count,
         avg_total_us: total_us_sum as f64 / sample_count as f64,
@@ -174,7 +180,7 @@ pub fn summarize_prehook_profiles(input: &str) -> Option<PrehookProfileSummary> 
         avg_stdout_bytes: stdout_bytes_sum as f64 / sample_count as f64,
         p95_stdout_bytes: percentile_95(&stdout_byte_values),
         avg_secondary_queries_used: secondary_sum as f64 / sample_count as f64,
-        saturated_samples: *emitted_counts.get(&PREHOOK_MAX_HINTS).unwrap_or(&0),
+        saturated_samples,
         emitted_counts,
         tools,
         output_modes,
@@ -425,7 +431,7 @@ mod tests {
     #[test]
     fn parse_prehook_profile_line_extracts_core_fields() {
         let sample = parse_prehook_profile_line(
-            "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=88 output_mode=next-step decision_path=repair evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=321 workspace_us=10 git=skipped",
+            "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=88 output_mode=next-step decision_path=repair file_guidance_gate=open secondary_queries_used=1 total_us=321 workspace_us=10 git=skipped",
         )
         .unwrap();
 
@@ -442,10 +448,10 @@ mod tests {
     #[test]
     fn summarize_prehook_profiles_aggregates_counts_and_percentiles() {
         let summary = summarize_prehook_profiles(
-            "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=88 output_mode=next-step decision_path=repair evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+            "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=88 output_mode=next-step decision_path=repair file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
              junk\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Edit emitted=1 stdout_bytes=42 output_mode=context-only decision_path=history evidence_scope=none file_guidance_gate=closed secondary_queries_used=0 total_us=200",
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Edit emitted=1 stdout_bytes=42 output_mode=context-only decision_path=history file_guidance_gate=closed secondary_queries_used=0 total_us=200",
         )
         .unwrap();
 
@@ -474,16 +480,16 @@ mod tests {
     #[test]
     fn profile_check_passes_when_metrics_fit_thresholds() {
         let summary = summarize_prehook_profiles(
-            "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=40 output_mode=next-step decision_path=repair evidence_scope=collective file_guidance_gate=open secondary_queries_used=0 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=1 stdout_bytes=30 output_mode=context-only decision_path=history evidence_scope=none file_guidance_gate=closed secondary_queries_used=0 total_us=200\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
-             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none evidence_scope=none file_guidance_gate=na secondary_queries_used=0 total_us=100",
+            "[thronglets:prehook] tool=Edit emitted=2 stdout_bytes=40 output_mode=next-step decision_path=repair file_guidance_gate=open secondary_queries_used=0 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=1 stdout_bytes=30 output_mode=context-only decision_path=history file_guidance_gate=closed secondary_queries_used=0 total_us=200\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100\n\
+             [thronglets:prehook] tool=Bash emitted=0 stdout_bytes=0 output_mode=silent decision_path=none file_guidance_gate=na secondary_queries_used=0 total_us=100",
         )
         .unwrap();
 
@@ -495,16 +501,16 @@ mod tests {
     #[test]
     fn profile_check_fails_when_metrics_exceed_thresholds() {
         let summary = summarize_prehook_profiles(
-            "[thronglets:prehook] tool=Edit emitted=3 stdout_bytes=200 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=180 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
-             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency evidence_scope=collective file_guidance_gate=open secondary_queries_used=1 total_us=300",
+            "[thronglets:prehook] tool=Edit emitted=3 stdout_bytes=200 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=180 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300\n\
+             [thronglets:prehook] tool=Edit emitted=3 stdout_bytes=160 output_mode=next-step decision_path=adjacency file_guidance_gate=open secondary_queries_used=1 total_us=300",
         )
         .unwrap();
 
@@ -513,9 +519,8 @@ mod tests {
         assert!(rendered.starts_with("FAIL"));
         assert!(rendered.contains("violations:"));
         assert!(
-            rendered.contains(
-                "top optimization candidate: reduce secondary queries in adjacency path"
-            )
+            rendered
+                .contains("top optimization candidate: reduce secondary queries in adjacency path")
         );
     }
 }

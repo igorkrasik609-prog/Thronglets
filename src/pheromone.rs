@@ -1149,10 +1149,13 @@ impl PheromoneField {
 
             all_results.extend(level_results.into_values());
 
-            // Early stop if we found strong signals at this level
-            let has_strong = all_results
-                .iter()
-                .any(|r| r.intensity > STRONG_SIGNAL_THRESHOLD);
+            // Early stop if we found strong non-Concrete signals.
+            // Concrete results are filtered by the render pipeline, so a strong
+            // Concrete match must not prevent scanning higher abstraction levels.
+            let has_strong = all_results.iter().any(|r| {
+                r.level != AbstractionLevel::Concrete
+                    && r.intensity > STRONG_SIGNAL_THRESHOLD
+            });
             if has_strong {
                 break;
             }
@@ -1309,10 +1312,11 @@ impl PheromoneField {
         for (key, edge) in &inner.edges {
             let w = edge.current_weight(now_ms);
             if w > threshold {
-                level_edges
-                    .entry(key.level as u8)
-                    .or_default()
-                    .push((&key.predecessor, &key.successor, w));
+                level_edges.entry(key.level as u8).or_default().push((
+                    &key.predecessor,
+                    &key.successor,
+                    w,
+                ));
             }
         }
 
@@ -3045,9 +3049,24 @@ mod tests {
     fn clusters_finds_co_activated_capabilities() {
         let field = PheromoneField::new();
         // Excite 3 capabilities in sequence to create Hebbian edges
-        let t1 = make_trace("claude-code/Read", "edit file: src/main.rs", Outcome::Succeeded, 50);
-        let t2 = make_trace("claude-code/Edit", "edit file: src/main.rs", Outcome::Succeeded, 100);
-        let t3 = make_trace("claude-code/Grep", "edit file: src/main.rs", Outcome::Succeeded, 30);
+        let t1 = make_trace(
+            "claude-code/Read",
+            "edit file: src/main.rs",
+            Outcome::Succeeded,
+            50,
+        );
+        let t2 = make_trace(
+            "claude-code/Edit",
+            "edit file: src/main.rs",
+            Outcome::Succeeded,
+            100,
+        );
+        let t3 = make_trace(
+            "claude-code/Grep",
+            "edit file: src/main.rs",
+            Outcome::Succeeded,
+            30,
+        );
         field.excite(&t1);
         field.excite(&t2);
         field.excite(&t3);
@@ -3070,14 +3089,34 @@ mod tests {
     fn clusters_separates_disconnected_groups() {
         let field = PheromoneField::new();
         // Group 1: read → edit (same context)
-        let t1 = make_trace("claude-code/Read", "fix bug in parser", Outcome::Succeeded, 50);
-        let t2 = make_trace("claude-code/Edit", "fix bug in parser", Outcome::Succeeded, 100);
+        let t1 = make_trace(
+            "claude-code/Read",
+            "fix bug in parser",
+            Outcome::Succeeded,
+            50,
+        );
+        let t2 = make_trace(
+            "claude-code/Edit",
+            "fix bug in parser",
+            Outcome::Succeeded,
+            100,
+        );
         field.excite(&t1);
         field.excite(&t2);
 
         // Group 2: different capabilities in different context
-        let t3 = make_trace("mcp:external/a", "deploy to staging", Outcome::Succeeded, 200);
-        let t4 = make_trace("mcp:external/b", "deploy to staging", Outcome::Succeeded, 300);
+        let t3 = make_trace(
+            "mcp:external/a",
+            "deploy to staging",
+            Outcome::Succeeded,
+            200,
+        );
+        let t4 = make_trace(
+            "mcp:external/b",
+            "deploy to staging",
+            Outcome::Succeeded,
+            300,
+        );
         field.excite(&t3);
         field.excite(&t4);
 

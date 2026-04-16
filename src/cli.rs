@@ -127,7 +127,6 @@ impl From<SignalKindArg> for SignalPostKind {
     }
 }
 
-
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     /// Show the running binary version and machine-facing schema versions.

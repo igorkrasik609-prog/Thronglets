@@ -1,16 +1,74 @@
 use super::*;
 
 use thronglets::active_policy::{compile_active_policy, method_compliance_from_payload};
+use thronglets::context::ContextHash;
 use thronglets::context::{simhash, similarity as context_similarity};
 use thronglets::contracts::{
-    GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_HINTS, PREHOOK_MAX_SECONDARY_QUERIES,
+    FIELD_OBSERVATION_MAX, GIT_HISTORY_MAX_ENTRIES, PREHOOK_HEADER, PREHOOK_MAX_HINTS,
+    PREHOOK_MAX_SECONDARY_QUERIES,
 };
+use thronglets::pheromone::{AbstractionLevel, FieldScan, FieldSnapshot, PheromoneField};
 use thronglets::posts::SignalPostKind;
 use thronglets::presence::{
     DEFAULT_PRESENCE_TTL_MINUTES, PresenceTraceConfig, create_presence_trace,
 };
 use thronglets::signals::{Signal, SignalKind, select as select_signals};
 use thronglets::trace::{Outcome, Trace};
+
+fn load_field_scans(
+    dir: &std::path::Path,
+    context_hash: &ContextHash,
+    space: Option<&str>,
+    file_path: Option<&str>,
+    limit: usize,
+) -> Vec<FieldScan> {
+    let scan_request = thronglets::pheromone_socket::ScanRequest {
+        context_hash: *context_hash,
+        space: space.map(ToOwned::to_owned),
+        file_path: file_path.map(ToOwned::to_owned),
+        limit,
+    };
+
+    thronglets::pheromone_socket::query(dir, &scan_request).unwrap_or_else(|| {
+        let field_path = dir.join("pheromone-field.v1.json");
+        if field_path.exists()
+            && let Ok(data) = std::fs::read_to_string(&field_path)
+            && let Ok(snapshot) = serde_json::from_str::<FieldSnapshot>(&data)
+        {
+            let field = PheromoneField::new();
+            field.restore(&snapshot);
+            field.scan_with_fallback(context_hash, space, file_path, limit)
+        } else {
+            Vec::new()
+        }
+    })
+}
+
+fn render_field_observation(scan: &FieldScan) -> Option<String> {
+    if scan.intensity <= 0.1 {
+        return None;
+    }
+    if scan.capability.starts_with("urn:thronglets:") {
+        return None;
+    }
+
+    let (scope, summary) = match scan.level {
+        AbstractionLevel::Project => ("project", "success in this project"),
+        AbstractionLevel::Typed => ("pattern", "success across similar files"),
+        AbstractionLevel::Universal => ("universal", "success across projects"),
+        AbstractionLevel::Concrete => return None,
+    };
+
+    Some(format!(
+        "  field: {scope} {} ({:.0}% {summary})",
+        scan.capability,
+        scan.valence * 100.0,
+    ))
+}
+
+fn render_field_observations(scans: Vec<FieldScan>) -> Vec<String> {
+    scans.iter().filter_map(render_field_observation).collect()
+}
 
 pub(crate) fn hook(ctx: &FullCtx) {
     // Read a generic post-tool hook payload from stdin.
@@ -363,15 +421,8 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     profiler.stage("danger");
 
     let explicit_signals_checked = !hook_context.is_empty();
-    if explicit_signals_checked
-        && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
-    {
-        for mut sig in explicit_signals(
-            store,
-            &hook_context,
-            &ctx_hash,
-            current_space.as_deref(),
-        ) {
+    if explicit_signals_checked && let Some(store) = cached_store(&mut secondary_store, &ctx.dir) {
+        for mut sig in explicit_signals(store, &hook_context, &ctx_hash, current_space.as_deref()) {
             sig.score += ws.recommendation_score_adjustment(sig.kind, current_space.as_deref());
             signals.push(sig);
         }
@@ -411,9 +462,7 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     // -- Conflict prior: mixed outcomes mean the environment has not
     // yet settled on a stable path.
     let history_prior_checked = explicit_signals_checked && !has_danger;
-    if history_prior_checked
-        && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
-    {
+    if history_prior_checked && let Some(store) = cached_store(&mut secondary_store, &ctx.dir) {
         for mut prior in thronglets::ambient::host_history_priors_for_context(
             store,
             &ctx_hash,
@@ -485,74 +534,30 @@ pub(crate) fn prehook(ctx: &FullCtx) {
     if presence_checked
         && let Some(store) = cached_store(&mut secondary_store, &ctx.dir)
         && let Some(space) = current_space.as_deref()
-        && let Some(presence_signal) = presence_context_signal(
-            store,
-            space,
-            current_session_id.as_deref(),
-        )
+        && let Some(presence_signal) =
+            presence_context_signal(store, space, current_session_id.as_deref())
     {
         signals.push(presence_signal);
     }
     profiler.stage_or_skip("presence", presence_checked);
 
-    // -- Field fallback: abstract patterns from Level 2-3 --
-    let has_strong_signal = signals
-        .iter()
-        .any(|s| !matches!(s.kind, SignalKind::History) || s.score >= 300);
-    let field_fallback_checked = !has_strong_signal && !hook_context.is_empty();
-    if field_fallback_checked {
-        let scan_request = thronglets::pheromone_socket::ScanRequest {
-            context_hash: ctx_hash,
-            space: current_space.clone(),
-            file_path: current_file.clone(),
-            limit: 3,
-        };
-
-        // Try live socket first (hot field, ~1ms), fall back to disk (stale, ~10ms)
-        let scans: Vec<thronglets::pheromone::FieldScan> =
-            thronglets::pheromone_socket::query(&ctx.dir, &scan_request).unwrap_or_else(|| {
-                let field_path = ctx.dir.join("pheromone-field.v1.json");
-                if field_path.exists()
-                    && let Ok(data) = std::fs::read_to_string(&field_path)
-                    && let Ok(snapshot) =
-                        serde_json::from_str::<thronglets::pheromone::FieldSnapshot>(&data)
-                {
-                    let field = thronglets::pheromone::PheromoneField::new();
-                    field.restore(&snapshot);
-                    field.scan_with_fallback(
-                        &ctx_hash,
-                        current_space.as_deref(),
-                        current_file.as_deref(),
-                        3,
-                    )
-                } else {
-                    Vec::new()
-                }
-            });
-
-        for scan in scans {
-            if scan.intensity > 0.1 {
-                let level_tag = match scan.level {
-                    thronglets::pheromone::AbstractionLevel::Project => "project",
-                    thronglets::pheromone::AbstractionLevel::Typed => "pattern",
-                    thronglets::pheromone::AbstractionLevel::Universal => "universal",
-                    _ => continue,
-                };
-                let score = 220 + (scan.intensity * 40.0).round() as i32;
-                signals.push(Signal {
-                    kind: SignalKind::History,
-                    score,
-                    body: format!(
-                        "  \u{1f30a} {level_tag}: {} ({:.0}% success across projects)",
-                        scan.capability,
-                        scan.valence * 100.0,
-                    ),
-                    candidate: None,
-                });
-            }
-        }
-    }
-    profiler.stage_or_skip("field_fallback", field_fallback_checked);
+    // Field observations travel beside recommendations instead of competing
+    // for the same signal slot.
+    let field_checked = !hook_context.is_empty();
+    let field_observations = if field_checked {
+        let mut obs = render_field_observations(load_field_scans(
+            &ctx.dir,
+            &ctx_hash,
+            current_space.as_deref(),
+            current_file.as_deref(),
+            12,
+        ));
+        obs.truncate(FIELD_OBSERVATION_MAX);
+        obs
+    } else {
+        Vec::new()
+    };
+    profiler.stage_or_skip("field_scan", field_checked);
 
     // History is a fallback when we don't already know a likely next move.
     let has_higher_priority_signal = signals
@@ -576,27 +581,32 @@ pub(crate) fn prehook(ctx: &FullCtx) {
         current_space.as_deref(),
         select_signals(signals, PREHOOK_MAX_HINTS),
     );
+    let mut intervention_kinds: Vec<String> = recommendations
+        .iter()
+        .map(|recommendation| recommendation.source_kind.as_str().to_string())
+        .collect();
+    if !field_observations.is_empty() {
+        intervention_kinds.push("field".into());
+    }
+    if !intervention_kinds.is_empty() {
+        ws.record_intervention(tool_name, intervention_kinds);
+    }
     if !recommendations.is_empty() {
-        ws.record_intervention(
-            tool_name,
-            recommendations
-                .iter()
-                .map(|recommendation| recommendation.source_kind.as_str().to_string())
-                .collect(),
-        );
         ws.record_recommendation_emissions(
             tool_name,
             current_session_id.as_deref(),
             current_space.as_deref(),
             &recommendations,
         );
+    }
+    if !recommendations.is_empty() || !field_observations.is_empty() {
         ws.save(&ctx.dir);
     }
     profiler.stage("select");
 
     // Output: only when there's something worth saying
     let mut stdout_bytes = 0;
-    if !recommendations.is_empty() {
+    if !recommendations.is_empty() || !field_observations.is_empty() {
         stdout_bytes += PREHOOK_HEADER.len() + 1;
         println!("{PREHOOK_HEADER}");
         for recommendation in &recommendations {
@@ -604,10 +614,15 @@ pub(crate) fn prehook(ctx: &FullCtx) {
             stdout_bytes += rendered.len() + 1;
             println!("{rendered}");
         }
+        for observation in &field_observations {
+            stdout_bytes += observation.len() + 1;
+            println!("{observation}");
+        }
     }
     profiler.finish(
         tool_name,
         &recommendations,
+        field_observations.len(),
         stdout_bytes,
         profile_file_guidance_gate(supports_file_guidance),
         PREHOOK_MAX_SECONDARY_QUERIES - secondary_queries_remaining,
@@ -936,35 +951,20 @@ mod tests {
 
         // Query avoid
         let ctx = "edit file: src/main.rs";
-        let avoid_signals = explicit_signals(
-            &store,
-            ctx,
-            &simhash(ctx),
-            None,
-        );
+        let avoid_signals = explicit_signals(&store, ctx, &simhash(ctx), None);
         assert!(!avoid_signals.is_empty());
         assert_eq!(avoid_signals[0].kind, SignalKind::Danger);
         assert!(avoid_signals[0].body.contains("avoid"));
 
         // Query watch
         let ctx = "bash: cargo test";
-        let watch_signals = explicit_signals(
-            &store,
-            ctx,
-            &simhash(ctx),
-            None,
-        );
+        let watch_signals = explicit_signals(&store, ctx, &simhash(ctx), None);
         assert!(!watch_signals.is_empty());
         assert!(watch_signals.iter().any(|s| s.body.contains("watch")));
 
         // Query recommend
         let ctx = "bash: Run full test suite";
-        let rec_signals = explicit_signals(
-            &store,
-            ctx,
-            &simhash(ctx),
-            None,
-        );
+        let rec_signals = explicit_signals(&store, ctx, &simhash(ctx), None);
         assert!(!rec_signals.is_empty());
         assert!(rec_signals.iter().any(|s| s.body.contains("recommended")));
     }
@@ -995,21 +995,11 @@ mod tests {
 
         // Wrong space -> empty
         let ctx = "edit file: src/main.rs";
-        let wrong_space = explicit_signals(
-            &store,
-            ctx,
-            &simhash(ctx),
-            Some("psyche"),
-        );
+        let wrong_space = explicit_signals(&store, ctx, &simhash(ctx), Some("psyche"));
         assert!(wrong_space.is_empty());
 
         // Right space -> found
-        let right_space = explicit_signals(
-            &store,
-            ctx,
-            &simhash(ctx),
-            Some("other-space"),
-        );
+        let right_space = explicit_signals(&store, ctx, &simhash(ctx), Some("other-space"));
         assert!(!right_space.is_empty());
         assert!(right_space[0].body.contains("skip the generated lockfile"));
     }
@@ -1597,5 +1587,133 @@ mod tests {
         let signal = active_policy_signal(&active_policy).unwrap();
         assert_eq!(signal.kind, SignalKind::History);
         assert!(signal.body.contains("reuse existing shared components"));
+    }
+
+    #[test]
+    fn field_observations_skip_concrete_and_weak_scans() {
+        let scans = vec![
+            FieldScan {
+                capability: "tool:edit".into(),
+                intensity: 0.09,
+                valence: 0.82,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 3,
+                source_count: 1,
+                context_similarity: 1.0,
+                level: AbstractionLevel::Typed,
+            },
+            FieldScan {
+                capability: "tool:search".into(),
+                intensity: 0.9,
+                valence: 0.7,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 4,
+                source_count: 1,
+                context_similarity: 1.0,
+                level: AbstractionLevel::Concrete,
+            },
+        ];
+
+        assert!(render_field_observations(scans).is_empty());
+    }
+
+    #[test]
+    fn field_observations_render_as_standalone_overlay_lines() {
+        let scans = vec![
+            FieldScan {
+                capability: "tool:edit".into(),
+                intensity: 0.8,
+                valence: 0.78,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 12,
+                source_count: 2,
+                context_similarity: 0.9,
+                level: AbstractionLevel::Project,
+            },
+            FieldScan {
+                capability: "tool:search".into(),
+                intensity: 0.7,
+                valence: 0.83,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 8,
+                source_count: 2,
+                context_similarity: 0.8,
+                level: AbstractionLevel::Typed,
+            },
+            FieldScan {
+                capability: "tool:exec".into(),
+                intensity: 0.6,
+                valence: 0.91,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 10,
+                source_count: 3,
+                context_similarity: 0.7,
+                level: AbstractionLevel::Universal,
+            },
+        ];
+
+        let rendered = render_field_observations(scans);
+        assert_eq!(rendered.len(), 3);
+        assert_eq!(
+            rendered[0],
+            "  field: project tool:edit (78% success in this project)"
+        );
+        assert_eq!(
+            rendered[1],
+            "  field: pattern tool:search (83% success across similar files)"
+        );
+        assert_eq!(
+            rendered[2],
+            "  field: universal tool:exec (91% success across projects)"
+        );
+    }
+
+    #[test]
+    fn field_observations_drop_lifecycle_capabilities() {
+        let scans = vec![
+            FieldScan {
+                capability: "urn:thronglets:lifecycle:session-start".into(),
+                intensity: 0.8,
+                valence: 1.0,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 5,
+                source_count: 1,
+                context_similarity: 1.0,
+                level: AbstractionLevel::Universal,
+            },
+            FieldScan {
+                capability: "tool:edit".into(),
+                intensity: 0.9,
+                valence: 0.85,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 10,
+                source_count: 2,
+                context_similarity: 0.9,
+                level: AbstractionLevel::Project,
+            },
+            FieldScan {
+                capability: "mcp:psyche/process_input".into(),
+                intensity: 0.7,
+                valence: 0.77,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 6,
+                source_count: 1,
+                context_similarity: 0.8,
+                level: AbstractionLevel::Typed,
+            },
+        ];
+
+        let rendered = render_field_observations(scans);
+        assert_eq!(rendered.len(), 2);
+        assert!(rendered[0].contains("tool:edit"));
+        assert!(rendered[1].contains("mcp:psyche/process_input"));
     }
 }
