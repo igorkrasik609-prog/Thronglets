@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "thronglets"
-version = "1.0.1"
+version = "1.0.2"
 description = "Local AI substrate for agents with sparse signals, hooks, and optional adapters"
 readme = "README.md"
 license = "MIT"
