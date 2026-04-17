@@ -681,17 +681,13 @@ pub fn expires_at_ms(now_ms: u64, ttl_hours: u32) -> u64 {
 }
 
 fn source_key(trace: &Trace) -> String {
-    let node = trace.device_identity.clone().unwrap_or_else(|| {
+    trace.device_identity.clone().unwrap_or_else(|| {
         trace
             .node_pubkey
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
-    });
-    match trace.session_id.as_deref() {
-        Some(session_id) => format!("{node}:{session_id}"),
-        None => node,
-    }
+    })
 }
 
 fn now_ms() -> u64 {
@@ -910,23 +906,24 @@ mod tests {
 
     #[test]
     fn summarize_signal_posts_groups_by_kind_and_message() {
-        let identity = NodeIdentity::generate();
+        let identity_a = NodeIdentity::generate();
+        let identity_b = NodeIdentity::generate();
         let trace_a = create_signal_trace(
             SignalPostKind::Avoid,
             "fix flaky ci workflow",
             "skip the generated lockfile",
-            signal_config(&identity, "codex", "session-a"),
-            identity.public_key_bytes(),
-            |msg| identity.sign(msg),
+            signal_config(&identity_a, "codex", "session-a"),
+            identity_a.public_key_bytes(),
+            |msg| identity_a.sign(msg),
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
         let trace_b = create_signal_trace(
             SignalPostKind::Avoid,
             "repair flaky ci pipeline",
             "skip the generated lockfile",
-            signal_config(&identity, "openclaw", "session-b"),
-            identity.public_key_bytes(),
-            |msg| identity.sign(msg),
+            signal_config(&identity_b, "openclaw", "session-b"),
+            identity_b.public_key_bytes(),
+            |msg| identity_b.sign(msg),
         );
         let trace_b_timestamp = trace_b.timestamp;
 

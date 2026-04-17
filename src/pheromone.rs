@@ -82,11 +82,6 @@ const COUPLING_PRUNE_THRESHOLD: f64 = 0.05;
 /// Calibrated for M1 Pro workloads. Set to f64::MAX to disable.
 const FIELD_CAPACITY: f64 = 10_000.0;
 
-/// Minimum intensity to consider a scan result "strong" enough to
-/// short-circuit the fallback chain. If any level yields a signal
-/// above this threshold, higher (more abstract) levels are skipped.
-const STRONG_SIGNAL_THRESHOLD: f64 = 0.5;
-
 // ── Capability Normalization ────────────────────────────────────
 
 /// Normalize agent-specific capability URIs to canonical forms.
@@ -1148,17 +1143,6 @@ impl PheromoneField {
             }
 
             all_results.extend(level_results.into_values());
-
-            // Early stop if we found strong non-Concrete signals.
-            // Concrete results are filtered by the render pipeline, so a strong
-            // Concrete match must not prevent scanning higher abstraction levels.
-            let has_strong = all_results.iter().any(|r| {
-                r.level != AbstractionLevel::Concrete
-                    && r.intensity > STRONG_SIGNAL_THRESHOLD
-            });
-            if has_strong {
-                break;
-            }
         }
 
         all_results.sort_by(|a, b| {

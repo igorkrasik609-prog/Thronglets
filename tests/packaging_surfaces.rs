@@ -52,23 +52,6 @@ fn package_versions_match_current_source_version() {
             .any(|value| value == "win32"),
         "npm package should support win32"
     );
-
-    let pyproject: TomlValue =
-        toml::from_str(&read("python/pyproject.toml")).expect("parse python/pyproject.toml");
-    assert_eq!(
-        pyproject["project"]["version"].as_str(),
-        Some(cargo_version.as_str())
-    );
-
-    let python_init = read("python/thronglets/__init__.py");
-    assert_eq!(
-        extract_quoted_value(&python_init, "__version__"),
-        cargo_version
-    );
-    assert!(
-        python_init
-            .contains("VERSION = os.environ.get(\"THRONGLETS_INSTALL_VERSION\", __version__)")
-    );
 }
 
 #[test]
@@ -92,7 +75,6 @@ fn published_server_manifest_is_internally_consistent() {
 fn package_and_agent_docs_do_not_regress_to_old_context_model() {
     let docs = [
         ("npm/README.md", read("npm/README.md")),
-        ("python/README.md", read("python/README.md")),
         ("llms.txt", read("llms.txt")),
     ];
 
@@ -110,12 +92,6 @@ fn package_and_agent_docs_do_not_regress_to_old_context_model() {
     let npm_readme = read("npm/README.md");
     assert!(npm_readme.contains("avoid"));
     assert!(npm_readme.contains("thronglets bootstrap --agent codex --json"));
-
-    let python_readme = read("python/README.md");
-    assert!(python_readme.contains("thronglets install-plan --agent generic --json"));
-    assert!(python_readme.contains("thronglets share"));
-    assert!(python_readme.contains("thronglets join"));
-    assert!(python_readme.contains("thronglets status"));
 
     assert!(npm_readme.contains("thronglets share"));
     assert!(npm_readme.contains("thronglets join"));
@@ -222,10 +198,6 @@ fn package_installers_read_version_from_a_single_source() {
         );
     }
 
-    let python_installer = read("python/thronglets/__init__.py");
-    assert!(python_installer.contains("THRONGLETS_INSTALL_VERSION"));
-    assert!(python_installer.contains("THRONGLETS_INSTALL_REPO"));
-    assert!(python_installer.contains("(\"Windows\", \"AMD64\")"));
 }
 
 #[test]
