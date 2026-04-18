@@ -432,6 +432,8 @@ pub struct FieldScan {
     pub source_count: u32,
     pub context_similarity: f64,
     pub level: AbstractionLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupled_from: Option<String>,
 }
 
 /// A Hebbian cluster: capabilities that frequently co-activate.
@@ -929,6 +931,7 @@ impl PheromoneField {
                     source_count: 0,
                     context_similarity: 0.0,
                     level: key.level,
+                    coupled_from: None,
                 });
 
             let w = intensity;
@@ -986,6 +989,7 @@ impl PheromoneField {
                         source_count: 0,
                         context_similarity: primary_sim * cw,
                         level: key.level,
+                        coupled_from: Some(primary_cap.clone()),
                     },
                 );
             }
@@ -1081,6 +1085,7 @@ impl PheromoneField {
                         source_count: 0,
                         context_similarity: 0.0,
                         level,
+                        coupled_from: None,
                     });
 
                 let w = intensity;
@@ -1137,6 +1142,7 @@ impl PheromoneField {
                             source_count: 0,
                             context_similarity: ps * cw,
                             level,
+                            coupled_from: Some(pcap.clone()),
                         },
                     );
                 }
@@ -1206,6 +1212,7 @@ impl PheromoneField {
             source_count: max_source_count,
             context_similarity: 1.0,
             level,
+            coupled_from: None,
         })
     }
 
@@ -1639,6 +1646,7 @@ impl PheromoneField {
                 source_count: sc,
                 context_similarity: 0.0,
                 level: AbstractionLevel::Concrete,
+                coupled_from: None,
             })
             .collect();
         results.sort_by(|a, b| {

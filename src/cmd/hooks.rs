@@ -59,11 +59,19 @@ fn render_field_observation(scan: &FieldScan) -> Option<String> {
         AbstractionLevel::Concrete => return None,
     };
 
-    Some(format!(
-        "  field: {scope} {} ({:.0}% {summary})",
-        scan.capability,
-        scan.valence * 100.0,
-    ))
+    if let Some(ref predecessor) = scan.coupled_from {
+        Some(format!(
+            "  field: {scope} {} ({:.0}% {summary}, follows {predecessor})",
+            scan.capability,
+            scan.valence * 100.0,
+        ))
+    } else {
+        Some(format!(
+            "  field: {scope} {} ({:.0}% {summary})",
+            scan.capability,
+            scan.valence * 100.0,
+        ))
+    }
 }
 
 fn render_field_observations(scans: Vec<FieldScan>) -> Vec<String> {
@@ -1602,6 +1610,7 @@ mod tests {
                 source_count: 1,
                 context_similarity: 1.0,
                 level: AbstractionLevel::Typed,
+                coupled_from: None,
             },
             FieldScan {
                 capability: "tool:search".into(),
@@ -1613,6 +1622,7 @@ mod tests {
                 source_count: 1,
                 context_similarity: 1.0,
                 level: AbstractionLevel::Concrete,
+                coupled_from: None,
             },
         ];
 
@@ -1632,6 +1642,7 @@ mod tests {
                 source_count: 2,
                 context_similarity: 0.9,
                 level: AbstractionLevel::Project,
+                coupled_from: None,
             },
             FieldScan {
                 capability: "tool:search".into(),
@@ -1643,6 +1654,7 @@ mod tests {
                 source_count: 2,
                 context_similarity: 0.8,
                 level: AbstractionLevel::Typed,
+                coupled_from: None,
             },
             FieldScan {
                 capability: "tool:exec".into(),
@@ -1654,6 +1666,7 @@ mod tests {
                 source_count: 3,
                 context_similarity: 0.7,
                 level: AbstractionLevel::Universal,
+                coupled_from: None,
             },
         ];
 
@@ -1674,6 +1687,31 @@ mod tests {
     }
 
     #[test]
+    fn field_observations_render_hebbian_direction() {
+        let scans = vec![
+            FieldScan {
+                capability: "tool:edit".into(),
+                intensity: 0.8,
+                valence: 0.78,
+                latency: 0.0,
+                variance: 0.0,
+                total_excitations: 0,
+                source_count: 0,
+                context_similarity: 0.9,
+                level: AbstractionLevel::Project,
+                coupled_from: Some("tool:search".into()),
+            },
+        ];
+
+        let rendered = render_field_observations(scans);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(
+            rendered[0],
+            "  field: project tool:edit (78% success in this project, follows tool:search)"
+        );
+    }
+
+    #[test]
     fn field_observations_drop_lifecycle_capabilities() {
         let scans = vec![
             FieldScan {
@@ -1686,6 +1724,7 @@ mod tests {
                 source_count: 1,
                 context_similarity: 1.0,
                 level: AbstractionLevel::Universal,
+                coupled_from: None,
             },
             FieldScan {
                 capability: "tool:edit".into(),
@@ -1697,6 +1736,7 @@ mod tests {
                 source_count: 2,
                 context_similarity: 0.9,
                 level: AbstractionLevel::Project,
+                coupled_from: None,
             },
             FieldScan {
                 capability: "mcp:psyche/process_input".into(),
@@ -1708,6 +1748,7 @@ mod tests {
                 source_count: 1,
                 context_similarity: 0.8,
                 level: AbstractionLevel::Typed,
+                coupled_from: None,
             },
         ];
 

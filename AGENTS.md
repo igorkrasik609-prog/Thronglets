@@ -148,6 +148,8 @@ MCP `trace_record` without explicit `space` falls back to cwd-derived space (`sp
 ### Hook-based (Claude Code primary)
 SessionStart, PreToolUse, PostToolUse, SessionEnd hooks. AI agents never call Thronglets directly — it silently injects sparse signals.
 
+Field observations include Hebbian direction: capabilities surfaced via directed edges show their predecessor (e.g., `follows tool:search`), exposing the field's discovered sequential patterns to agents.
+
 ### MCP-based (any MCP-compatible agent)
 Tools over JSON-RPC 2.0:
 - `substrate_query` — search traces by intent/context/capability
